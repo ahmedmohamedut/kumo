@@ -49,3 +49,24 @@ Newest entries last. Each entry references the milestone/task it came from.
 - **Timeout policy for `http.Server`:** `ReadHeaderTimeout` 10 s, `IdleTimeout`
   120 s, graceful `Shutdown` 15 s; no write timeout, because SSE (`/events`,
   M5) and the console WebSocket will hold connections open.
+
+## M0.3 — Store
+
+- **`internal/store/sqlc` is generated** from `internal/store/migrations`
+  (schema) and `internal/store/queries` (queries) by `sqlc.yaml`; `make sqlc`
+  regenerates it and the generated files are committed. Only `CountUsers`
+  exists today — each milestone adds its queries next to its service.
+- **sqlc query type `:scalar` does not exist** in sqlc v1.30 (`docs` here use
+  plain SQL, so this is only a note for query authors): `COUNT(*)` uses `:one`,
+  which sqlc maps to `int64`.
+- **Pragmas are set through the DSN** (`_pragma=journal_mode(WAL)`, …) instead of
+  per-connection statements, so every pooled connection gets them.
+  `SetMaxOpenConns(1)` keeps a single writer, as `02-data-model.md` suggests.
+- **goose's package-level configuration is set once** via `sync.OnceValue`:
+  `SetBaseFS`/`SetDialect`/`SetLogger` write globals, and `make test` runs
+  `-race` with parallel tests that migrate several databases at once.
+- **`store.Exec` / `tx.Exec`** are the only place a parameterized statement can
+  be issued outside `internal/store/queries`; they exist for tests and future
+  maintenance tasks, and services use the sqlc queries.
+- **`store.Open` creates the data directory** (0700) when it is missing, so a
+  fresh install does not need `mkdir -p /var/lib/kumo`.

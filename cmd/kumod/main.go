@@ -16,6 +16,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/config"
 	"github.com/ahmedmohamedut/kumo/internal/logging"
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
+	"github.com/ahmedmohamedut/kumo/internal/store"
 	"github.com/ahmedmohamedut/kumo/internal/version"
 )
 
@@ -49,16 +50,26 @@ func serve(ctx context.Context) error {
 		"listen", cfg.Listen,
 		"hypervisor", cfg.Hypervisor,
 		"data_dir", cfg.DataDir,
+		"db_path", cfg.DBPath,
 	)
 
-	// The store and the hypervisor are wired in M0.3 and M0.4; until then
-	// /api/v1/system/info reports the configured hypervisor without probing it.
-	systemService := system.New(logger, version.Version, cfg.Hypervisor, nil, nil)
+	db, err := store.Open(ctx, cfg.DBPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close() //nolint:errcheck // the process is shutting down anyway
+
+	// The hypervisor is wired in M0.4; until then /api/v1/system/info reports
+	// the configured backend without probing it.
+	systemService := system.New(logger, version.Version, cfg.Hypervisor, db, nil)
 
 	handler := api.NewHandler(api.Options{
-		Logger:         logger,
-		GinMode:        ginMode(cfg.LogLevel),
-		System:         systemService,
+		Logger:  logger,
+		GinMode: ginMode(cfg.LogLevel),
+		System:  systemService,
+		ReadyChecks: []api.Check{
+			{Name: "db", Probe: db.Ping},
+		},
 		AllowedOrigins: cfg.AllowedOrigins,
 	})
 

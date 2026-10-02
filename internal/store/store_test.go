@@ -1,0 +1,315 @@
+package store_test
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/ahmedmohamedut/kumo/internal/store"
+	"github.com/ahmedmohamedut/kumo/internal/store/storetest"
+)
+
+func TestOpenAppliesMigrationsOnAnEmptyDatabase(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "kumo.db")
+
+	db, err := store.Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() { db.Close() }) //nolint:errcheck // closing cannot fail here
+
+	for _, table := range []string{
+		"users", "refresh_tokens", "key_pairs", "images", "instance_types",
+		"instances", "tags", "tasks", "settings", "goose_db_version",
+	} {
+		var name string
+		err := db.DB().QueryRowContext(t.Context(),
+			`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&name)
+		if err != nil {
+			t.Errorf("table %q is missing after migrating: %v", table, err)
+		}
+	}
+
+	// goose seeds version 0 when it creates its bookkeeping table, so count the
+	// migrations that actually carry a version.
+	var count int
+	err = db.DB().QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM goose_db_version WHERE is_applied = 1 AND version_id > 0`).Scan(&count)
+	if err != nil {
+		t.Fatalf("query goose_db_version: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("applied migrations = %d, want 1", count)
+	}
+}
+
+func TestOpenIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "kumo.db")
+
+	first, err := store.Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("first Open() error = %v", err)
+	}
+	second, err := store.Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("second Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		first.Close()  //nolint:errcheck // closing cannot fail here
+		second.Close() //nolint:errcheck // closing cannot fail here
+	})
+
+	var applied int
+	if err := second.DB().QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM goose_db_version WHERE is_applied = 1 AND version_id > 0`).Scan(&applied); err != nil {
+		t.Fatalf("query goose_db_version: %v", err)
+	}
+	if applied != 1 {
+		t.Errorf("applied migrations after re-opening = %d, want 1", applied)
+	}
+}
+
+func TestOpenAppliesPragmas(t *testing.T) {
+	t.Parallel()
+
+	db := storetest.New(t)
+	ctx := t.Context()
+
+	tests := []struct {
+		pragma string
+		want   string
+	}{
+		{pragma: "journal_mode", want: "wal"},
+		{pragma: "foreign_keys", want: "1"},
+		{pragma: "busy_timeout", want: "5000"},
+		{pragma: "synchronous", want: "1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.pragma, func(t *testing.T) {
+			var got string
+			query := "PRAGMA " + tt.pragma
+			if err := db.DB().QueryRowContext(ctx, query).Scan(&got); err != nil {
+				t.Fatalf("%s: %v", query, err)
+			}
+			if !strings.EqualFold(got, tt.want) {
+				t.Errorf("%s = %q, want %q", query, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestForeignKeysAreEnforced(t *testing.T) {
+	t.Parallel()
+
+	db := storetest.New(t)
+
+	_, err := db.Exec(t.Context(),
+		`INSERT INTO instances (id, name, state, image_id, instance_type, vcpus, memory_mib,
+			root_disk_gb, launched_at, updated_at)
+		 VALUES ('i-1', 'web', 'running', 'img-missing', 'kumo.small', 1, 1024, 10, 'now', 'now')`)
+	if err == nil {
+		t.Fatal("inserting an instance with an unknown image_id succeeded, want a foreign key error")
+	}
+}
+
+func TestOpenCreatesMissingDirectories(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "nested", "deeper", "kumo.db")
+
+	db, err := store.Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() { db.Close() }) //nolint:errcheck // closing cannot fail here
+
+	if err := db.Ping(t.Context()); err != nil {
+		t.Errorf("Ping() error = %v", err)
+	}
+}
+
+func TestOpenRejectsAnEmptyPath(t *testing.T) {
+	t.Parallel()
+
+	if _, err := store.Open(t.Context(), ""); err == nil {
+		t.Fatal("store.Open(\"\") error = nil, want an error")
+	}
+}
+
+func TestMigrateFailureClosesTheDatabase(t *testing.T) {
+	t.Parallel()
+
+	// A directory in place of the database file makes both the ping and the
+	// migrations fail; the returned store must not leak the handle.
+	path := filepath.Join(t.TempDir(), "kumo.db")
+	if err := os.Mkdir(path, 0o750); err != nil {
+		t.Fatalf("create directory: %v", err)
+	}
+
+	db, err := store.Open(t.Context(), path)
+	if err == nil {
+		db.Close() //nolint:errcheck // the test ends here
+		t.Fatal("store.Open() error = nil, want an error")
+	}
+	if !strings.Contains(err.Error(), "store:") {
+		t.Errorf("error %q is not wrapped by the store package", err)
+	}
+}
+
+func TestCountUsers(t *testing.T) {
+	t.Parallel()
+
+	db := storetest.New(t)
+	ctx := t.Context()
+
+	count, err := db.CountUsers(ctx)
+	if err != nil {
+		t.Fatalf("CountUsers() error = %v", err)
+	}
+	if count != 0 {
+		t.Errorf("CountUsers() = %d on an empty database, want 0", count)
+	}
+
+	insertUser(t, db, "u-1", "admin")
+	insertUser(t, db, "u-2", "viewer")
+
+	count, err = db.CountUsers(ctx)
+	if err != nil {
+		t.Fatalf("CountUsers() error = %v", err)
+	}
+	if count != 2 {
+		t.Errorf("CountUsers() = %d, want 2", count)
+	}
+}
+
+func TestPingFailsOnAClosedDatabase(t *testing.T) {
+	t.Parallel()
+
+	db, err := store.Open(t.Context(), filepath.Join(t.TempDir(), "kumo.db"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	if err := db.Ping(t.Context()); err == nil {
+		t.Fatal("Ping() on a closed database = nil, want an error")
+	}
+	// database/sql documents Close as idempotent, so a second call is fine.
+	if err := db.Close(); err != nil {
+		t.Errorf("second Close() error = %v", err)
+	}
+}
+
+// errRollback stands in for a workflow failure inside a transaction.
+var errRollback = errors.New("rollback me")
+
+func TestWithTx(t *testing.T) {
+	t.Parallel()
+
+	db := storetest.New(t)
+	ctx := t.Context()
+
+	t.Run("commits", func(t *testing.T) {
+		err := db.WithTx(ctx, func(ctx context.Context, tx *store.Tx) error {
+			_, err := tx.Exec(ctx,
+				`INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
+				 VALUES ('u-1', 'admin', 'hash', 'admin', 'now', 'now')`)
+			return err
+		})
+		if err != nil {
+			t.Fatalf("WithTx() error = %v", err)
+		}
+
+		count, err := db.CountUsers(ctx)
+		if err != nil {
+			t.Fatalf("CountUsers() error = %v", err)
+		}
+		if count != 1 {
+			t.Errorf("CountUsers() = %d, want 1", count)
+		}
+	})
+
+	t.Run("rolls back on error", func(t *testing.T) {
+		err := db.WithTx(ctx, func(ctx context.Context, tx *store.Tx) error {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
+				 VALUES ('u-2', 'viewer', 'hash', 'viewer', 'now', 'now')`); err != nil {
+				return err
+			}
+			return errRollback
+		})
+		if !errors.Is(err, errRollback) {
+			t.Fatalf("WithTx() error = %v, want %v", err, errRollback)
+		}
+
+		var name string
+		err = db.DB().QueryRowContext(ctx, `SELECT username FROM users WHERE id = 'u-2'`).Scan(&name)
+		if !errors.Is(err, sql.ErrNoRows) {
+			t.Errorf("the rolled back row is still there (err = %v)", err)
+		}
+	})
+
+	t.Run("rolls back on panic", func(t *testing.T) {
+		func() {
+			defer func() {
+				if recovered := recover(); recovered == nil {
+					t.Error("the panic did not escape WithTx")
+				}
+			}()
+			_ = db.WithTx(ctx, func(ctx context.Context, tx *store.Tx) error {
+				if _, err := tx.Exec(ctx,
+					`INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
+					 VALUES ('u-3', 'panic', 'hash', 'viewer', 'now', 'now')`); err != nil {
+					return err
+				}
+				panic("boom")
+			})
+		}()
+
+		var name string
+		err := db.DB().QueryRowContext(ctx, `SELECT username FROM users WHERE id = 'u-3'`).Scan(&name)
+		if !errors.Is(err, sql.ErrNoRows) {
+			t.Errorf("the rolled back row is still there (err = %v)", err)
+		}
+	})
+}
+
+func TestMigrationsAreEmbedded(t *testing.T) {
+	t.Parallel()
+
+	entries, err := fs.ReadDir(store.Migrations(), ".")
+	if err != nil {
+		t.Fatalf("read embedded migrations: %v", err)
+	}
+
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	if len(names) != 1 || names[0] != "0001_init.sql" {
+		t.Errorf("embedded migrations = %v, want [0001_init.sql]", names)
+	}
+}
+
+func insertUser(t *testing.T, db *store.Store, id, role string) {
+	t.Helper()
+
+	_, err := db.Exec(t.Context(),
+		`INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
+		 VALUES (?, ?, 'hash', ?, 'now', 'now')`, id, id, role)
+	if err != nil {
+		t.Fatalf("insert user %q: %v", id, err)
+	}
+}
