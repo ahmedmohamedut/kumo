@@ -6,7 +6,7 @@ Work through tasks **in order**, one per PR. Each task lists acceptance criteria
 
 - [x] **M0.1 Repo init**: `go.mod` (`github.com/<you>/kumo`), Apache-2.0 `LICENSE`, `.gitignore`, `.editorconfig`, `.golangci.yml`, `Makefile` with all targets from `AGENTS.md`.
   AC: `make lint test build` succeed on an empty skeleton.
-- [ ] **M0.2 Backend skeleton**: `cmd/kumod`, config loader, slog, Gin router with `/healthz`, `/readyz`, `/api/v1/system/info`, graceful shutdown, request-id + recover + log middleware.
+- [x] **M0.2 Backend skeleton**: `cmd/kumod`, config loader, slog, Gin router with `/healthz`, `/readyz`, `/api/v1/system/info`, graceful shutdown, request-id + recover + log middleware.
   AC: `curl :8080/healthz` → 200; unit test for config defaults.
 - [ ] **M0.3 Store**: SQLite open with pragmas, goose embedded migrations (`0001_init.sql` from `02-data-model.md`), sqlc config + first queries, test helper for temp DB.
   AC: migrations apply on empty DB; `make sqlc` clean diff.

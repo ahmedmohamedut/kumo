@@ -82,7 +82,10 @@ linters:
         - name: var-naming
     sloglint:
       no-mixed-args: true
-      no-raw-keys: true
+      # no-raw-keys is left off: in sloglint v0.11 it rejects every *literal*
+      # key, including the keys of slog.String/slog.Attr, which is the opposite
+      # of what we want. key-naming-case plus context: all give the real checks.
+      no-raw-keys: false
       key-naming-case: snake
       static-msg: true
       context: all

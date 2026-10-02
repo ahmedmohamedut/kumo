@@ -20,3 +20,32 @@ Newest entries last. Each entry references the milestone/task it came from.
   `NNNN_snake_case.sql` naming from `02-data-model.md` regardless of cwd.
 - **`make openapi` is wired in M0.6**, together with `api/openapi.yaml`; the
   target exists (and no-ops) so `make help` and CI stay complete.
+## M0.2 — Backend skeleton
+
+- **`internal/logging`** (not in the AGENTS.md layout list) builds the JSON
+  `slog` logger; `main` only wires it. `logging.Attrs` converts key/value
+  pairs into attributes for the access log's conditional fields.
+- **Request IDs are ULIDs** (`internal/id`), matching the `"01J…"` example in
+  `01-api.md`. An inbound `X-Request-Id` is reused when it is at most 64
+  characters, otherwise a new ULID is minted and echoed in the header and in
+  the error envelope.
+- **`/api/v1/system/info` has a temporary seam.** `service/system.New` takes
+  optional `UserCounter`/`HypervisorChecker` seams so the route exists in M0.2
+  while the store and hypervisor land in M0.3/M0.4; `main` passes `nil`, hence
+  `needs_setup:false` and `hypervisor.ok:false` until then. M0.3 wires the
+  store, M0.4 the hypervisor.
+- **`quota_exceeded` maps to HTTP 429.** `00-architecture.md` §7 maps the other
+  sentinels but not the quota one; 429 follows the usual "too many / not enough
+  capacity" convention.
+- **`method_not_allowed`** was added to the error-code list in `01-api.md` §
+  Conventions (the doc lists no code for HTTP 405). Unknown routes use the
+  existing `not_found` code.
+- **gin mode follows `KUMO_LOG_LEVEL`** (`debug` → debug, otherwise release) so
+  gin never prints its own routes in production logs.
+- **`sloglint.no-raw-keys` is disabled** in `.golangci.yml`: in sloglint v0.11.1
+  it flags every *literal* key, including the keys inside `slog.String`/
+  `slog.Attr`, so keeping it on would ban the idiomatic style. `key-naming-case:
+  snake`, `no-mixed-args`, `static-msg` and `context: all` stay on.
+- **Timeout policy for `http.Server`:** `ReadHeaderTimeout` 10 s, `IdleTimeout`
+  120 s, graceful `Shutdown` 15 s; no write timeout, because SSE (`/events`,
+  M5) and the console WebSocket will hold connections open.
