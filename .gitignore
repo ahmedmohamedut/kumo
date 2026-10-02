@@ -1,4 +1,23 @@
+# Build output
 bin/
+web/dist/
+web/coverage/
+internal/webui/dist/*
+!internal/webui/dist/.gitkeep
+
+# Tooling scratch
+.tmp/
+air.log
+coverage.out
+
+# Local state
 *.db
 *.db-*
+*.db-shm
+*.db-wal
 .env
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

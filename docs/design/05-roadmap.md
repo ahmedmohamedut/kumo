@@ -4,7 +4,7 @@ Work through tasks **in order**, one per PR. Each task lists acceptance criteria
 
 ## M0 — Scaffolding
 
-- [ ] **M0.1 Repo init**: `go.mod` (`github.com/<you>/kumo`), Apache-2.0 `LICENSE`, `.gitignore`, `.editorconfig`, `.golangci.yml`, `Makefile` with all targets from `AGENTS.md`.
+- [x] **M0.1 Repo init**: `go.mod` (`github.com/<you>/kumo`), Apache-2.0 `LICENSE`, `.gitignore`, `.editorconfig`, `.golangci.yml`, `Makefile` with all targets from `AGENTS.md`.
   AC: `make lint test build` succeed on an empty skeleton.
 - [ ] **M0.2 Backend skeleton**: `cmd/kumod`, config loader, slog, Gin router with `/healthz`, `/readyz`, `/api/v1/system/info`, graceful shutdown, request-id + recover + log middleware.
   AC: `curl :8080/healthz` → 200; unit test for config defaults.
