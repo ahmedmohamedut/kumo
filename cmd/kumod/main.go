@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -14,11 +15,17 @@ import (
 
 	"github.com/ahmedmohamedut/kumo/internal/api"
 	"github.com/ahmedmohamedut/kumo/internal/config"
+	"github.com/ahmedmohamedut/kumo/internal/hypervisor"
+	"github.com/ahmedmohamedut/kumo/internal/hypervisor/fake"
 	"github.com/ahmedmohamedut/kumo/internal/logging"
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
 	"github.com/ahmedmohamedut/kumo/internal/store"
 	"github.com/ahmedmohamedut/kumo/internal/version"
 )
+
+// fakeSubnet is the private range the in-memory backend hands out addresses
+// from. It matches the guest network 04-libvirt-integration.md §3 documents.
+const fakeSubnet = "192.168.100.0/24"
 
 func main() {
 	os.Exit(run())
@@ -59,9 +66,20 @@ func serve(ctx context.Context) error {
 	}
 	defer db.Close() //nolint:errcheck // the process is shutting down anyway
 
-	// The hypervisor is wired in M0.4; until then /api/v1/system/info reports
-	// the configured backend without probing it.
-	systemService := system.New(logger, version.Version, cfg.Hypervisor, db, nil)
+	hv, err := newHypervisor(cfg)
+	if err != nil {
+		return err
+	}
+	if err := hv.EnsureInfra(ctx, hypervisor.InfraConfig{
+		ImagesPool:    cfg.PoolImages,
+		InstancesPool: cfg.PoolInstances,
+		Network:       cfg.Network,
+		DataDir:       cfg.DataDir,
+	}); err != nil {
+		return fmt.Errorf("bootstrap hypervisor infrastructure: %w", err)
+	}
+
+	systemService := system.New(logger, version.Version, cfg.Hypervisor, db, hv)
 
 	handler := api.NewHandler(api.Options{
 		Logger:  logger,
@@ -69,6 +87,7 @@ func serve(ctx context.Context) error {
 		System:  systemService,
 		ReadyChecks: []api.Check{
 			{Name: "db", Probe: db.Ping},
+			{Name: "hypervisor", Probe: hv.Ping},
 		},
 		AllowedOrigins: cfg.AllowedOrigins,
 	})
@@ -81,6 +100,21 @@ func serve(ctx context.Context) error {
 
 	logger.InfoContext(context.WithoutCancel(ctx), "kumod stopped")
 	return nil
+}
+
+// newHypervisor builds the backend selected by KUMO_HYPERVISOR. The libvirt
+// implementation arrives in M3.1; until then kumod refuses to start with it
+// instead of pretending instances could run.
+func newHypervisor(cfg *config.Config) (hypervisor.Hypervisor, error) {
+	switch cfg.Hypervisor {
+	case config.HypervisorFake:
+		return fake.New(fake.Config{Subnet: fakeSubnet}), nil
+	case config.HypervisorLibvirt:
+		return nil, fmt.Errorf("%w: the libvirt backend is not implemented yet (M3.1); "+
+			"run with KUMO_HYPERVISOR=fake", hypervisor.ErrNotImplemented)
+	default:
+		return nil, fmt.Errorf("%w: %q", config.ErrInvalidHypervisor, cfg.Hypervisor)
+	}
 }
 
 // ginMode keeps gin's own logs in step with KUMO_LOG_LEVEL.

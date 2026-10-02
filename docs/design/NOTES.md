@@ -70,3 +70,34 @@ Newest entries last. Each entry references the milestone/task it came from.
   maintenance tasks, and services use the sqlc queries.
 - **`store.Open` creates the data directory** (0700) when it is missing, so a
   fresh install does not need `mkdir -p /var/lib/kumo`.
+
+## M0.4 — Hypervisor
+
+- **`internal/hypervisor` is the whole contract**: interface, DTOs
+  (`InfraConfig`, `ImageInfo`, `RootDiskSpec`, `CloudInit`, `DomainSpec`,
+  `DomainInfo`, `Capacity`, `DomainEvent`) and the sentinel errors
+  `ErrNotFound`/`ErrAlreadyExists`/`ErrInvalidState`/`ErrNotImplemented`. Every
+  operation is also addressable by a `hypervisor.Op`, which the fake uses for
+  failure injection.
+- **The fake is the reference implementation** of the state machine: a domain is
+  created by `DefineAndStart` (needs its root disk volume, so a failed launch
+  is visible), `Start` only from `shutoff`, `Shutdown` only from `running`,
+  `Destroy` is idempotent like libvirt, `Reboot`/`Reset` need `running`.
+  Invalid transitions return `ErrInvalidState`, unknown ids `ErrNotFound` —
+  services decide which of those are tolerable during a partial teardown.
+- **The fake is a synchronous in-memory implementation**; `Latency` is applied
+  in one place (`Fake.begin`) together with the context and failure checks, so
+  every method honours `ctx` the same way and tests can drive timeouts.
+- **`EnsureInfra` only records its arguments in the fake** (it must not touch
+  the host); the real backend creates the pool directories and the network in
+  M3.2. The fake still needs `EnsureInfra` to know the pool names, which is
+  what routes volume keys.
+- **The backend is chosen in `cmd/kumod`**: a small `newHypervisor` switch keeps
+  `internal/hypervisor` free of a dependency on its own implementations (the
+  fake imports the parent package for the DTOs). `KUMO_HYPERVISOR=libvirt`
+  currently fails fast with `hypervisor.ErrNotImplemented` — the real backend
+  lands in M3.1, and a control plane that boots without one would be lying about
+  what it can do.
+- **`/readyz` now probes `db` and `hypervisor`**, and `/api/v1/system/info`
+  reports the backend from `system.HypervisorChecker`, so the seam introduced in
+  M0.2 is exercised end to end.
