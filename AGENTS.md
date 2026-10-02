@@ -32,7 +32,7 @@ make deps          # go mod download + npm ci in web/
 make dev           # backend (air) on :8080 + vite on :5173
 make build         # web build -> embed -> go build -> bin/kumod
 make test          # go test ./... -race  +  npm test
-make lint          # golangci-lint run  +  eslint + tsc --noEmit
+make lint          # golangci-lint run  +  oxlint + tsc --noEmit
 make fmt           # gofmt/goimports + prettier
 make migrate-new name=add_foo   # new goose migration
 make sqlc          # regenerate sqlc code after editing SQL

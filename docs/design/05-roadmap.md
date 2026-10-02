@@ -12,7 +12,7 @@ Work through tasks **in order**, one per PR. Each task lists acceptance criteria
   AC: migrations apply on empty DB; `make sqlc` clean diff.
 - [ ] **M0.4 Hypervisor interface + fake**: interface, fake impl with state machine, wiring by `KUMO_HYPERVISOR`.
   AC: fake unit tests cover start/stop/destroy/list and injected failures.
-- [ ] **M0.5 Frontend skeleton**: Vite + TS + Cloudscape + RTK + Router, `ConsoleLayout` (TopNavigation, SideNavigation, breadcrumbs, Flashbar) with placeholder pages, Vite proxy, ESLint/Prettier/Vitest.
+- [ ] **M0.5 Frontend skeleton**: Vite + TS + Cloudscape + RTK + Router, `ConsoleLayout` (TopNavigation, SideNavigation, breadcrumbs, Flashbar) with placeholder pages, Vite proxy, Oxlint/Prettier/Vitest.
   AC: `npm run build` OK; layout renders with nav to Instances/Images/Key pairs.
 - [ ] **M0.6 Embed + OpenAPI**: `internal/webui` serves `web/dist` with SPA fallback; `api/openapi.yaml` derived from `01-api.md`; TS type generation.
   AC: `make build` yields a single binary serving the UI at `/`.
