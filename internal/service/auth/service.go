@@ -105,6 +105,98 @@ func New(opts Options) (*Service, error) {
 	}, nil
 }
 
+// CreateAdmin adds another administrator. It backs `kumod admin create`, which
+// is how a second admin is made once the first-run setup is closed. The
+// username is unique, case-insensitively.
+func (s *Service) CreateAdmin(ctx context.Context, username, password string) (User, error) {
+	if err := validateCredentials(username, password); err != nil {
+		return User{}, err
+	}
+
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return User{}, fmt.Errorf("hash password: %w", err)
+	}
+
+	now := s.now().UTC()
+	row, err := s.store.CreateUser(ctx, sqlc.CreateUserParams{
+		ID:           id.ULID(),
+		Username:     username,
+		PasswordHash: hash,
+		Role:         string(auth.RoleAdmin),
+		CreatedAt:    formatTime(now),
+		UpdatedAt:    formatTime(now),
+	})
+	if err != nil {
+		if isUniqueViolation(err) {
+			return User{}, fmt.Errorf("%w: the username %q is taken", service.ErrAlreadyExists, username)
+		}
+		return User{}, fmt.Errorf("create user: %w", err)
+	}
+
+	s.logger.InfoContext(ctx, "auth: administrator created", "user_id", row.ID, "username", row.Username)
+
+	return userFromRow(row), nil
+}
+
+// ResetPassword replaces a user's password and revokes every refresh token they
+// hold, so a reset signs out the sessions that may have been opened with the old
+// password. It backs `kumod admin reset-password`, the v1 recovery path.
+func (s *Service) ResetPassword(ctx context.Context, username, password string) error {
+	if err := validateCredentials(username, password); err != nil {
+		return err
+	}
+
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return fmt.Errorf("hash password: %w", err)
+	}
+
+	now := s.now().UTC()
+	err = s.store.WithTx(ctx, func(ctx context.Context, tx *store.Tx) error {
+		user, err := tx.GetUserByUsername(ctx, sqlc.GetUserByUsernameParams{Username: username})
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("%w: no user named %q", service.ErrNotFound, username)
+			}
+			return fmt.Errorf("get user by username: %w", err)
+		}
+
+		if _, err := tx.UpdateUserPassword(ctx, sqlc.UpdateUserPasswordParams{
+			ID:           user.ID,
+			PasswordHash: hash,
+			UpdatedAt:    formatTime(now),
+		}); err != nil {
+			return fmt.Errorf("update user password: %w", err)
+		}
+
+		revoked, err := tx.RevokeRefreshTokensForUser(ctx, sqlc.RevokeRefreshTokensForUserParams{
+			UserID:    user.ID,
+			RevokedAt: nullableString(formatTime(now)),
+		})
+		if err != nil {
+			return fmt.Errorf("revoke refresh tokens: %w", err)
+		}
+
+		s.logger.InfoContext(ctx, "auth: password reset",
+			"user_id", user.ID, "username", user.Username, "revoked_tokens", revoked)
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// isUniqueViolation reports a UNIQUE constraint failure. SQLite error codes are
+// matched on their text because modernc.org/sqlite does not export a typed
+// error for them.
+func isUniqueViolation(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
 // Setup creates the first administrator. It is only allowed while the instance
 // has no users; afterwards the endpoint answers 409.
 func (s *Service) Setup(ctx context.Context, username, password string) (User, error) {

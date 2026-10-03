@@ -268,6 +268,25 @@ func (q *Queries) RevokeRefreshTokenFamily(ctx context.Context, arg RevokeRefres
 	return result.RowsAffected()
 }
 
+const revokeRefreshTokensForUser = `-- name: RevokeRefreshTokensForUser :execrows
+UPDATE refresh_tokens
+SET revoked_at = ?2
+WHERE user_id = ?1 AND revoked_at IS NULL
+`
+
+type RevokeRefreshTokensForUserParams struct {
+	UserID    string         `json:"user_id"`
+	RevokedAt sql.NullString `json:"revoked_at"`
+}
+
+func (q *Queries) RevokeRefreshTokensForUser(ctx context.Context, arg RevokeRefreshTokensForUserParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, revokeRefreshTokensForUser, arg.UserID, arg.RevokedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const updateUserPassword = `-- name: UpdateUserPassword :one
 UPDATE users
 SET password_hash = ?2, updated_at = ?3

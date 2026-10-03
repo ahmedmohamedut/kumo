@@ -21,7 +21,7 @@ Work through tasks **in order**, one per PR. Each task lists acceptance criteria
 
 - [x] **M1.1 Backend auth**: argon2id hashing, `users` queries, `/auth/setup|login|refresh|logout|me`, JWT middleware, refresh rotation with reuse detection, login rate limit, role checks (`RequireRole`).
   AC: tests for happy path, wrong password (uniform error), expired/forged JWT, refresh reuse revokes family, setup only when no users.
-- [ ] **M1.2 CLI helpers**: `kumod admin create|reset-password`, `kumod version`, `kumod doctor` (stub).
+- [x] **M1.2 CLI helpers**: `kumod admin create|reset-password`, `kumod version`, `kumod doctor` (stub).
   AC: reset-password works against an existing DB.
 - [ ] **M1.3 Login UI**: `/login`, `/setup`, `RequireAuth`, single-flight refresh baseQuery, sign-out in user menu.
   AC: component tests for login success/failure; reload keeps session via refresh cookie; 401 triggers redirect.

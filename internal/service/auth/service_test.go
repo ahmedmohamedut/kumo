@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 const (
 	testPassword   = "correct horse battery staple"
 	testRefreshTTL = 7 * 24 * time.Hour
+	testUsername   = "ada"
 )
 
 func TestSetupCreatesTheFirstAdministrator(t *testing.T) {
@@ -26,11 +28,11 @@ func TestSetupCreatesTheFirstAdministrator(t *testing.T) {
 
 	svc, _, _ := newService(t)
 
-	user, err := svc.Setup(t.Context(), "ada", testPassword)
+	user, err := svc.Setup(t.Context(), testUsername, testPassword)
 	if err != nil {
 		t.Fatalf("Setup() error = %v", err)
 	}
-	if user.Username != "ada" || user.Role != kumoauth.RoleAdmin {
+	if user.Username != testUsername || user.Role != kumoauth.RoleAdmin {
 		t.Errorf("Setup() = %+v, want the admin ada", user)
 	}
 	if user.CreatedAt.IsZero() {
@@ -50,7 +52,7 @@ func TestSetupIsOnlyOpenOnce(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := newService(t)
-	mustSetup(t, svc, "ada")
+	mustSetup(t, svc, testUsername)
 
 	// A second setup must not create a second administrator, even from another
 	// caller.
@@ -75,8 +77,8 @@ func TestSetupRejectsWeakCredentials(t *testing.T) {
 		{name: "a short username", username: "ab", password: testPassword, field: "username"},
 		{name: "a long username", username: strings.Repeat("a", 65), password: testPassword, field: "username"},
 		{name: "a padded username", username: " ada", password: testPassword, field: "username"},
-		{name: "a short password", username: "ada", password: "123456789", field: "password"},
-		{name: "a long password", username: "ada", password: strings.Repeat("a", 257), field: "password"},
+		{name: "a short password", username: testUsername, password: "123456789", field: "password"},
+		{name: "a long password", username: testUsername, password: strings.Repeat("a", 257), field: "password"},
 	}
 
 	for _, tt := range tests {
@@ -109,7 +111,7 @@ func TestSetupStoresOnlyTheHash(t *testing.T) {
 	t.Parallel()
 
 	svc, db, _ := newService(t)
-	mustSetup(t, svc, "ada")
+	mustSetup(t, svc, testUsername)
 
 	var hash string
 	err := db.DB().QueryRowContext(t.Context(),
@@ -130,9 +132,9 @@ func TestLogin(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := newService(t)
-	mustSetup(t, svc, "ada")
+	mustSetup(t, svc, testUsername)
 
-	session, err := svc.Login(t.Context(), "ada", testPassword, "203.0.113.4", "curl/8")
+	session, err := svc.Login(t.Context(), testUsername, testPassword, "203.0.113.4", "curl/8")
 	if err != nil {
 		t.Fatalf("Login() error = %v", err)
 	}
@@ -142,7 +144,7 @@ func TestLogin(t *testing.T) {
 	if session.AccessExpiry != 15*time.Minute {
 		t.Errorf("AccessExpiry = %v, want 15m", session.AccessExpiry)
 	}
-	if session.User.Username != "ada" || session.User.Role != kumoauth.RoleAdmin {
+	if session.User.Username != testUsername || session.User.Role != kumoauth.RoleAdmin {
 		t.Errorf("User = %+v, want the admin ada", session.User)
 	}
 }
@@ -151,7 +153,7 @@ func TestLoginIsCaseInsensitive(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := newService(t)
-	mustSetup(t, svc, "ada")
+	mustSetup(t, svc, testUsername)
 
 	if _, err := svc.Login(t.Context(), "Ada", testPassword, "", ""); err != nil {
 		t.Errorf("Login() error = %v, want the username to match case-insensitively", err)
@@ -162,9 +164,9 @@ func TestLoginRejectsAWrongPassword(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := newService(t)
-	mustSetup(t, svc, "ada")
+	mustSetup(t, svc, testUsername)
 
-	session, err := svc.Login(t.Context(), "ada", "wrong password", "", "")
+	session, err := svc.Login(t.Context(), testUsername, "wrong password", "", "")
 	if !errors.Is(err, service.ErrUnauthorized) {
 		t.Fatalf("Login() error = %v, want ErrUnauthorized", err)
 	}
@@ -177,7 +179,7 @@ func TestLoginAnswersTheSameWayForAnUnknownUser(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := newService(t)
-	mustSetup(t, svc, "ada")
+	mustSetup(t, svc, testUsername)
 
 	_, err := svc.Login(t.Context(), "eve", "whatever password", "", "")
 	if !errors.Is(err, service.ErrUnauthorized) {
@@ -192,22 +194,22 @@ func TestLoginIsRateLimited(t *testing.T) {
 	t.Parallel()
 
 	svc, _, clock := newService(t)
-	mustSetup(t, svc, "ada")
+	mustSetup(t, svc, testUsername)
 
 	const addr = "203.0.113.4"
 	for attempt := range 5 {
-		if _, err := svc.Login(t.Context(), "ada", "wrong password", addr, ""); !errors.Is(err, service.ErrUnauthorized) {
+		if _, err := svc.Login(t.Context(), testUsername, "wrong password", addr, ""); !errors.Is(err, service.ErrUnauthorized) {
 			t.Fatalf("attempt %d: error = %v, want ErrUnauthorized", attempt+1, err)
 		}
 	}
 
 	// The right password does not buy a way past the limiter.
-	if _, err := svc.Login(t.Context(), "ada", testPassword, addr, ""); !errors.Is(err, service.ErrQuota) {
+	if _, err := svc.Login(t.Context(), testUsername, testPassword, addr, ""); !errors.Is(err, service.ErrQuota) {
 		t.Errorf("Login() error = %v, want ErrQuota after 5 failures", err)
 	}
 
 	// Another address and another user have their own budget.
-	if _, err := svc.Login(t.Context(), "ada", testPassword, "198.51.100.7", ""); err != nil {
+	if _, err := svc.Login(t.Context(), testUsername, testPassword, "198.51.100.7", ""); err != nil {
 		t.Errorf("Login() from another address: error = %v", err)
 	}
 	if _, err := svc.Login(t.Context(), "eve", "wrong password", "203.0.113.9", ""); !errors.Is(err, service.ErrUnauthorized) {
@@ -217,7 +219,7 @@ func TestLoginIsRateLimited(t *testing.T) {
 	// The window is a minute wide.
 	clock.Advance(61 * time.Second)
 
-	if _, err := svc.Login(t.Context(), "ada", testPassword, addr, ""); err != nil {
+	if _, err := svc.Login(t.Context(), testUsername, testPassword, addr, ""); err != nil {
 		t.Errorf("Login() after the window: error = %v", err)
 	}
 }
@@ -226,20 +228,20 @@ func TestALoginSuccessClearsTheRateLimit(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := newService(t)
-	mustSetup(t, svc, "ada")
+	mustSetup(t, svc, testUsername)
 
 	const addr = "203.0.113.4"
 	for range 4 {
-		if _, err := svc.Login(t.Context(), "ada", "wrong password", addr, ""); !errors.Is(err, service.ErrUnauthorized) {
+		if _, err := svc.Login(t.Context(), testUsername, "wrong password", addr, ""); !errors.Is(err, service.ErrUnauthorized) {
 			t.Fatalf("error = %v, want ErrUnauthorized", err)
 		}
 	}
-	if _, err := svc.Login(t.Context(), "ada", testPassword, addr, ""); err != nil {
+	if _, err := svc.Login(t.Context(), testUsername, testPassword, addr, ""); err != nil {
 		t.Fatalf("Login() error = %v", err)
 	}
 
 	// The counter is gone, so a fresh set of attempts is allowed.
-	if _, err := svc.Login(t.Context(), "ada", "wrong password", addr, ""); !errors.Is(err, service.ErrUnauthorized) {
+	if _, err := svc.Login(t.Context(), testUsername, "wrong password", addr, ""); !errors.Is(err, service.ErrUnauthorized) {
 		t.Errorf("error = %v, want ErrUnauthorized rather than ErrQuota", err)
 	}
 }
@@ -248,9 +250,9 @@ func TestRefreshRotatesTheToken(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := newService(t)
-	mustSetup(t, svc, "ada")
+	mustSetup(t, svc, testUsername)
 
-	session := mustLogin(t, svc, "ada")
+	session := mustLogin(t, svc, testUsername)
 	rotated, err := svc.Refresh(t.Context(), session.RefreshToken, "curl/9")
 	if err != nil {
 		t.Fatalf("Refresh() error = %v", err)
@@ -281,7 +283,7 @@ func TestRefreshRejectsAnUnknownToken(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := newService(t)
-	mustSetup(t, svc, "ada")
+	mustSetup(t, svc, testUsername)
 
 	if _, err := svc.Refresh(t.Context(), "not-a-token", ""); !errors.Is(err, service.ErrUnauthorized) {
 		t.Errorf("Refresh() error = %v, want ErrUnauthorized", err)
@@ -292,9 +294,9 @@ func TestRefreshReuseRevokesTheWholeFamily(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := newService(t)
-	mustSetup(t, svc, "ada")
+	mustSetup(t, svc, testUsername)
 
-	session := mustLogin(t, svc, "ada")
+	session := mustLogin(t, svc, testUsername)
 	rotated, err := svc.Refresh(t.Context(), session.RefreshToken, "")
 	if err != nil {
 		t.Fatalf("Refresh() error = %v", err)
@@ -309,7 +311,7 @@ func TestRefreshReuseRevokesTheWholeFamily(t *testing.T) {
 	}
 
 	// Logging in again works: the family is dead, not the user.
-	if _, err := svc.Login(t.Context(), "ada", testPassword, "", ""); err != nil {
+	if _, err := svc.Login(t.Context(), testUsername, testPassword, "", ""); err != nil {
 		t.Errorf("Login() after a replay: error = %v", err)
 	}
 }
@@ -318,9 +320,9 @@ func TestRefreshRejectsAnExpiredToken(t *testing.T) {
 	t.Parallel()
 
 	svc, _, clock := newService(t)
-	mustSetup(t, svc, "ada")
+	mustSetup(t, svc, testUsername)
 
-	session := mustLogin(t, svc, "ada")
+	session := mustLogin(t, svc, testUsername)
 
 	clock.Advance(testRefreshTTL + time.Second)
 
@@ -339,9 +341,9 @@ func TestLogout(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := newService(t)
-	mustSetup(t, svc, "ada")
+	mustSetup(t, svc, testUsername)
 
-	session := mustLogin(t, svc, "ada")
+	session := mustLogin(t, svc, testUsername)
 
 	if err := svc.Logout(t.Context(), session.RefreshToken); err != nil {
 		t.Fatalf("Logout() error = %v", err)
@@ -366,9 +368,9 @@ func TestLogoutDoesNotTouchTheRestOfTheFamily(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := newService(t)
-	mustSetup(t, svc, "ada")
+	mustSetup(t, svc, testUsername)
 
-	session := mustLogin(t, svc, "ada")
+	session := mustLogin(t, svc, testUsername)
 	rotated, err := svc.Refresh(t.Context(), session.RefreshToken, "")
 	if err != nil {
 		t.Fatalf("Refresh() error = %v", err)
@@ -386,13 +388,13 @@ func TestMe(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := newService(t)
-	admin := mustSetup(t, svc, "ada")
+	admin := mustSetup(t, svc, testUsername)
 
 	user, err := svc.Me(t.Context(), admin.ID)
 	if err != nil {
 		t.Fatalf("Me() error = %v", err)
 	}
-	if user.Username != "ada" || user.Role != kumoauth.RoleAdmin {
+	if user.Username != testUsername || user.Role != kumoauth.RoleAdmin {
 		t.Errorf("Me() = %+v, want the admin ada", user)
 	}
 	if user.CreatedAt.IsZero() {
@@ -408,8 +410,8 @@ func TestRefreshTokenHashesAreStoredNotTokens(t *testing.T) {
 	t.Parallel()
 
 	svc, db, _ := newService(t)
-	mustSetup(t, svc, "ada")
-	session := mustLogin(t, svc, "ada")
+	mustSetup(t, svc, testUsername)
+	session := mustLogin(t, svc, testUsername)
 
 	var stored string
 	err := db.DB().QueryRowContext(t.Context(),
@@ -541,4 +543,124 @@ func testSigner(t *testing.T) *kumoauth.Signer {
 		t.Fatalf("NewSigner(): %v", err)
 	}
 	return signer
+}
+
+func TestCreateAdmin(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := newService(t)
+
+	user, err := svc.CreateAdmin(t.Context(), testUsername, testPassword)
+	if err != nil {
+		t.Fatalf("CreateAdmin() error = %v", err)
+	}
+	if user.Username != testUsername || user.Role != kumoauth.RoleAdmin {
+		t.Errorf("CreateAdmin() = %+v, want the admin ada", user)
+	}
+
+	if _, err := svc.CreateAdmin(t.Context(), "eve", testPassword); err != nil {
+		t.Fatalf("CreateAdmin() for a second admin: error = %v", err)
+	}
+
+	if _, err := svc.Login(t.Context(), "eve", testPassword, "", ""); err != nil {
+		t.Errorf("Login() as the second admin: error = %v", err)
+	}
+}
+
+func TestCreateAdminRejectsATakenUsername(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := newService(t)
+	mustSetup(t, svc, testUsername)
+
+	// The username is unique case-insensitively, so a second "ADA" is refused.
+	for _, username := range []string{testUsername, "ADA", "Ada"} {
+		if _, err := svc.CreateAdmin(t.Context(), username, testPassword); !errors.Is(err, service.ErrAlreadyExists) {
+			t.Errorf("CreateAdmin(%q) error = %v, want ErrAlreadyExists", username, err)
+		}
+	}
+}
+
+func TestCreateAdminValidates(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := newService(t)
+
+	if _, err := svc.CreateAdmin(t.Context(), "ab", testPassword); err == nil {
+		t.Error("CreateAdmin() with a short username error = nil, want a validation error")
+	}
+	if _, err := svc.CreateAdmin(t.Context(), testUsername, "short"); err == nil {
+		t.Error("CreateAdmin() with a short password error = nil, want a validation error")
+	}
+}
+
+func TestResetPassword(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := newService(t)
+	mustSetup(t, svc, testUsername)
+
+	const newPassword = "a brand new passphrase"
+	if err := svc.ResetPassword(t.Context(), testUsername, newPassword); err != nil {
+		t.Fatalf("ResetPassword() error = %v", err)
+	}
+
+	if _, err := svc.Login(t.Context(), testUsername, testPassword, "", ""); !errors.Is(err, service.ErrUnauthorized) {
+		t.Errorf("Login() with the old password: error = %v, want ErrUnauthorized", err)
+	}
+	if _, err := svc.Login(t.Context(), testUsername, newPassword, "", ""); err != nil {
+		t.Errorf("Login() with the new password: error = %v", err)
+	}
+
+	// The username is matched case-insensitively, like everywhere else.
+	if err := svc.ResetPassword(t.Context(), "ADA", "yet another passphrase"); err != nil {
+		t.Errorf("ResetPassword() with a different case: error = %v", err)
+	}
+}
+
+func TestResetPasswordRevokesRefreshTokens(t *testing.T) {
+	t.Parallel()
+
+	svc, db, _ := newService(t)
+	mustSetup(t, svc, testUsername)
+
+	session := mustLogin(t, svc, testUsername)
+	if err := svc.ResetPassword(t.Context(), testUsername, "a brand new passphrase"); err != nil {
+		t.Fatalf("ResetPassword() error = %v", err)
+	}
+
+	// A reset is the operator telling us the old password is compromised, so
+	// every session it opened has to die with it.
+	if _, err := svc.Refresh(t.Context(), session.RefreshToken, ""); !errors.Is(err, service.ErrUnauthorized) {
+		t.Errorf("Refresh() after a reset: error = %v, want ErrUnauthorized", err)
+	}
+
+	var revoked sql.NullString
+	err := db.DB().QueryRowContext(t.Context(),
+		`SELECT revoked_at FROM refresh_tokens WHERE user_id = ?`, session.User.ID).Scan(&revoked)
+	if err != nil {
+		t.Fatalf("read refresh_tokens: %v", err)
+	}
+	if !revoked.Valid {
+		t.Error("the refresh token is still live after a reset")
+	}
+}
+
+func TestResetPasswordRejects(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := newService(t)
+	mustSetup(t, svc, testUsername)
+
+	if err := svc.ResetPassword(t.Context(), "nobody", testPassword); !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("ResetPassword() error = %v, want ErrNotFound", err)
+	}
+	if err := svc.ResetPassword(t.Context(), testUsername, "short"); err == nil {
+		t.Error("ResetPassword() with a short password error = nil, want a validation error")
+	}
+
+	// A rejected reset leaves the password alone.
+	if _, err := svc.Login(t.Context(), testUsername, testPassword, "", ""); err != nil {
+		t.Errorf("Login(): error = %v, want the original password to still work", err)
+	}
 }

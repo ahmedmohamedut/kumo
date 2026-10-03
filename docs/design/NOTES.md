@@ -245,3 +245,45 @@ Newest entries last. Each entry references the milestone/task it came from.
 - **The logout cookie uses `Path=/api/v1/auth`** and is expired with `MaxAge=-1`,
   which is the only way to delete a cookie from the browser: it has to match the
   path and name it was set with.
+
+## M1.2 — CLI helpers
+
+- **The command line lives in `internal/cli`, and `cmd/kumod` is only wiring.**
+  `cli.Run(ctx, cli.Env{Args, Stdin, Stdout, Stderr})` returns an exit code, so
+  every command (`serve`, `admin create`, `admin reset-password`, `doctor`,
+  `version`) is testable without spawning a process or touching the real
+  environment. `serve` moved out of `main.go` for the same reason: AGENTS.md asks
+  for wiring-only `main()`, and the server path is now covered by the same
+  dispatch the tests use.
+- **No password flag, ever.** `kumod admin create --password` would put the secret
+  in `argv`, which every process on the host can read through `/proc`. The
+  password comes from the first line of stdin (`--password-stdin`) or from
+  `KUMO_ADMIN_PASSWORD`, and the policy is checked *before* the database is
+  opened so a typo is reported without touching the file. v1 has no interactive
+  prompt: that would need terminal handling (and a `x/term`-style dependency)
+  for no gain, since an operator can pipe a file.
+- **`admin create` is for the second admin, not the first one.** The first-run
+  path stays `POST /auth/setup`, which only works while the instance has no
+  users; `CreateAdmin` is what an operator uses on a running instance. A taken
+  username is `already_exists`, matched case-insensitively to match the
+  `COLLATE NOCASE` unique index rather than by parsing the driver error type.
+- **`admin reset-password` revokes every refresh token of that user, in the same
+  transaction as the password update.** A reset means the old password is
+  compromised; leaving the sessions it opened alive would make the command
+  useless for exactly the incident it exists for.
+- **`doctor` is honest about what it does not check yet.** It verifies the
+  configuration, the data directory (including a write probe), the free disk
+  space, the database (open + migrate + user count), the signing key (creating
+  it when missing, so a fresh host is ready to start) and the hypervisor backend.
+  The libvirt socket, `/dev/kvm`, pools and firewall checks of
+  `04-libvirt-integration.md` §8 are printed as `skip` with the milestone that
+  implements them, instead of being faked. `doctor` fails when the configured
+  backend is libvirt and M3.1 has not landed, because the server would refuse to
+  start for the same reason.
+- **Free disk space uses `syscall.Statfs` behind a `//go:build linux` tag.** The
+  doctor reports "not measurable" elsewhere rather than pulling in
+  `golang.org/x/sys`, which AGENTS.md would want approved first.
+- **A CLI invocation of `kumod admin …` opens the database with `store.Open`, so
+  migrations still apply.** The commands must work against a database a previous
+  version wrote, and a migration is the only thing that can guarantee the schema
+  is what the queries expect.

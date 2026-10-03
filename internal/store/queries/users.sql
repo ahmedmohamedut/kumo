@@ -43,6 +43,11 @@ UPDATE refresh_tokens
 SET revoked_at = ?2
 WHERE family_id = ?1 AND revoked_at IS NULL;
 
+-- name: RevokeRefreshTokensForUser :execrows
+UPDATE refresh_tokens
+SET revoked_at = ?2
+WHERE user_id = ?1 AND revoked_at IS NULL;
+
 -- name: DeleteExpiredRefreshTokens :execrows
 DELETE FROM refresh_tokens
 WHERE expires_at < ?1;

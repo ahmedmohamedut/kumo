@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // SecretSize is the length of the HMAC key in bytes. 32 bytes is the smallest
@@ -127,4 +128,21 @@ func GenerateSecret() ([]byte, error) {
 		return nil, fmt.Errorf("auth: generate signing key: %w", err)
 	}
 	return secret, nil
+}
+
+// NewSignerFromFile loads the signing key at path, generating it on first run,
+// and returns a Signer for it. It is the one place that pairs a key file with a
+// lifetime, so the server and the CLI cannot drift apart.
+func NewSignerFromFile(path string, access time.Duration) (*Signer, error) {
+	secret, err := LoadOrCreateSecret(path)
+	if err != nil {
+		return nil, err
+	}
+
+	signer, err := NewSigner(secret, access)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", err, ErrWeakSecret)
+	}
+
+	return signer, nil
 }
