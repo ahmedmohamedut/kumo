@@ -62,9 +62,10 @@ test-libvirt: ## Run the opt-in integration tests against a real libvirtd
 	$(GO) test -tags libvirt $(PKGS) -count=1 -timeout 30m
 
 .PHONY: lint
-lint: ## Run golangci-lint, oxlint and tsc
+lint: ## Run golangci-lint, oxlint, prettier --check and tsc
 	$(GO) tool golangci-lint run
 	$(NPM) --prefix $(WEB) run lint
+	$(NPM) --prefix $(WEB) run format:check --if-present
 	$(NPM) --prefix $(WEB) run typecheck --if-present
 
 .PHONY: fmt

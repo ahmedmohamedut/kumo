@@ -101,3 +101,50 @@ Newest entries last. Each entry references the milestone/task it came from.
 - **`/readyz` now probes `db` and `hypervisor`**, and `/api/v1/system/info`
   reports the backend from `system.HypervisorChecker`, so the seam introduced in
   M0.2 is exercised end to end.
+
+## M0.5 — Frontend skeleton
+
+- **The Vite/React scaffold was replaced, not extended**: the starter
+  `App.tsx`/`App.css`/logo assets are gone; `src/main.tsx` is now the only
+  entrypoint and mounts Redux → PageMeta → Router → Cloudscape
+  `AppRouter` with `@cloudscape-design/global-styles`.
+- **Chosen layout**: `ConsoleLayout` (`src/components/layout/ConsoleLayout.tsx`)
+  with a fixed `TopNavigation` (brand, service menu, account menu, theme
+  switch), side `Navigation` with the four sections from `03-frontend.md`
+  (`Overview`, `Compute`, `Images`, `Security`), `Breadcrumbs` fed by a
+  `PageMetaContext`, and `Flashbar` fed by `features/notifications`. Pages are
+  placeholder `ContentLayout` shells until their milestone lands.
+- **`PageMetaContext` lives in its own module and stores only primitives**
+  (array of `PageMetaItem`), with the provider keyed by the memoised array.
+  An earlier version stored a render callback in state, which re-rendered the
+  shell on every navigation; the context value is now compared by key so
+  breadcrumb updates do not cascade.
+- **Navigation data is derived, not duplicated**: `navigation.ts` exports the
+  item list once, builds the Cloudscape shape from it, and computes
+  `activeHref` by prefix match (`/instances/i-1` highlights `Instances`).
+  A test asserts every navigable route has an entry, so a new route cannot be
+  added without navigation.
+- **Theme preference is persisted by Cloudscape's `TopNavigation`**
+  (`visualRef` + `onChange` → `applyMode`), which is why there is no separate
+  theme slice or `localStorage` code.
+- **`useAppDispatch`/`useAppSelector` are typed hooks in `app/store.ts`** and
+  re-exported from the feature files; RTK Query keeps server state, so the
+  only global slice in M0.5 is `notifications` (flashbar items). `app/api.ts`
+  uses `credentials: 'include'` so the refresh cookie rides along once auth
+  exists in M1.
+- **Vite proxies `/api` to `http://127.0.0.1:8080`** (no rewrite — the API is
+  already namespaced) so `make dev` gives a same-origin console. Verified by
+  running `kumod` with `KUMO_HYPERVISOR=fake` on `:8080` and curling
+  `http://localhost:5199/api/v1/system/info` through the dev server.
+- **Testing**: Vitest + Testing Library + jsdom, with `ResizeObserver` and
+  `matchMedia` stubs in `src/test/setup.ts` (Cloudscape needs both). 17 tests
+  cover layout regions/navigation/theme toggle, notification reducer
+  behaviour, and `activeHref`. MSW is intentionally not added yet — no
+  component fetches in M0.5, and M0.6/M1.2 add it with the first real API
+  slice. `vitest` transforms are slow in this environment (first run ~1 min),
+  so `make test` can look hung; it is not.
+- **`oxlint` config only enables the React hooks rules**; it caught
+  `only-export-components` on `pageMeta.tsx`, which is allowed via
+  `allowExportNames`. Oxlint is used instead of ESLint per the M0 plan.
+- **Prettier is checked in CI** (`format:check` wired into `make lint`,
+  `format` writes). `make fmt` still runs `golangci-lint fmt` for Go.
