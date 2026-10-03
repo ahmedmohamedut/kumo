@@ -98,7 +98,16 @@ describe('ConsoleLayout', () => {
 
     await user.click(sideNavigation().getByRole('link', { name: 'Key pairs' }))
 
-    expect(await screen.findByRole('heading', { name: 'Key pairs' })).toBeInTheDocument()
+    // The list header carries the resource count once they load, as 03-frontend.md
+    // §6.1 asks for; this test only asserts that the page is the key pairs one.
+    expect(
+      // The list header shows a resource count next to the title once the list
+      // loads. Cloudscape separates the two with CSS, so the accessible name
+      // reads "Key pairs(2)"; match the whitespace leniently and allow the
+      // counter to be absent or present, since this test only cares that the
+      // key pairs page is what rendered.
+      await screen.findByRole('heading', { name: /^Key pairs\s*(\(\d+\))?$/ }),
+    ).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Dashboard' })).not.toBeInTheDocument()
   })
 

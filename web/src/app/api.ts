@@ -87,3 +87,47 @@ export const kumoApi = createApi({
   tagTypes: ['Instance', 'Image', 'KeyPair', 'Task'],
   endpoints: () => ({}),
 })
+
+/** Store is the slice of the Redux store `uncachedRequest` needs. */
+export interface UncachedStore {
+  getState: () => RootState
+  dispatch: AppDispatch
+}
+
+/**
+ * uncachedRequest runs one request through the same authenticated baseQuery as
+ * every other call, but hands the response straight back instead of letting RTK
+ * Query keep it.
+ *
+ * A mutation's result lives in the store for as long as the store does:
+ * `keepUnusedDataFor` is a query-only option, and the trigger's `reset()` clears
+ * the hook's view of the result rather than the cached entry. That is the right
+ * trade for an instance id and the wrong one for a private key — the create
+ * response is the only place a generated key exists, so it must not outlive the
+ * dialog showing it (03-frontend.md §6.5).
+ *
+ * The 401 handling is `withAuth` itself, so an expired access token still
+ * triggers a refresh and a replay exactly as it would for a cached endpoint.
+ */
+export async function uncachedRequest(
+  request: FetchArgs,
+  store: UncachedStore,
+  endpointName: string,
+): Promise<{ data: unknown; meta?: unknown } | { error: FetchBaseQueryError }> {
+  // `fetchBaseQuery` reads getState/dispatch/signal off its second argument and
+  // nothing else at runtime; the rest exist only to satisfy its type. The abort
+  // controller gives the request a real signal to be cancelled through.
+  const api = {
+    getState: store.getState,
+    dispatch: store.dispatch,
+    extra: undefined,
+    endpoint: endpointName,
+    forced: undefined,
+    type: 'query',
+    signal: new AbortController().signal,
+  }
+
+  return withAuth(request, api as unknown as Parameters<typeof withAuth>[1], {
+    endpoint: endpointName,
+  })
+}
