@@ -235,9 +235,15 @@ func (s *Service) Setup(ctx context.Context, username, password string) (User, e
 	return userFromRow(row), nil
 }
 
+// errLoginFailed is the single answer to every credential problem. One message
+// for an unknown username, a wrong password and an unreadable hash keeps the
+// endpoint from enumerating users, and unlike the bare ErrUnauthorized sentinel
+// it says something an operator reading the console can act on.
+var errLoginFailed = fmt.Errorf("the username or password is wrong: %w", service.ErrUnauthorized)
+
 // Login verifies a password and starts a refresh-token family. The failure is
 // deliberately uniform: an unknown username, a wrong password and a corrupt
-// hash all answer ErrUnauthorized, so the endpoint cannot be used to find out
+// hash all answer errLoginFailed, so the endpoint cannot be used to find out
 // which usernames exist.
 func (s *Service) Login(ctx context.Context, username, password, remoteAddr, userAgent string) (Session, error) {
 	if s.limiter.blocked(remoteAddr, username) {
@@ -251,7 +257,7 @@ func (s *Service) Login(ctx context.Context, username, password, remoteAddr, use
 		if errors.Is(err, sql.ErrNoRows) {
 			s.equalizeTiming()
 			s.limiter.failed(remoteAddr, username)
-			return Session{}, service.ErrUnauthorized
+			return Session{}, errLoginFailed
 		}
 		return Session{}, fmt.Errorf("get user by username: %w", err)
 	}
@@ -261,11 +267,11 @@ func (s *Service) Login(ctx context.Context, username, password, remoteAddr, use
 		// A hash this package cannot read is an operator problem, but answering
 		// 500 would tell an attacker which usernames exist. Keep it uniform.
 		s.logger.ErrorContext(ctx, "auth: stored password hash is unreadable", "user_id", row.ID, "error", err)
-		return Session{}, service.ErrUnauthorized
+		return Session{}, errLoginFailed
 	}
 	if !ok {
 		s.limiter.failed(remoteAddr, username)
-		return Session{}, service.ErrUnauthorized
+		return Session{}, errLoginFailed
 	}
 
 	session, err := s.startSession(ctx, userFromRow(row), id.ULID(), userAgent)

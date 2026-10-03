@@ -287,3 +287,57 @@ Newest entries last. Each entry references the milestone/task it came from.
   migrations still apply.** The commands must work against a database a previous
   version wrote, and a migration is the only thing that can guarantee the schema
   is what the queries expect.
+
+## M1.3 — Console login
+
+- **The session lives in `auth` slice state and nowhere else.** `{user,
+  accessToken, status}` with `status: 'unknown' | 'authenticated' | 'anonymous'`
+  (03-frontend.md §4). The access token is never persisted: `localStorage` would
+  hand it to any XSS, and the refresh cookie is `HttpOnly` anyway. `status`
+  starts `unknown` rather than `anonymous` because the first render of a reload
+  happens before the refresh cookie has been spent, and redirecting there would
+  throw a signed-in operator to the login page on every reload.
+- **`baseQuery` is a three-step ladder: attach, refresh once, replay.** A console
+  page may stay open for days while an access token lives 15 minutes, so the
+  expiry is the normal case. The endpoints whose own 401 *is* the answer
+  (`login`, `setup`, `refresh`, `logout`) are excluded, or a wrong password
+  would cost a refresh round trip and dispatch a sign-out the form must ignore.
+  A second 401 is returned as is rather than retried forever.
+- **The refresh is single-flight for a reason beyond efficiency.** Refresh tokens
+  rotate, and the backend treats a replayed one as a stolen session and revokes
+  the whole family. A page load fires several requests at once; without the
+  shared promise in `app/authSession.ts`, each 401 would rotate the cookie
+  independently and lock the operator out for being busy. `api.test.ts` asserts
+  two concurrent 401s cause exactly one rotation.
+- **The refresh bypasses RTK Query on purpose** (`fetch` in `authSession.ts`, not
+  an endpoint): it is the thing every endpoint's 401 handling depends on, so it
+  cannot go through a `baseQuery`, and its answer is a token, not cacheable
+  state.
+- **`fetch` needs absolute URLs, so the base URL is `${location.origin}/api/v1`.**
+  Leaving it relative works in the browser but not in jsdom, which keeps Node's
+  `fetch`. Same-origin either way, so the `SameSite=Strict` cookie is unaffected.
+- **`/setup` signs the operator in afterwards.** `/auth/setup` creates the first
+  administrator and returns no token, so the page logs in with the credentials it
+  just submitted: making them type the same password into a second form would be
+  a strange reward for following the setup instructions.
+- **The pages supply their own `<form>`.** Cloudscape's `Form` renders no form
+  element and takes no `onSubmit`; `Button formAction="submit"` is just
+  `type="submit"`. Without a form of our own, Enter in a field would reload the
+  page. A test presses Enter for exactly that reason.
+- **Mutation triggers are called, not dispatched.** `dispatch(login({...}))` is
+  the documented shape for *queries*; dispatching a mutation trigger passes a
+  promise into the store and redux throws "Actions must be plain objects".
+- **`next` is restricted to in-app paths.** `?next=` comes from the URL, so an
+  absolute URL there would make the login page an open redirect.
+- **Sign-out clears the query cache.** `logout`'s `onQueryStarted` dispatches
+  `loggedOut()` and `resetApiState()` even when the request fails: the session is
+  over locally whether or not the server acknowledged it, and the next operator
+  must not inherit the previous one's cached lists.
+- **MSW keeps the cookie jar**, so `Set-Cookie` on login/refresh is stored and
+  sent back the way the browser does it. That is what makes the "a reload keeps
+  the session" test real: the test signs in on one store, throws it away, and the
+  new store recovers from the cookie alone.
+- **The top navigation is measured, not laid out.** Cloudscape decides what fits
+  in it with a `ResizeObserver`, so jsdom (where ours is a no-op stub) keeps the
+  offscreen copy in the DOM and cannot show the signed-in name; the tests drive
+  the menu through that copy and say why.

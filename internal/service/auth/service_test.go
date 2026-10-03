@@ -188,6 +188,10 @@ func TestLoginAnswersTheSameWayForAnUnknownUser(t *testing.T) {
 	if strings.Contains(err.Error(), "eve") {
 		t.Errorf("error = %q, want no hint that the username exists or not", err)
 	}
+	// The console shows this message, so it has to be more than the sentinel.
+	if want := "the username or password is wrong"; !strings.Contains(err.Error(), want) {
+		t.Errorf("error = %q, want it to mention %q", err.Error(), want)
+	}
 }
 
 func TestLoginIsRateLimited(t *testing.T) {

@@ -1,23 +1,89 @@
-import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react'
+import { createApi } from '@reduxjs/toolkit/query/react'
+import type { BaseQueryFn, FetchArgs, FetchBaseQueryError } from '@reduxjs/toolkit/query'
+
+import { rawBaseQuery } from '@/app/baseQuery'
+import { refreshSession } from '@/app/authSession'
+import { selectAccessToken } from '@/features/auth/authSlice'
+import type { AppDispatch, RootState } from '@/app/store'
+
+/**
+ * The endpoints that must never trigger a refresh: their own 401 is the answer.
+ * A wrong password would otherwise cost a refresh round trip and dispatch a
+ * sign-out the login page has to ignore.
+ */
+const SKIP_REFRESH = new Set(['login', 'setup', 'refresh', 'logout'])
+
+/** readEndpoint is the endpoint name RTK Query passes to the baseQuery. */
+function readEndpoint(extra: unknown): string | undefined {
+  if (typeof extra === 'object' && extra !== null && 'endpoint' in extra) {
+    const { endpoint } = extra as { endpoint?: unknown }
+    return typeof endpoint === 'string' ? endpoint : undefined
+  }
+  return undefined
+}
+
+/**
+ * withBearer adds the access token, when there is one, to a request. RTK Query
+ * types `headers` more loosely than `fetch` accepts, and every endpoint in this
+ * console passes a plain object, so the cast is safe.
+ */
+function withBearer(request: FetchArgs, accessToken: string): FetchArgs {
+  const headers = new Headers(request.headers as HeadersInit | undefined)
+  headers.set('authorization', `Bearer ${accessToken}`)
+  return { ...request, headers }
+}
+
+/**
+ * The authenticated baseQuery of the console.
+ *
+ * It attaches the in-memory access token, and on a 401 it rotates the refresh
+ * token once and replays the request — the access token is valid for 15 minutes
+ * while a console page may stay open for days, so the expiry is the normal case,
+ * not the exceptional one. The refresh is single-flight (`authSession`), and a
+ * failure there dispatches `loggedOut`, which is what `RequireAuth` turns into
+ * the redirect to `/login?next=…`.
+ */
+const withAuth: BaseQueryFn<string | FetchArgs, unknown, FetchBaseQueryError> = async (
+  args,
+  api,
+  extra,
+) => {
+  const request: FetchArgs = typeof args === 'string' ? { url: args } : args
+  const token = selectAccessToken(api.getState() as RootState)
+  const result = await rawBaseQuery(
+    token === null ? request : withBearer(request, token),
+    api,
+    extra,
+  )
+
+  if (result.error?.status !== 401) {
+    return result
+  }
+
+  if (SKIP_REFRESH.has(readEndpoint(extra) ?? '')) {
+    return result
+  }
+
+  const user = await refreshSession(api.dispatch as AppDispatch)
+  if (user === null) {
+    return result
+  }
+
+  const retried = selectAccessToken(api.getState() as RootState)
+  if (retried === null) {
+    return result
+  }
+  return rawBaseQuery(withBearer(request, retried), api, extra)
+}
 
 /**
  * The single RTK Query API for the console. Feature slices add their endpoints
  * with `kumoApi.injectEndpoints`, so `refetchOnFocus` and the cache invalidation
  * graph are shared.
- *
- * The base URL is relative: in development Vite proxies `/api` to kumod
- * (see vite.config.ts), in production the console is served by kumod itself.
  */
 export const kumoApi = createApi({
   reducerPath: 'kumoApi',
-  baseQuery: fetchBaseQuery({
-    baseUrl: '/api/v1',
-    credentials: 'include',
-    prepareHeaders: (headers) => {
-      headers.set('accept', 'application/json')
-      return headers
-    },
-  }),
+  baseQuery: withAuth,
   tagTypes: ['Instance', 'Image', 'KeyPair', 'Task'],
   endpoints: () => ({}),
 })

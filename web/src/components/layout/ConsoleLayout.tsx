@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import AppLayout from '@cloudscape-design/components/app-layout'
 import TopNavigation from '@cloudscape-design/components/top-navigation'
@@ -9,10 +9,14 @@ import type { TopNavigationProps } from '@cloudscape-design/components'
 import { useAppDispatch, useAppSelector } from '@/app/store'
 import { usePageMetaContext } from '@/app/pageMeta'
 import { toggleMode } from '@/app/theme'
+import { useLogoutMutation } from '@/features/auth/api'
+import { selectUser } from '@/features/auth/authSlice'
 import { dismiss } from '@/features/notifications/notificationsSlice'
 import { activeHref, navigationItems } from './navigation'
 
-const TOP_NAVIGATION_UTILITIES: TopNavigationProps['utilities'] = [
+type Utilities = NonNullable<TopNavigationProps['utilities']>
+
+const SERVICES_MENU: Utilities = [
   {
     type: 'menu-dropdown',
     text: 'Services',
@@ -24,23 +28,32 @@ const TOP_NAVIGATION_UTILITIES: TopNavigationProps['utilities'] = [
     ],
   },
   { type: 'button', iconName: 'status-info', text: 'kumo-01', ariaLabel: 'This node' },
-  {
-    type: 'menu-dropdown',
-    text: 'User',
-    iconName: 'user-profile',
-    ariaLabel: 'User menu',
-    items: [
-      { id: 'profile', text: 'Profile' },
-      { id: 'theme', text: 'Toggle dark mode' },
-      { id: 'signout', text: 'Sign out', disabled: true },
-    ],
-    onItemClick: ({ detail }) => {
-      if (detail.id === 'theme') {
-        toggleMode()
-      }
-    },
-  },
 ]
+
+/** userMenu is the User menu: who is signed in, and the way out. */
+function userMenu(username: string, onSignOut: () => void): Utilities {
+  return [
+    {
+      type: 'menu-dropdown',
+      text: username,
+      iconName: 'user-profile',
+      ariaLabel: 'User menu',
+      items: [
+        { id: 'profile', text: 'Profile' },
+        { id: 'theme', text: 'Toggle dark mode' },
+        { id: 'signout', text: 'Sign out' },
+      ],
+      onItemClick: ({ detail }) => {
+        if (detail.id === 'theme') {
+          toggleMode()
+        }
+        if (detail.id === 'signout') {
+          onSignOut()
+        }
+      },
+    },
+  ]
+}
 
 /**
  * ConsoleLayout is the shell every console page renders in: the Cloudscape
@@ -53,12 +66,26 @@ export function ConsoleLayout() {
   const dispatch = useAppDispatch()
   const { breadcrumbs } = usePageMetaContext()
   const notifications = useAppSelector((state) => state.notifications.items)
+  const username = useAppSelector(selectUser)?.username ?? 'User'
+  const [logout] = useLogoutMutation()
 
   const [navigationOpen, setNavigationOpen] = useState(true)
 
+  // Signing out is local first: the mutation clears the session and the query
+  // cache even when the request fails, so no sign-out can leave the console
+  // looking authenticated. A mutation trigger is called directly — `dispatch`
+  // is for queries.
+  const signOut = useCallback(() => {
+    navigate('/login', { replace: true })
+    void logout()
+  }, [logout, navigate])
+
   // TopNavigation re-measures itself whenever `utilities` changes identity, so
   // the list has to be stable across renders.
-  const utilities = useMemo(() => TOP_NAVIGATION_UTILITIES, [])
+  const utilities = useMemo(
+    () => [...SERVICES_MENU, ...userMenu(username, signOut)],
+    [username, signOut],
+  )
 
   return (
     <>

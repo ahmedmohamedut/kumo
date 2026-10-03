@@ -8,6 +8,7 @@ import { PageMetaProvider } from '@/app/pageMeta'
 import { router } from '@/app/router'
 import { store } from '@/app/store'
 import { applyStoredMode } from '@/app/theme'
+import { SessionBootstrap } from '@/features/auth/SessionBootstrap'
 
 applyStoredMode()
 
@@ -20,6 +21,7 @@ createRoot(container).render(
   <StrictMode>
     <Provider store={store}>
       <PageMetaProvider>
+        <SessionBootstrap />
         <RouterProvider router={router} />
       </PageMetaProvider>
     </Provider>
