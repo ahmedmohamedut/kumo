@@ -1,0 +1,54 @@
+package id
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"strings"
+)
+
+// ResourceIDSize is the number of lowercase hex characters after the prefix,
+// e.g. key-0a1b2c3d4e5f60718 (AGENTS.md, backend conventions). 17 hex chars
+// carry 68 bits of randomness, matching the AWS id shape the console mimics.
+const ResourceIDSize = 17
+
+// Prefixes of the resource IDs. The instance ID doubles as the libvirt domain
+// name (docs/design/02-data-model.md).
+const (
+	PrefixInstance = "i"
+	PrefixImage    = "img"
+	PrefixKeyPair  = "key"
+	PrefixTask     = "task"
+)
+
+// Resource returns "<prefix>-<17 random hex chars>". It panics only if the
+// system random source fails, which cannot be handled here usefully.
+func Resource(prefix string) string {
+	// 9 bytes hex-encode to 18 characters; one is trimmed.
+	var b [9]byte
+	_, _ = rand.Read(b[:])
+
+	return prefix + "-" + hex.EncodeToString(b[:])[:ResourceIDSize]
+}
+
+// KeyPair returns a key pair ID (key-…).
+func KeyPair() string { return Resource(PrefixKeyPair) }
+
+// HasResourceShape reports whether value looks like a resource ID with the
+// given prefix. It is a cheap guard for path parameters, not a check that the
+// resource exists.
+func HasResourceShape(prefix, value string) bool {
+	if !strings.HasPrefix(value, prefix+"-") {
+		return false
+	}
+	if len(value) != len(prefix)+1+ResourceIDSize {
+		return false
+	}
+	// DecodeString is no help here: 17 hex chars is an odd length, so the check
+	// is per character.
+	for _, ch := range value[len(prefix)+1:] {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
+			return false
+		}
+	}
+	return true
+}

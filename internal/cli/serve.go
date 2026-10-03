@@ -16,6 +16,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/hypervisor/fake"
 	"github.com/ahmedmohamedut/kumo/internal/logging"
 	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
+	"github.com/ahmedmohamedut/kumo/internal/service/keypair"
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
 	"github.com/ahmedmohamedut/kumo/internal/store"
 	"github.com/ahmedmohamedut/kumo/internal/version"
@@ -83,6 +84,11 @@ func serve(ctx context.Context, stdout io.Writer) error {
 	logger.InfoContext(ctx, "auth is ready",
 		"secret_file", cfg.JWTSecretFile, "refresh_ttl", cfg.RefreshTTL)
 
+	keyPairs, err := keypair.New(keypair.Options{Logger: logger, Store: db})
+	if err != nil {
+		return fmt.Errorf("build the key pair service: %w", err)
+	}
+
 	console, err := webui.New(logger)
 	if err != nil {
 		return fmt.Errorf("prepare web console: %w", err)
@@ -93,11 +99,12 @@ func serve(ctx context.Context, stdout io.Writer) error {
 	}
 
 	handler := api.NewHandler(api.Options{
-		Logger:  logger,
-		GinMode: ginMode(cfg.LogLevel),
-		System:  systemService,
-		Auth:    authService,
-		Signer:  signer,
+		Logger:   logger,
+		GinMode:  ginMode(cfg.LogLevel),
+		System:   systemService,
+		Auth:     authService,
+		KeyPairs: keyPairs,
+		Signer:   signer,
 		ReadyChecks: []api.Check{
 			{Name: "db", Probe: db.Ping},
 			{Name: "hypervisor", Probe: hv.Ping},

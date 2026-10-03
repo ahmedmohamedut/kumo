@@ -28,7 +28,7 @@ Work through tasks **in order**, one per PR. Each task lists acceptance criteria
 
 ## M2 — Key pairs
 
-- [ ] **M2.1 Backend**: `internal/service/keypair` + handlers: create (ed25519/rsa-4096), import (validation), list, get, delete, tags; fingerprint SHA256; private key returned once and never persisted/logged.
+- [x] **M2.1 Backend**: `internal/service/keypair` + handlers: create (ed25519/rsa-4096), import (validation), list, get, delete, tags; fingerprint SHA256; private key returned once and never persisted/logged.
   AC: tests for name validation/uniqueness, malformed/private-key-pasted import rejection, fingerprint matches `ssh-keygen -lf` for fixtures.
 - [ ] **M2.2 UI**: list, create (with private key modal, download .pem), import, delete confirm.
   AC: component tests; private key not retrievable after closing modal (no store persistence).

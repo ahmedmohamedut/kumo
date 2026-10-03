@@ -12,6 +12,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/api/middleware"
 	"github.com/ahmedmohamedut/kumo/internal/auth"
 	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
+	"github.com/ahmedmohamedut/kumo/internal/service/keypair"
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
 )
 
@@ -32,6 +33,8 @@ type Options struct {
 	System *system.Service
 	// Auth answers the /api/v1/auth endpoints.
 	Auth *authservice.Service
+	// KeyPairs answers the /api/v1/key-pairs endpoints.
+	KeyPairs *keypair.Service
 	// Signer verifies access tokens and guards every authenticated route.
 	Signer *auth.Signer
 	// RefreshTTL is the lifetime of the refresh cookie.
@@ -54,6 +57,7 @@ type Handler struct {
 	logger         *slog.Logger
 	system         *system.Service
 	auth           *authservice.Service
+	keyPairs       *keypair.Service
 	signer         *auth.Signer
 	refreshTTL     time.Duration
 	cookieSecure   bool
@@ -69,6 +73,7 @@ func NewHandler(opts Options) *Handler {
 		logger:         opts.Logger,
 		system:         opts.System,
 		auth:           opts.Auth,
+		keyPairs:       opts.KeyPairs,
 		signer:         opts.Signer,
 		refreshTTL:     opts.RefreshTTL,
 		cookieSecure:   opts.CookieSecure,
@@ -111,6 +116,18 @@ func (h *Handler) Router() *gin.Engine {
 	// Everything below needs a valid access token.
 	secured := v1.Group("", middleware.RequireAuth(h.signer))
 	secured.GET("/auth/me", h.authMe)
+
+	// Key pairs. Reads are open to both roles; writes are admin only
+	// (docs/design/01-api.md §Authorization matrix).
+	if h.keyPairs != nil {
+		secured.GET("/key-pairs", h.listKeyPairs)
+		secured.GET("/key-pairs/:id", h.getKeyPair)
+		write := secured.Group("", middleware.RequireRole(auth.RoleAdmin))
+		write.POST("/key-pairs", h.createKeyPair)
+		write.POST("/key-pairs/import", h.importKeyPair)
+		write.PATCH("/key-pairs/:id", h.updateKeyPair)
+		write.DELETE("/key-pairs/:id", h.deleteKeyPair)
+	}
 
 	engine.NoRoute(h.notFound)
 	engine.NoMethod(func(c *gin.Context) {
