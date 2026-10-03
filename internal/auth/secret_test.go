@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,6 +126,28 @@ func TestLoadOrCreateSecretAcceptsATrailingNewline(t *testing.T) {
 	}
 }
 
+func TestLoadOrCreateSecretKeepsAGeneratedKeyThatEndsInANewlineByte(t *testing.T) {
+	t.Parallel()
+
+	// The key createSecret writes is raw random bytes, so its last byte is
+	// '\n' or '\r' once in 128. Trimming those took a byte off a key that was
+	// already the right length, and the next start refused it as too short.
+	for _, last := range []byte{'\n', '\r'} {
+		path := filepath.Join(t.TempDir(), "jwt.key")
+		want := append(bytes.Repeat([]byte("k"), auth.SecretSize-1), last)
+		writeBytes(t, path, want, 0o600)
+
+		secret, err := auth.LoadOrCreateSecret(path)
+		if err != nil {
+			t.Errorf("LoadOrCreateSecret() with a key ending in %q: error = %v", last, err)
+			continue
+		}
+		if !bytes.Equal(secret, want) {
+			t.Errorf("secret = %q, want all %d bytes back", secret, len(want))
+		}
+	}
+}
+
 func TestGenerateSecret(t *testing.T) {
 	t.Parallel()
 
@@ -142,6 +165,18 @@ func TestGenerateSecret(t *testing.T) {
 	}
 	if string(first) == string(second) {
 		t.Error("two generated keys are identical")
+	}
+}
+
+// writeBytes writes a key the way createSecret does: raw bytes, no encoding.
+func writeBytes(t *testing.T, path string, contents []byte, mode os.FileMode) {
+	t.Helper()
+
+	if err := os.WriteFile(path, contents, mode); err != nil {
+		t.Fatalf("write %q: %v", path, err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatalf("chmod %q: %v", path, err)
 	}
 }
 

@@ -73,7 +73,8 @@ func readSecret(path string) ([]byte, error) {
 
 	secret = trimTrailingNewline(secret)
 	if len(secret) < SecretSize {
-		return nil, fmt.Errorf("%w: %s holds %d bytes, want at least %d",
+		return nil, fmt.Errorf("%w: %s holds %d bytes, want at least %d; "+
+			"delete the file to have a new key generated (this signs every operator out)",
 			ErrSecretTooShort, path, len(secret), SecretSize)
 	}
 
@@ -114,8 +115,16 @@ func createSecret(path string) ([]byte, error) {
 
 // trimTrailingNewline accepts a key written by `openssl rand -hex` or pasted
 // into a config file, both of which tend to end in a newline.
+//
+// It only trims a file that is longer than a generated key, because the key
+// createSecret writes is raw random bytes and one of the 256 possible last
+// bytes is '\n'. Trimming unconditionally silently shortened one fresh install
+// in 128, and the key was then rejected as too short.
 func trimTrailingNewline(secret []byte) []byte {
-	for len(secret) > 0 && (secret[len(secret)-1] == '\n' || secret[len(secret)-1] == '\r') {
+	if len(secret) <= SecretSize {
+		return secret
+	}
+	for len(secret) > SecretSize && (secret[len(secret)-1] == '\n' || secret[len(secret)-1] == '\r') {
 		secret = secret[:len(secret)-1]
 	}
 	return secret
