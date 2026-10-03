@@ -1,0 +1,1534 @@
+openapi: 3.0.3
+info:
+  title: Kumo API
+  description: |
+    AWS-like private cloud API for KVM/libvirt, served by kumod at `/api/v1`.
+
+    This file is derived from `docs/design/01-api.md`; a test asserts that every
+    endpoint documented there is described here.
+  version: 0.1.0
+servers:
+  - url: /api/v1
+    description: The control plane, same origin as the web console.
+tags:
+  - name: Auth
+    description: First-run setup, login, refresh and session introspection.
+  - name: System
+    description: Build information and host capacity.
+  - name: InstanceTypes
+    description: Read-only size presets.
+  - name: KeyPairs
+    description: SSH key pairs; generated private keys are returned exactly once.
+  - name: Images
+    description: Machine images imported from a URL or the curated catalog.
+  - name: Instances
+    description: Virtual machines; state changes run as tasks.
+  - name: Tasks
+    description: Asynchronous operation progress.
+security:
+  - bearerAuth: []
+paths:
+  /auth/setup:
+    post:
+      tags: [Auth]
+      operationId: authSetup
+      summary: Create the first administrator
+      description: Only allowed while the instance has no users; otherwise 409.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthSetupRequest'
+      responses:
+        '201':
+          description: The first administrator was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthUser'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: authLogin
+      summary: Exchange credentials for an access token
+      description: |
+        Returns an access token valid for 15 minutes and sets the refresh
+        cookie (`HttpOnly; Secure; SameSite=Strict`). Failures are rate limited
+        to 5/minute per IP and username and are indistinguishable, so login
+        cannot be used to enumerate users.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthLoginRequest'
+      responses:
+        '200':
+          description: Login succeeded.
+          headers:
+            Set-Cookie:
+              description: The rotated refresh token.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthLoginResponse'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      operationId: authRefresh
+      summary: Rotate the refresh token
+      description: |
+        Reads the refresh cookie, revokes the presented token and issues a new
+        one. Presenting an already revoked token revokes the whole family.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/RefreshCookie'
+      responses:
+        '200':
+          description: A new access token was issued.
+          headers:
+            Set-Cookie:
+              description: The rotated refresh token.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthRefreshResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/logout:
+    post:
+      tags: [Auth]
+      operationId: authLogout
+      summary: Revoke the refresh token
+      security: []
+      responses:
+        '204':
+          description: Logged out and the cookie was cleared.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/me:
+    get:
+      tags: [Auth]
+      operationId: authMe
+      summary: The authenticated user
+      responses:
+        '200':
+          description: The current user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthUser'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /system/info:
+    get:
+      tags: [System]
+      operationId: systemInfo
+      summary: Build information and hypervisor status
+      security: []
+      responses:
+        '200':
+          description: The state of the control plane.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemInfo'
+  /system/capacity:
+    get:
+      tags: [System]
+      operationId: systemCapacity
+      summary: Host capacity versus allocation
+      responses:
+        '200':
+          description: Totals and the part of them that is in use.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemCapacity'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /instance-types:
+    get:
+      tags: [InstanceTypes]
+      operationId: listInstanceTypes
+      summary: List the size presets
+      description: Read-only in v1; the seed set is documented in `01-api.md`.
+      responses:
+        '200':
+          description: The available presets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstanceTypeList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /key-pairs:
+    get:
+      tags: [KeyPairs]
+      operationId: listKeyPairs
+      summary: List key pairs
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+        - $ref: '#/components/parameters/Sort'
+        - $ref: '#/components/parameters/Query'
+      responses:
+        '200':
+          description: A page of key pairs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyPairList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [KeyPairs]
+      operationId: createKeyPair
+      summary: Generate a key pair
+      description: |
+        The server generates an `ed25519` or `rsa-4096` key. `private_key` is
+        present in this response only and is never stored or logged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateKeyPairRequest'
+      responses:
+        '201':
+          description: The key pair was created; save `private_key` now.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateKeyPairResponse'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /key-pairs/import:
+    post:
+      tags: [KeyPairs]
+      operationId: importKeyPair
+      summary: Import an existing public key
+      description: |
+        `public_key` is an OpenSSH `authorized_keys` line, validated with
+        `ssh.ParseAuthorizedKey`. RSA keys below 2048 bits are rejected, as is
+        private key material pasted into the field.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportKeyPairRequest'
+      responses:
+        '201':
+          description: The key pair was imported.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyPair'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /key-pairs/{id}:
+    parameters:
+      - $ref: '#/components/parameters/KeyPairID'
+    get:
+      tags: [KeyPairs]
+      operationId: getKeyPair
+      summary: Key pair detail
+      responses:
+        '200':
+          description: The key pair, including the instances that use it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyPairDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [KeyPairs]
+      operationId: updateKeyPair
+      summary: Update the tags of a key pair
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTagsRequest'
+      responses:
+        '200':
+          description: The updated key pair.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyPair'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [KeyPairs]
+      operationId: deleteKeyPair
+      summary: Delete a key pair
+      description: |
+        `409` while a non-terminated instance uses the key, unless
+        `force=true`. As in AWS, deleting a key does not touch the keys already
+        injected into running instances.
+      parameters:
+        - $ref: '#/components/parameters/Force'
+      responses:
+        '204':
+          description: The key pair was deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /images:
+    get:
+      tags: [Images]
+      operationId: listImages
+      summary: List images
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+        - $ref: '#/components/parameters/Sort'
+        - $ref: '#/components/parameters/Query'
+        - name: state
+          in: query
+          description: Restrict the page to one image state.
+          schema:
+            $ref: '#/components/schemas/ImageState'
+      responses:
+        '200':
+          description: A page of images.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /images/catalog:
+    get:
+      tags: [Images]
+      operationId: listCatalogImages
+      summary: Curated cloud images
+      description: |
+        Ubuntu, Debian, Rocky, Alma, Fedora and Alpine with their download and
+        checksum URLs, to power the quick import picker. The catalog is static
+        configuration, not user data.
+      responses:
+        '200':
+          description: The catalog entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CatalogImage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /images/import:
+    post:
+      tags: [Images]
+      operationId: importImage
+      summary: Import an image from a URL
+      description: |
+        The download runs as a task; the response is `202` with the image in
+        `pending`. Only `http(s)` URLs outside link-local and metadata ranges are
+        allowed, and the size limit and checksum are enforced while downloading.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportImageRequest'
+      responses:
+        '202':
+          description: The import was accepted.
+          headers:
+            Location:
+              description: The task that tracks the import.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Image'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+  /images/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ImageID'
+    get:
+      tags: [Images]
+      operationId: getImage
+      summary: Image detail
+      responses:
+        '200':
+          description: The image.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Image'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Images]
+      operationId: updateImage
+      summary: Rename or re-tag an image
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateImageRequest'
+      responses:
+        '200':
+          description: The updated image.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Image'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      tags: [Images]
+      operationId: deleteImage
+      summary: Delete an image
+      description: '`409` while any non-terminated instance uses it.'
+      responses:
+        '202':
+          description: The deletion was accepted.
+          headers:
+            Location:
+              description: The task that tracks the deletion.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Image'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /instances:
+    get:
+      tags: [Instances]
+      operationId: listInstances
+      summary: List instances
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+        - $ref: '#/components/parameters/Sort'
+        - $ref: '#/components/parameters/Query'
+        - name: state
+          in: query
+          description: Restrict the page to one instance state.
+          schema:
+            $ref: '#/components/schemas/InstanceState'
+      responses:
+        '200':
+          description: A page of instances.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstanceList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Instances]
+      operationId: launchInstance
+      summary: Launch instances
+      description: |
+        Runs as a task and answers `202` with the instance in `pending`.
+        Validation: `name` is an RFC 1123 label of 1-63 characters,
+        `root_disk_gb` is at least the image's `min_disk_gb` and at most 2048,
+        `user_data` is at most 16 KiB, `count` is 1-10, the image must be
+        `available`, and the host must have capacity left.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LaunchInstanceRequest'
+      responses:
+        '202':
+          description: The launch was accepted.
+          headers:
+            Location:
+              description: The task that tracks the launch.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Instance'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /instances/{id}:
+    parameters:
+      - $ref: '#/components/parameters/InstanceID'
+    get:
+      tags: [Instances]
+      operationId: getInstance
+      summary: Instance detail
+      description: "`user_data` is only included for administrators."
+      responses:
+        '200':
+          description: The instance.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Instance'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Instances]
+      operationId: updateInstance
+      summary: Rename or re-tag an instance
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateInstanceRequest'
+      responses:
+        '200':
+          description: The updated instance.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Instance'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      tags: [Instances]
+      operationId: terminateInstance
+      summary: Terminate an instance
+      description: |
+        Destroys the domain and deletes its disks as a task, answering `202`.
+        Repeating the call for an already terminated instance succeeds.
+      responses:
+        '202':
+          description: The termination was accepted.
+          headers:
+            Location:
+              description: The task that tracks the termination.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Instance'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /instances/{id}/start:
+    parameters:
+      - $ref: '#/components/parameters/InstanceID'
+    post:
+      tags: [Instances]
+      operationId: startInstance
+      summary: Start a stopped instance
+      responses:
+        '202':
+          description: The start was accepted.
+          headers:
+            Location:
+              description: The task that tracks the start.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Instance'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /instances/{id}/stop:
+    parameters:
+      - $ref: '#/components/parameters/InstanceID'
+    post:
+      tags: [Instances]
+      operationId: stopInstance
+      summary: Stop an instance
+      description: 'ACPI shutdown by default; `force=true` destroys it instead.'
+      parameters:
+        - $ref: '#/components/parameters/Force'
+      responses:
+        '202':
+          description: The stop was accepted.
+          headers:
+            Location:
+              description: The task that tracks the stop.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Instance'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /instances/{id}/reboot:
+    parameters:
+      - $ref: '#/components/parameters/InstanceID'
+    post:
+      tags: [Instances]
+      operationId: rebootInstance
+      summary: Reboot an instance
+      description: 'ACPI reboot by default; `force=true` resets the domain.'
+      parameters:
+        - $ref: '#/components/parameters/Force'
+      responses:
+        '202':
+          description: The reboot was accepted.
+          headers:
+            Location:
+              description: The task that tracks the reboot.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Instance'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /instances/{id}/console-output:
+    parameters:
+      - $ref: '#/components/parameters/InstanceID'
+      - name: tail_kib
+        in: query
+        description: How much of the serial console log to return.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 1024
+          default: 64
+    get:
+      tags: [Instances]
+      operationId: getInstanceConsoleOutput
+      summary: Last N KiB of the serial console log
+      responses:
+        '200':
+          description: The tail of the serial log.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsoleOutput'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /instances/{id}/console:
+    parameters:
+      - $ref: '#/components/parameters/InstanceID'
+    get:
+      tags: [Instances]
+      operationId: openInstanceConsole
+      summary: WebSocket bridge to the VNC console
+      description: |
+        Upgrades to a WebSocket that proxies the console of the instance. The
+        VNC socket itself is bound to `127.0.0.1` and is only reachable through
+        this authenticated proxy. Scheduled for M5.
+      responses:
+        '101':
+          description: The WebSocket upgrade succeeded.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /tasks:
+    get:
+      tags: [Tasks]
+      operationId: listTasks
+      summary: Recent tasks
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+        - $ref: '#/components/parameters/Sort'
+        - name: resource_id
+          in: query
+          description: Restrict the page to the tasks of one resource.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: A page of tasks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /tasks/{id}:
+    parameters:
+      - $ref: '#/components/parameters/TaskID'
+    get:
+      tags: [Tasks]
+      operationId: getTask
+      summary: Task detail
+      responses:
+        '200':
+          description: The task.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        The access token from `/auth/login`. Sent as `Authorization: Bearer <token>`;
+        it expires after 15 minutes and is never stored in the browser.
+  parameters:
+    PageSize:
+      name: page_size
+      in: query
+      description: Items per page.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    PageToken:
+      name: page_token
+      in: query
+      description: Continuation token from a previous page; absent on the first page.
+      schema:
+        type: string
+    Sort:
+      name: sort
+      in: query
+      description: Sort order as `field:direction`, e.g. `created_at:desc`.
+      schema:
+        type: string
+        pattern: '^[a-z_]+:(asc|desc)$'
+        default: created_at:desc
+    Query:
+      name: q
+      in: query
+      description: Case-insensitive substring of the resource name.
+      schema:
+        type: string
+        maxLength: 128
+    Force:
+      name: force
+      in: query
+      description: Take the destructive shortcut instead of the graceful path.
+      schema:
+        type: boolean
+        default: false
+    RefreshCookie:
+      name: refresh_token
+      in: cookie
+      description: The `HttpOnly; Secure; SameSite=Strict` refresh cookie.
+      required: true
+      schema:
+        type: string
+    KeyPairID:
+      name: id
+      in: path
+      description: Key pair id.
+      required: true
+      schema:
+        type: string
+        pattern: '^key-[0-9a-f]{17}$'
+    ImageID:
+      name: id
+      in: path
+      description: Image id.
+      required: true
+      schema:
+        type: string
+        pattern: '^img-[0-9a-f]{17}$'
+    InstanceID:
+      name: id
+      in: path
+      description: Instance id.
+      required: true
+      schema:
+        type: string
+        pattern: '^i-[0-9a-f]{17}$'
+    TaskID:
+      name: id
+      in: path
+      description: Task id.
+      required: true
+      schema:
+        type: string
+        pattern: '^task-[0-9a-f]{17}$'
+  responses:
+    InvalidArgument:
+      description: The request was malformed or a field failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: No valid access token was presented.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PermissionDenied:
+      description: The role may not perform this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: The resource does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: The request contradicts the current state of the resource.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnprocessableEntity:
+      description: The request was well-formed but cannot be carried out.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    TooManyRequests:
+      description: The caller exceeded a rate limit or a quota.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotImplemented:
+      description: The endpoint is documented but not implemented yet.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: An unexpected failure; details are logged, never returned.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      description: The envelope of every non-2xx response.
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              $ref: '#/components/schemas/ErrorCode'
+            message:
+              type: string
+              description: Human-readable summary, safe to show in the console.
+            details:
+              type: array
+              description: Field level problems; rendered as inline form errors.
+              items:
+                $ref: '#/components/schemas/ErrorDetail'
+            request_id:
+              type: string
+              description: Matches the `X-Request-Id` response header.
+    ErrorCode:
+      type: string
+      description: Stable machine-readable error code.
+      enum:
+        - invalid_argument
+        - unauthenticated
+        - permission_denied
+        - not_found
+        - already_exists
+        - conflict
+        - quota_exceeded
+        - internal
+        - unavailable
+    ErrorDetail:
+      type: object
+      required: [field, reason]
+      properties:
+        field:
+          type: string
+        reason:
+          type: string
+    AuthSetupRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 64
+        password:
+          type: string
+          format: password
+          minLength: 10
+          description: Hashed with argon2id; never logged.
+    AuthLoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+    AuthUser:
+      type: object
+      required: [id, username, role, created_at]
+      properties:
+        id:
+          type: string
+          description: UUIDv7.
+        username:
+          type: string
+        role:
+          $ref: '#/components/schemas/UserRole'
+        created_at:
+          type: string
+          format: date-time
+    UserRole:
+      type: string
+      description: '`viewer` may read, but never mutate (403 on writes).'
+      enum: [admin, viewer]
+    AuthLoginResponse:
+      type: object
+      required: [access_token, expires_in, user]
+      properties:
+        access_token:
+          type: string
+          description: Bearer token, valid for 15 minutes. Kept in memory only.
+        expires_in:
+          type: integer
+          description: Access token lifetime in seconds.
+        user:
+          $ref: '#/components/schemas/AuthUser'
+    AuthRefreshResponse:
+      type: object
+      required: [access_token, expires_in]
+      properties:
+        access_token:
+          type: string
+        expires_in:
+          type: integer
+    SystemInfo:
+      type: object
+      required: [version, needs_setup, hypervisor]
+      properties:
+        version:
+          type: string
+          description: Build version of kumod.
+        needs_setup:
+          type: boolean
+          description: True while no user exists and `/auth/setup` is open.
+        hypervisor:
+          type: object
+          required: [type, ok]
+          properties:
+            type:
+              type: string
+              enum: [fake, libvirt]
+            ok:
+              type: boolean
+    SystemCapacity:
+      type: object
+      description: Host totals versus what is already allocated.
+      required: [vcpus, memory_bytes, disk_bytes]
+      properties:
+        vcpus:
+          $ref: '#/components/schemas/CapacityMetric'
+        memory_bytes:
+          $ref: '#/components/schemas/CapacityMetric'
+        disk_bytes:
+          $ref: '#/components/schemas/CapacityMetric'
+    CapacityMetric:
+      type: object
+      required: [total, allocated]
+      properties:
+        total:
+          type: integer
+          format: int64
+        allocated:
+          type: integer
+          format: int64
+    InstanceType:
+      type: object
+      required: [id, vcpus, memory_mib]
+      properties:
+        id:
+          type: string
+          description: Preset id, e.g. `kumo.small`.
+          example: kumo.small
+        vcpus:
+          type: integer
+        memory_mib:
+          type: integer
+        description:
+          type: string
+    InstanceTypeList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/InstanceType'
+    KeyPair:
+      type: object
+      description: A key pair without its private half.
+      required: [id, name, type, fingerprint, public_key, created_at]
+      properties:
+        id:
+          type: string
+          example: key-0a1b2c3d4e5f60718
+        name:
+          type: string
+          pattern: '^[A-Za-z0-9._-]{1,64}$'
+        type:
+          $ref: '#/components/schemas/KeyPairType'
+        fingerprint:
+          type: string
+          description: OpenSSH style SHA256 fingerprint.
+        public_key:
+          type: string
+          description: The `authorized_keys` line.
+        created_at:
+          type: string
+          format: date-time
+        tags:
+          $ref: '#/components/schemas/TagMap'
+    KeyPairType:
+      type: string
+      enum: [ed25519, rsa]
+    KeyPairDetail:
+      allOf:
+        - $ref: '#/components/schemas/KeyPair'
+        - type: object
+          required: [used_by]
+          properties:
+            used_by:
+              type: array
+              description: Ids of the instances this key was launched with.
+              items:
+                type: string
+                example: i-0a1b2c3d4e5f60718
+    CreateKeyPairResponse:
+      description: |
+        The only response that ever carries `private_key`. It is not persisted
+        and not logged; losing it means creating a new key pair.
+      allOf:
+        - $ref: '#/components/schemas/KeyPair'
+        - type: object
+          required: [private_key]
+          properties:
+            private_key:
+              type: string
+              description: OpenSSH private key in PEM form.
+    CreateKeyPairRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          pattern: '^[A-Za-z0-9._-]{1,64}$'
+        type:
+          allOf:
+            - $ref: '#/components/schemas/KeyPairType'
+          default: ed25519
+        tags:
+          $ref: '#/components/schemas/TagMap'
+    ImportKeyPairRequest:
+      type: object
+      required: [name, public_key]
+      properties:
+        name:
+          type: string
+          pattern: '^[A-Za-z0-9._-]{1,64}$'
+        public_key:
+          type: string
+          description: A single OpenSSH `authorized_keys` line.
+        tags:
+          $ref: '#/components/schemas/TagMap'
+    KeyPairList:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/KeyPair'
+    Image:
+      type: object
+      required: [id, name, state, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          example: img-0a1b2c3d4e5f60718
+        name:
+          type: string
+        description:
+          type: string
+        state:
+          $ref: '#/components/schemas/ImageState'
+        state_reason:
+          type: string
+          nullable: true
+          description: Why the image failed or is waiting.
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Download progress, only present while it is known.
+        format:
+          type: string
+          enum: [qcow2, raw]
+        architecture:
+          type: string
+          enum: [x86_64, aarch64]
+        os_family:
+          type: string
+          description: e.g. `ubuntu`, `debian`, `rocky`.
+        os_version:
+          type: string
+        default_user:
+          type: string
+          description: Login name injected into the image.
+        source_url:
+          type: string
+          format: uri
+          nullable: true
+        checksum:
+          description: The expected checksum, when the source publishes one.
+          allOf:
+            - $ref: '#/components/schemas/Checksum'
+          nullable: true
+        size_bytes:
+          type: integer
+          format: int64
+          nullable: true
+          description: Size on disk once known.
+        min_disk_gb:
+          type: integer
+          description: Smallest root disk this image boots from.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        tags:
+          $ref: '#/components/schemas/TagMap'
+    ImageState:
+      type: string
+      description: '`pending` → `downloading` → `available`, plus `failed` and `deleting`.'
+      enum: [pending, downloading, available, failed, deleting]
+    Checksum:
+      type: object
+      required: [algorithm, value]
+      properties:
+        algorithm:
+          type: string
+          enum: [sha256, sha512]
+        value:
+          type: string
+    ImportImageRequest:
+      type: object
+      required: [name, source_url]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        source_url:
+          type: string
+          format: uri
+          description: '`http` or `https`; link-local and metadata ranges are refused.'
+        checksum:
+          $ref: '#/components/schemas/Checksum'
+        os_family:
+          type: string
+          default: linux
+        os_version:
+          type: string
+        architecture:
+          type: string
+          enum: [x86_64, aarch64]
+          default: x86_64
+        default_user:
+          type: string
+        min_disk_gb:
+          type: integer
+          minimum: 1
+        tags:
+          $ref: '#/components/schemas/TagMap'
+    UpdateImageRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        tags:
+          $ref: '#/components/schemas/TagMap'
+    CatalogImage:
+      type: object
+      description: A well-known cloud image offered by the quick import picker.
+      required: [id, name, source_url]
+      properties:
+        id:
+          type: string
+          example: ubuntu-24.04
+        name:
+          type: string
+        description:
+          type: string
+        os_family:
+          type: string
+          enum: [ubuntu, debian, rocky, almalinux, fedora, alpine]
+        os_version:
+          type: string
+        architecture:
+          type: string
+          enum: [x86_64, aarch64]
+        default_user:
+          type: string
+        min_disk_gb:
+          type: integer
+        source_url:
+          type: string
+          format: uri
+        checksum_url:
+          type: string
+          format: uri
+    ImageList:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Image'
+    Instance:
+      type: object
+      required:
+        - id
+        - name
+        - state
+        - image_id
+        - instance_type
+        - vcpus
+        - memory_mib
+        - root_disk_gb
+        - launched_at
+      properties:
+        id:
+          type: string
+          example: i-0a1b2c3d4e5f60718
+        name:
+          type: string
+        state:
+          $ref: '#/components/schemas/InstanceState'
+        state_reason:
+          type: string
+          nullable: true
+        image_id:
+          type: string
+        image_name:
+          type: string
+          description: Denormalised for list views.
+        instance_type:
+          type: string
+          example: kumo.small
+        vcpus:
+          type: integer
+        memory_mib:
+          type: integer
+        root_disk_gb:
+          type: integer
+        key_pair_id:
+          type: string
+          nullable: true
+        key_pair_name:
+          type: string
+          nullable: true
+          description: Kept for display after the key was deleted.
+        private_ip:
+          type: string
+          nullable: true
+        mac_address:
+          type: string
+          nullable: true
+        user_data:
+          type: string
+          nullable: true
+          description: Only present for administrators; never returned by list.
+        task_id:
+          type: string
+          nullable: true
+          description: The task of the most recent state change.
+        launched_at:
+          type: string
+          format: date-time
+        terminated_at:
+          type: string
+          format: date-time
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
+        tags:
+          $ref: '#/components/schemas/TagMap'
+    InstanceState:
+      type: string
+      enum: [pending, running, stopping, stopped, terminating, terminated, error]
+    LaunchInstanceRequest:
+      type: object
+      required: [name, image_id, instance_type]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 63
+          pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+        image_id:
+          type: string
+        instance_type:
+          type: string
+          example: kumo.small
+        key_pair_id:
+          type: string
+          description: Injects the public key into the guest.
+        root_disk_gb:
+          type: integer
+          minimum: 1
+          maximum: 2048
+          description: Defaults to the image's `min_disk_gb`.
+        user_data:
+          type: string
+          description: Cloud-init payload, at most 16 KiB. Never logged.
+        count:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 1
+        tags:
+          $ref: '#/components/schemas/TagMap'
+    UpdateInstanceRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+        tags:
+          $ref: '#/components/schemas/TagMap'
+    InstanceList:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Instance'
+    ConsoleOutput:
+      type: object
+      required: [instance_id, output]
+      properties:
+        instance_id:
+          type: string
+        output:
+          type: string
+          description: The tail of the serial console log.
+    Task:
+      type: object
+      required: [id, type, state, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          example: task-0a1b2c3d4e5f60718
+        type:
+          type: string
+          description: Operation name, e.g. `instance.launch`.
+          example: instance.launch
+        resource_id:
+          type: string
+          nullable: true
+        state:
+          $ref: '#/components/schemas/TaskState'
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+        error:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    TaskState:
+      type: string
+      enum: [pending, running, succeeded, failed]
+    TaskList:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Task'
+    Page:
+      type: object
+      description: Shared shape of every list response.
+      properties:
+        next_page_token:
+          type: string
+          nullable: true
+          description: Absent on the last page.
+    TagMap:
+      type: object
+      description: Free-form tags.
+      additionalProperties:
+        type: string
+    UpdateTagsRequest:
+      type: object
+      minProperties: 1
+      properties:
+        tags:
+          $ref: '#/components/schemas/TagMap'

@@ -171,6 +171,102 @@ func TestSystemInfo(t *testing.T) {
 	})
 }
 
+func TestConsoleFallback(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		wantStatus int
+		wantBody   string
+		wantJSON   bool
+	}{
+		{
+			name:       "the root is served by the console",
+			method:     http.MethodGet,
+			path:       "/",
+			wantStatus: http.StatusOK,
+			wantBody:   "<!doctype html>",
+		},
+		{
+			name:       "a client-side route is served by the console",
+			method:     http.MethodGet,
+			path:       "/instances/i-0123456789abcdef0",
+			wantStatus: http.StatusOK,
+			wantBody:   "<!doctype html>",
+		},
+		{
+			name:       "an unknown API route keeps the error envelope",
+			method:     http.MethodGet,
+			path:       "/api/v1/instances/i-0123456789abcdef0",
+			wantStatus: http.StatusNotFound,
+			wantJSON:   true,
+		},
+		{
+			name:       "the API root keeps the error envelope",
+			method:     http.MethodGet,
+			path:       "/api",
+			wantStatus: http.StatusNotFound,
+			wantJSON:   true,
+		},
+		{
+			name:       "the console does not swallow health checks",
+			method:     http.MethodPost,
+			path:       "/healthz",
+			wantStatus: http.StatusMethodNotAllowed,
+			wantJSON:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			router := testRouterWith(t, nil, nil, nil, nil, consoleHandler())
+
+			recorder, _ := call(t, router, tt.method, tt.path)
+
+			if recorder.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", recorder.Code, tt.wantStatus, recorder.Body.String())
+			}
+			if tt.wantJSON {
+				if body := decodeError(t, recorder.Body.Bytes()); body.Error.Code != api.CodeNotFound &&
+					body.Error.Code != api.CodeMethodNotAllowed {
+					t.Errorf("code = %q, want a JSON error code", body.Error.Code)
+				}
+				return
+			}
+			if !strings.Contains(recorder.Body.String(), tt.wantBody) {
+				t.Errorf("body = %q, want it to contain %q", recorder.Body.String(), tt.wantBody)
+			}
+		})
+	}
+
+	t.Run("without a console unknown routes stay JSON", func(t *testing.T) {
+		t.Parallel()
+
+		recorder, _ := call(t, testRouter(t, nil, nil, nil), http.MethodGet, "/instances/i-0123456789abcdef0")
+
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", recorder.Code)
+		}
+		if body := decodeError(t, recorder.Body.Bytes()); body.Error.Code != api.CodeNotFound {
+			t.Errorf("code = %q, want %q", body.Error.Code, api.CodeNotFound)
+		}
+	})
+}
+
+// consoleHandler stands in for internal/webui, which is exercised by its own
+// package tests.
+func consoleHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "<!doctype html><title>Kumo</title><body>%s", r.URL.Path)
+	})
+}
+
 func TestUnknownRoutesAndMethodsUseTheEnvelope(t *testing.T) {
 	t.Parallel()
 
@@ -498,9 +594,27 @@ func decodeError(t *testing.T, body []byte) errorEnvelope {
 	return envelope
 }
 
-// testRouter builds a router with the given logger, checks, system service and
-// CORS origins.
+// testRouter builds a router without a web console.
 func testRouter(t *testing.T, logger *slog.Logger, checks []api.Check, svc *system.Service, origins ...[]string) *gin.Engine {
+	t.Helper()
+
+	var allowed []string
+	if len(origins) > 0 {
+		allowed = origins[0]
+	}
+
+	return testRouterWith(t, logger, checks, svc, allowed, nil)
+}
+
+// testRouterWith builds a router with every option the handler takes.
+func testRouterWith(
+	t *testing.T,
+	logger *slog.Logger,
+	checks []api.Check,
+	svc *system.Service,
+	origins []string,
+	console http.Handler,
+) *gin.Engine {
 	t.Helper()
 
 	if logger == nil {
@@ -510,17 +624,13 @@ func testRouter(t *testing.T, logger *slog.Logger, checks []api.Check, svc *syst
 		svc = system.New(logger, "test", "fake", nil, nil)
 	}
 
-	var allowed []string
-	if len(origins) > 0 {
-		allowed = origins[0]
-	}
-
 	handler := api.NewHandler(api.Options{
 		Logger:         logger,
 		GinMode:        gin.TestMode,
 		System:         svc,
 		ReadyChecks:    checks,
-		AllowedOrigins: allowed,
+		AllowedOrigins: origins,
+		Console:        console,
 	})
 	return handler.Router()
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -30,6 +31,10 @@ type Options struct {
 	ReadyChecks []Check
 	// AllowedOrigins enables development CORS for the Vite dev server.
 	AllowedOrigins []string
+	// Console serves the embedded web console. It answers every route that is
+	// not an API or health route, so React Router can own its own paths. Nil
+	// disables it, which is what the API-only tests do.
+	Console http.Handler
 }
 
 // Handler owns the routes of the control plane.
@@ -38,6 +43,7 @@ type Handler struct {
 	system         *system.Service
 	checks         []Check
 	allowedOrigins []string
+	console        http.Handler
 	ginMode        string
 }
 
@@ -48,6 +54,7 @@ func NewHandler(opts Options) *Handler {
 		system:         opts.System,
 		checks:         opts.ReadyChecks,
 		allowedOrigins: opts.AllowedOrigins,
+		console:        opts.Console,
 		ginMode:        opts.GinMode,
 	}
 }
@@ -73,14 +80,30 @@ func (h *Handler) Router() *gin.Engine {
 	v1 := engine.Group("/api/v1")
 	v1.GET("/system/info", h.systemInfo)
 
-	engine.NoRoute(func(c *gin.Context) {
-		WriteError(c, h.logger, notFound(c))
-	})
+	engine.NoRoute(h.notFound)
 	engine.NoMethod(func(c *gin.Context) {
 		WriteError(c, h.logger, methodNotAllowed(c))
 	})
 
 	return engine
+}
+
+// notFound answers unknown routes. API paths keep the JSON error envelope even
+// once the console is mounted, because a client calling the API must not be
+// handed HTML; everything else is a console route.
+func (h *Handler) notFound(c *gin.Context) {
+	if h.console != nil && !isAPIPath(c.Request.URL.Path) {
+		h.console.ServeHTTP(c.Writer, c.Request)
+		return
+	}
+
+	WriteError(c, h.logger, notFound(c))
+}
+
+// isAPIPath reports whether a path belongs to the API. Health checks live
+// outside /api/v1 but are registered routes, so they never reach here.
+func isAPIPath(urlPath string) bool {
+	return urlPath == "/api" || strings.HasPrefix(urlPath, "/api/")
 }
 
 func (h *Handler) mode() string {

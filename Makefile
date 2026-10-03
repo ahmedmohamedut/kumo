@@ -49,8 +49,12 @@ build: web-build ## Build the console and embed it into bin/kumod
 	@echo "built $(BIN) ($(VERSION))"
 
 .PHONY: web-build
-web-build: ## Build the frontend into web/dist
+web-build: ## Build the frontend and stage it for embedding in the binary
 	$(NPM) --prefix $(WEB) run build
+	rm -rf $(EMBED)
+	mkdir -p $(EMBED)
+	cp -R $(WEB)/dist/. $(EMBED)/
+	touch $(EMBED)/.gitkeep
 
 .PHONY: test
 test: ## Run Go and frontend tests
@@ -93,4 +97,6 @@ version: ## Print the version this build would carry
 clean: ## Remove build output
 	$(GO) clean
 	rm -f $(BIN)
-	rm -f $(EMBED)/index.html
+	rm -rf $(EMBED)
+	mkdir -p $(EMBED)
+	touch $(EMBED)/.gitkeep

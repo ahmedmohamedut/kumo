@@ -148,3 +148,50 @@ Newest entries last. Each entry references the milestone/task it came from.
   `allowExportNames`. Oxlint is used instead of ESLint per the M0 plan.
 - **Prettier is checked in CI** (`format:check` wired into `make lint`,
   `format` writes). `make fmt` still runs `golangci-lint fmt` for Go.
+
+## M0.6 — Embed + OpenAPI
+
+- **The console is copied into the package before the Go build.** `make
+  web-build` runs `npm run build` and then replaces `internal/webui/dist` with
+  `web/dist` (keeping `.gitkeep`), because `go:embed` cannot reach outside the
+  package directory. The directory is git-ignored except for `.gitkeep`, so no
+  build output is ever committed.
+- **`//go:embed all:dist` includes dotfiles on purpose**: with only `.gitkeep`
+  present the Go build still succeeds, so a fresh clone compiles and `kumod`
+  starts without a console. `webui.Handler.Built()` reports that case and `main`
+  logs a warning; the API keeps working.
+- **The SPA fallback only answers paths that look like routes.** A missing file
+  with an extension (`/assets/index-stale.js`) is a 404, because Vite writes
+  hashed names and answering a stale asset with HTML only produces a confusing
+  parse error in the browser. Everything else falls back to `index.html` so a
+  deep link such as `/instances/i-…` survives a reload. `..` in a path is
+  rejected before the embedded FS is touched.
+- **The console is injected as an `http.Handler` (`api.Options.Console`) rather
+  than imported from `internal/webui` by the router.** `webui` is wired in
+  `main`, which keeps `internal/api` testable (the router tests use a stub
+  handler) and keeps the layering rule that handlers never depend on
+  infrastructure.
+- **API paths keep the JSON envelope even with the console mounted.** The
+  console is only mounted through `NoRoute` and skips `/api/...`, so an API
+  client that mistypes a URL gets the `not_found` envelope with a `request_id`,
+  not HTML.
+- **`assets/*` is served `immutable` for a year, everything else `no-cache`.**
+  Vite content-hashes the bundle names, so the shell is the only file that must
+  be revalidated after a deploy.
+- **`api/openapi.yaml` covers the whole v1 contract from `01-api.md`** (24 paths,
+  32 operations) even though only `/system/info` is implemented: the spec is the
+  contract the console is generated from, and M1–M5 fill in the handlers. State
+  enums come from the `CHECK` constraints in `02-data-model.md`, so
+  `InstanceState`/`ImageState`/`TaskState` cannot drift from the database.
+- **`/images/upload` (optional, M3b) and `/events` (SSE, "later") are
+  deliberately absent from the spec**, so the console does not generate calls to
+  endpoints that do not exist. `internal/api/spec_test.go` encodes that omission,
+  and also fails when the spec and `01-api.md` disagree in either direction or
+  when a `$ref` does not resolve — the AC of this milestone cannot be checked by
+  hand once the spec grows.
+- **`openapi-typescript` is pinned to 7.13.0 with a `typescript` override.**
+  Its peer range is `^5.x` while the console is on TypeScript 6; the generator
+  does not use TypeScript at runtime (only for its optional output validation),
+  so `package.json` maps its peer to the workspace version instead of pinning an
+  older compiler. `npm run gen:api` regenerates `web/src/types/api.ts`, which is
+  committed; feature code imports from there and never hand-writes a DTO.

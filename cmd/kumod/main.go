@@ -21,6 +21,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
 	"github.com/ahmedmohamedut/kumo/internal/store"
 	"github.com/ahmedmohamedut/kumo/internal/version"
+	"github.com/ahmedmohamedut/kumo/internal/webui"
 )
 
 // fakeSubnet is the private range the in-memory backend hands out addresses
@@ -81,6 +82,14 @@ func serve(ctx context.Context) error {
 
 	systemService := system.New(logger, version.Version, cfg.Hypervisor, db, hv)
 
+	console, err := webui.New(logger)
+	if err != nil {
+		return fmt.Errorf("prepare web console: %w", err)
+	}
+	if !console.Built() {
+		logger.WarnContext(ctx, "no web console embedded; the API is unaffected", "hint", "run `make build`")
+	}
+
 	handler := api.NewHandler(api.Options{
 		Logger:  logger,
 		GinMode: ginMode(cfg.LogLevel),
@@ -90,6 +99,7 @@ func serve(ctx context.Context) error {
 			{Name: "hypervisor", Probe: hv.Ping},
 		},
 		AllowedOrigins: cfg.AllowedOrigins,
+		Console:        console,
 	})
 
 	server := api.NewServer(logger, cfg.Listen, handler.Router())
