@@ -96,8 +96,9 @@ func WriteError(c *gin.Context, logger *slog.Logger, err error) {
 // describeError maps an error to an HTTP status and the envelope body.
 func describeError(err error) (int, errorBody) {
 	var (
-		validation *ValidationError
-		explicit   *statusError
+		validation        *ValidationError
+		serviceValidation *service.ValidationError
+		explicit          *statusError
 	)
 
 	switch {
@@ -108,6 +109,18 @@ func describeError(err error) (int, errorBody) {
 			Code:    CodeInvalidArgument,
 			Message: validation.Message,
 			Details: validation.Fields,
+		}
+	case errors.As(err, &serviceValidation):
+		// A service validates the arguments it owns, so the envelope has to
+		// carry its per-field errors too.
+		details := make([]FieldError, 0, len(serviceValidation.Fields))
+		for _, field := range serviceValidation.Fields {
+			details = append(details, FieldError{Field: field.Field, Reason: field.Reason})
+		}
+		return http.StatusBadRequest, errorBody{
+			Code:    CodeInvalidArgument,
+			Message: serviceValidation.Message,
+			Details: details,
 		}
 	case errors.Is(err, service.ErrInvalid):
 		return http.StatusBadRequest, errorBody{Code: CodeInvalidArgument, Message: err.Error()}

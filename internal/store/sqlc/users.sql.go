@@ -7,6 +7,7 @@ package sqlc
 
 import (
 	"context"
+	"database/sql"
 )
 
 const countUsers = `-- name: CountUsers :one
@@ -18,4 +19,278 @@ func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const createRefreshToken = `-- name: CreateRefreshToken :one
+INSERT INTO refresh_tokens (id, user_id, token_hash, family_id, expires_at, user_agent, created_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+RETURNING id, user_id, token_hash, family_id, expires_at, user_agent, revoked_at, created_at
+`
+
+type CreateRefreshTokenParams struct {
+	ID        string         `json:"id"`
+	UserID    string         `json:"user_id"`
+	TokenHash string         `json:"token_hash"`
+	FamilyID  string         `json:"family_id"`
+	ExpiresAt string         `json:"expires_at"`
+	UserAgent sql.NullString `json:"user_agent"`
+	CreatedAt string         `json:"created_at"`
+}
+
+type CreateRefreshTokenRow struct {
+	ID        string         `json:"id"`
+	UserID    string         `json:"user_id"`
+	TokenHash string         `json:"token_hash"`
+	FamilyID  string         `json:"family_id"`
+	ExpiresAt string         `json:"expires_at"`
+	UserAgent sql.NullString `json:"user_agent"`
+	RevokedAt sql.NullString `json:"revoked_at"`
+	CreatedAt string         `json:"created_at"`
+}
+
+func (q *Queries) CreateRefreshToken(ctx context.Context, arg CreateRefreshTokenParams) (CreateRefreshTokenRow, error) {
+	row := q.db.QueryRowContext(ctx, createRefreshToken,
+		arg.ID,
+		arg.UserID,
+		arg.TokenHash,
+		arg.FamilyID,
+		arg.ExpiresAt,
+		arg.UserAgent,
+		arg.CreatedAt,
+	)
+	var i CreateRefreshTokenRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TokenHash,
+		&i.FamilyID,
+		&i.ExpiresAt,
+		&i.UserAgent,
+		&i.RevokedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createUser = `-- name: CreateUser :one
+INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+RETURNING id, username, password_hash, role, created_at, updated_at
+`
+
+type CreateUserParams struct {
+	ID           string `json:"id"`
+	Username     string `json:"username"`
+	PasswordHash string `json:"password_hash"`
+	Role         string `json:"role"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+}
+
+func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, error) {
+	row := q.db.QueryRowContext(ctx, createUser,
+		arg.ID,
+		arg.Username,
+		arg.PasswordHash,
+		arg.Role,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.PasswordHash,
+		&i.Role,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const deleteExpiredRefreshTokens = `-- name: DeleteExpiredRefreshTokens :execrows
+DELETE FROM refresh_tokens
+WHERE expires_at < ?1
+`
+
+type DeleteExpiredRefreshTokensParams struct {
+	ExpiresAt string `json:"expires_at"`
+}
+
+func (q *Queries) DeleteExpiredRefreshTokens(ctx context.Context, arg DeleteExpiredRefreshTokensParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteExpiredRefreshTokens, arg.ExpiresAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const getRefreshTokenByHash = `-- name: GetRefreshTokenByHash :one
+SELECT id, user_id, token_hash, family_id, expires_at, user_agent, revoked_at, created_at
+FROM refresh_tokens
+WHERE token_hash = ?1
+`
+
+type GetRefreshTokenByHashParams struct {
+	TokenHash string `json:"token_hash"`
+}
+
+type GetRefreshTokenByHashRow struct {
+	ID        string         `json:"id"`
+	UserID    string         `json:"user_id"`
+	TokenHash string         `json:"token_hash"`
+	FamilyID  string         `json:"family_id"`
+	ExpiresAt string         `json:"expires_at"`
+	UserAgent sql.NullString `json:"user_agent"`
+	RevokedAt sql.NullString `json:"revoked_at"`
+	CreatedAt string         `json:"created_at"`
+}
+
+func (q *Queries) GetRefreshTokenByHash(ctx context.Context, arg GetRefreshTokenByHashParams) (GetRefreshTokenByHashRow, error) {
+	row := q.db.QueryRowContext(ctx, getRefreshTokenByHash, arg.TokenHash)
+	var i GetRefreshTokenByHashRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TokenHash,
+		&i.FamilyID,
+		&i.ExpiresAt,
+		&i.UserAgent,
+		&i.RevokedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getUserByID = `-- name: GetUserByID :one
+SELECT id, username, password_hash, role, created_at, updated_at
+FROM users
+WHERE id = ?1
+`
+
+type GetUserByIDParams struct {
+	ID string `json:"id"`
+}
+
+func (q *Queries) GetUserByID(ctx context.Context, arg GetUserByIDParams) (User, error) {
+	row := q.db.QueryRowContext(ctx, getUserByID, arg.ID)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.PasswordHash,
+		&i.Role,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getUserByUsername = `-- name: GetUserByUsername :one
+SELECT id, username, password_hash, role, created_at, updated_at
+FROM users
+WHERE username = ?1
+`
+
+type GetUserByUsernameParams struct {
+	Username string `json:"username"`
+}
+
+func (q *Queries) GetUserByUsername(ctx context.Context, arg GetUserByUsernameParams) (User, error) {
+	row := q.db.QueryRowContext(ctx, getUserByUsername, arg.Username)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.PasswordHash,
+		&i.Role,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const revokeRefreshToken = `-- name: RevokeRefreshToken :one
+UPDATE refresh_tokens
+SET revoked_at = ?2
+WHERE id = ?1 AND revoked_at IS NULL
+RETURNING id, user_id, token_hash, family_id, expires_at, user_agent, revoked_at, created_at
+`
+
+type RevokeRefreshTokenParams struct {
+	ID        string         `json:"id"`
+	RevokedAt sql.NullString `json:"revoked_at"`
+}
+
+type RevokeRefreshTokenRow struct {
+	ID        string         `json:"id"`
+	UserID    string         `json:"user_id"`
+	TokenHash string         `json:"token_hash"`
+	FamilyID  string         `json:"family_id"`
+	ExpiresAt string         `json:"expires_at"`
+	UserAgent sql.NullString `json:"user_agent"`
+	RevokedAt sql.NullString `json:"revoked_at"`
+	CreatedAt string         `json:"created_at"`
+}
+
+func (q *Queries) RevokeRefreshToken(ctx context.Context, arg RevokeRefreshTokenParams) (RevokeRefreshTokenRow, error) {
+	row := q.db.QueryRowContext(ctx, revokeRefreshToken, arg.ID, arg.RevokedAt)
+	var i RevokeRefreshTokenRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TokenHash,
+		&i.FamilyID,
+		&i.ExpiresAt,
+		&i.UserAgent,
+		&i.RevokedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const revokeRefreshTokenFamily = `-- name: RevokeRefreshTokenFamily :execrows
+UPDATE refresh_tokens
+SET revoked_at = ?2
+WHERE family_id = ?1 AND revoked_at IS NULL
+`
+
+type RevokeRefreshTokenFamilyParams struct {
+	FamilyID  string         `json:"family_id"`
+	RevokedAt sql.NullString `json:"revoked_at"`
+}
+
+func (q *Queries) RevokeRefreshTokenFamily(ctx context.Context, arg RevokeRefreshTokenFamilyParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, revokeRefreshTokenFamily, arg.FamilyID, arg.RevokedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateUserPassword = `-- name: UpdateUserPassword :one
+UPDATE users
+SET password_hash = ?2, updated_at = ?3
+WHERE id = ?1
+RETURNING id, username, password_hash, role, created_at, updated_at
+`
+
+type UpdateUserPasswordParams struct {
+	ID           string `json:"id"`
+	PasswordHash string `json:"password_hash"`
+	UpdatedAt    string `json:"updated_at"`
+}
+
+func (q *Queries) UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) (User, error) {
+	row := q.db.QueryRowContext(ctx, updateUserPassword, arg.ID, arg.PasswordHash, arg.UpdatedAt)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.PasswordHash,
+		&i.Role,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

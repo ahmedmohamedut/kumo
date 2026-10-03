@@ -195,3 +195,53 @@ Newest entries last. Each entry references the milestone/task it came from.
   so `package.json` maps its peer to the workspace version instead of pinning an
   older compiler. `npm run gen:api` regenerates `web/src/types/api.ts`, which is
   committed; feature code imports from there and never hand-writes a DTO.
+
+## M1.1 — Backend auth
+
+- **Access tokens are HS256, not EdDSA.** `01-api.md` allowed either. A control
+  plane signs and verifies on the same host, so there is no public key to
+  distribute and no RSA/Ed25519 keygen to manage; switching to EdDSA later only
+  changes `internal/auth.Signer` and the `alg` in the token header. The key is
+  32 random bytes in `KUMO_JWT_SECRET_FILE` (default `$DATA_DIR/jwt.key`),
+  generated on first run with mode `0600`, and a file readable by group or other
+  is rejected at startup rather than used.
+- **The role claim lives in the token payload, not the header.** `role` is a
+  custom claim next to `sub`/`iat`/`exp`/`jti`; putting it in the JOSE header
+  would be signed as well but is semantically the wrong place for it.
+- **`alg: none` and RS256 tokens are rejected structurally**, not by checking a
+  string: `jwt.WithValidMethods` plus a key function that only returns the key
+  for an HMAC method, so a forged token fails as `ErrInvalidToken` — the same
+  answer as an expired one.
+- **Two packages, one per layer.** `internal/auth` holds the primitives
+  (`password.go`, `token.go`, `secret.go`) with no database or gin dependency;
+  `internal/service/auth` owns users, refresh tokens and the login rate limiter,
+  and `internal/api` only translates HTTP to service calls. `internal/service`
+  grew a `ValidationError`/`FieldError` pair so a service can report per-field
+  problems, and `internal/api.describeError` maps it to the same 400 envelope
+  the api layer used to build by hand.
+- **Refresh tokens are 256-bit random values stored as SHA-256 hashes.**
+  The plain token only ever appears in the `HttpOnly; Secure; SameSite=Strict`
+  cookie, the database keeps `token_hash`, and every rotation carries the
+  `family_id` of its predecessor. Presenting an already revoked token revokes
+  the whole family and answers 401: a replay means the token leaked, so the
+  attacker and the victim both have to log in again.
+- **Login failures are uniform in body *and* in timing.** An unknown username
+  runs two Argon2id hashes before answering 401, so response time does not leak
+  which accounts exist, and the error message never repeats the username.
+- **The rate limiter is an in-memory fixed-window table (5/min per IP+username,
+  in `internal/service/auth/limiter.go`).** A control plane is a single
+  process; losing the counters on restart costs an attacker five attempts, and
+  no extra dependency is needed for a counter. The window starts at the first
+  failure and is cleared by a successful login. Keyed on
+  `strings.ToLower(remoteAddr) + username` lowercased, because usernames are
+  stored case-insensitively.
+- **The refresh cookie is scoped to `/api/v1/auth`.** Only the auth endpoints
+  need it, so a narrower path keeps it off every other request; `Secure` follows
+  `KUMO_COOKIE_SECURE` (true by default, false only for plain-HTTP development).
+- **Argon2id parameters (64 MiB, t=3, p=2, 32-byte key, 16-byte salt) are stored
+  inside the hash** and read back on verification, so raising the defaults later
+  does not lock out existing users. `p=2` rather than `p=4` keeps the test suite
+  usable on small machines.
+- **The logout cookie uses `Path=/api/v1/auth`** and is expired with `MaxAge=-1`,
+  which is the only way to delete a cookie from the browser: it has to match the
+  path and name it was set with.

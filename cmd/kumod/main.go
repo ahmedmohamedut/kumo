@@ -14,10 +14,12 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/ahmedmohamedut/kumo/internal/api"
+	"github.com/ahmedmohamedut/kumo/internal/auth"
 	"github.com/ahmedmohamedut/kumo/internal/config"
 	"github.com/ahmedmohamedut/kumo/internal/hypervisor"
 	"github.com/ahmedmohamedut/kumo/internal/hypervisor/fake"
 	"github.com/ahmedmohamedut/kumo/internal/logging"
+	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
 	"github.com/ahmedmohamedut/kumo/internal/store"
 	"github.com/ahmedmohamedut/kumo/internal/version"
@@ -82,6 +84,25 @@ func serve(ctx context.Context) error {
 
 	systemService := system.New(logger, version.Version, cfg.Hypervisor, db, hv)
 
+	secret, err := auth.LoadOrCreateSecret(cfg.JWTSecretFile)
+	if err != nil {
+		return fmt.Errorf("load the JWT signing key: %w", err)
+	}
+	signer, err := auth.NewSigner(secret, cfg.AccessTTL)
+	if err != nil {
+		return fmt.Errorf("build the token signer: %w", err)
+	}
+	authService, err := authservice.New(authservice.Options{
+		Logger:     logger,
+		Store:      db,
+		Signer:     signer,
+		RefreshTTL: cfg.RefreshTTL,
+	})
+	if err != nil {
+		return fmt.Errorf("build the auth service: %w", err)
+	}
+	logger.InfoContext(ctx, "auth is ready", "secret_file", cfg.JWTSecretFile, "refresh_ttl", cfg.RefreshTTL)
+
 	console, err := webui.New(logger)
 	if err != nil {
 		return fmt.Errorf("prepare web console: %w", err)
@@ -91,9 +112,13 @@ func serve(ctx context.Context) error {
 	}
 
 	handler := api.NewHandler(api.Options{
-		Logger:  logger,
-		GinMode: ginMode(cfg.LogLevel),
-		System:  systemService,
+		Logger:       logger,
+		GinMode:      ginMode(cfg.LogLevel),
+		System:       systemService,
+		Auth:         authService,
+		Signer:       signer,
+		RefreshTTL:   cfg.RefreshTTL,
+		CookieSecure: cfg.CookieSecure,
 		ReadyChecks: []api.Check{
 			{Name: "db", Probe: db.Ping},
 			{Name: "hypervisor", Probe: hv.Ping},

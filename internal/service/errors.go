@@ -26,3 +26,19 @@ var (
 	// ErrUnavailable means a dependency (hypervisor, worker) cannot serve it.
 	ErrUnavailable = errors.New("unavailable")
 )
+
+// ValidationError is returned by a service when a request fails validation.
+// The api layer maps it to 400 and renders Fields as inline form errors.
+type ValidationError struct {
+	Message string
+	Fields  []FieldError
+}
+
+// Error implements error.
+func (e *ValidationError) Error() string { return e.Message }
+
+// FieldError explains why one request field was rejected.
+type FieldError struct {
+	Field  string
+	Reason string
+}

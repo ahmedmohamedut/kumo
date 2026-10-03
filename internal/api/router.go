@@ -5,10 +5,13 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/ahmedmohamedut/kumo/internal/api/middleware"
+	"github.com/ahmedmohamedut/kumo/internal/auth"
+	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
 )
 
@@ -27,6 +30,15 @@ type Options struct {
 	GinMode string
 	// System answers GET /api/v1/system/info.
 	System *system.Service
+	// Auth answers the /api/v1/auth endpoints.
+	Auth *authservice.Service
+	// Signer verifies access tokens and guards every authenticated route.
+	Signer *auth.Signer
+	// RefreshTTL is the lifetime of the refresh cookie.
+	RefreshTTL time.Duration
+	// CookieSecure marks the refresh cookie Secure. It must stay true behind
+	// TLS and be false only for plain HTTP development.
+	CookieSecure bool
 	// ReadyChecks are probed by GET /readyz; all of them must pass.
 	ReadyChecks []Check
 	// AllowedOrigins enables development CORS for the Vite dev server.
@@ -41,6 +53,10 @@ type Options struct {
 type Handler struct {
 	logger         *slog.Logger
 	system         *system.Service
+	auth           *authservice.Service
+	signer         *auth.Signer
+	refreshTTL     time.Duration
+	cookieSecure   bool
 	checks         []Check
 	allowedOrigins []string
 	console        http.Handler
@@ -52,6 +68,10 @@ func NewHandler(opts Options) *Handler {
 	return &Handler{
 		logger:         opts.Logger,
 		system:         opts.System,
+		auth:           opts.Auth,
+		signer:         opts.Signer,
+		refreshTTL:     opts.RefreshTTL,
+		cookieSecure:   opts.CookieSecure,
 		checks:         opts.ReadyChecks,
 		allowedOrigins: opts.AllowedOrigins,
 		console:        opts.Console,
@@ -79,6 +99,18 @@ func (h *Handler) Router() *gin.Engine {
 
 	v1 := engine.Group("/api/v1")
 	v1.GET("/system/info", h.systemInfo)
+
+	// The auth endpoints carry the refresh cookie instead of an access token,
+	// so they sit outside the authenticated group.
+	authRoutes := v1.Group("/auth")
+	authRoutes.POST("/setup", h.authSetup)
+	authRoutes.POST("/login", h.authLogin)
+	authRoutes.POST("/refresh", h.authRefresh)
+	authRoutes.POST("/logout", h.authLogout)
+
+	// Everything below needs a valid access token.
+	secured := v1.Group("", middleware.RequireAuth(h.signer))
+	secured.GET("/auth/me", h.authMe)
 
 	engine.NoRoute(h.notFound)
 	engine.NoMethod(func(c *gin.Context) {
