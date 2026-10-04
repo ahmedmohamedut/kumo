@@ -39,7 +39,7 @@ Work through tasks **in order**, one per PR. Each task lists acceptance criteria
   AC: integration test (tag `libvirt`) creates pools/network idempotently.
 - [x] **M3.2 Image import backend**: task runner (workers, claim, restart recovery), `image.import` workflow (download, checksum, qcow2 inspect, place into pool), list/get/patch/delete, catalog endpoint, SSRF guard.
   AC: tests with `httptest` server serving a tiny qcow2; failure cleans up temp + volume; delete blocked when in use.
-- [ ] **M3.3 Images UI**: list with progress, import form with catalog, detail page, delete.
+- [x] **M3.3 Images UI**: list with progress, import form with catalog, detail page, delete.
   AC: progress bar updates via polling; error state shows reason.
   Note: `progress` is 0 for a chunked download (no `Content-Length`), so the row has to show the image state until a percentage exists.
 

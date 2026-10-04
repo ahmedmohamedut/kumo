@@ -6,6 +6,8 @@ import { LoginPage } from '@/features/auth/LoginPage'
 import { SetupPage } from '@/features/auth/SetupPage'
 import { DashboardPage } from '@/features/dashboard/DashboardPage'
 import { ImagesListPage } from '@/features/images/ImagesListPage'
+import { ImageDetailPage } from '@/features/images/ImageDetailPage'
+import { ImportImagePage } from '@/features/images/ImportImagePage'
 import { InstancesListPage } from '@/features/instances/InstancesListPage'
 import { KeyPairsListPage } from '@/features/keypairs/KeyPairsListPage'
 import { CreateKeyPairPage } from '@/features/keypairs/CreateKeyPairPage'
@@ -31,6 +33,8 @@ export const router = createBrowserRouter([
       { index: true, element: <DashboardPage /> },
       { path: 'instances', element: <InstancesListPage /> },
       { path: 'images', element: <ImagesListPage /> },
+      { path: 'images/import', element: <ImportImagePage /> },
+      { path: 'images/:imageId', element: <ImageDetailPage /> },
       { path: 'key-pairs', element: <KeyPairsListPage /> },
       { path: 'key-pairs/create', element: <CreateKeyPairPage /> },
       { path: 'key-pairs/import', element: <ImportKeyPairPage /> },
