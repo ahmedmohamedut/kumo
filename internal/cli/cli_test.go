@@ -370,10 +370,6 @@ func TestDoctor(t *testing.T) {
 			t.Errorf("stdout = %q, want a line for %q", stdout, want)
 		}
 	}
-	if !strings.Contains(stdout, "skip") {
-		t.Errorf("stdout = %q, want the unimplemented libvirt checks marked skip", stdout)
-	}
-
 	// The doctor created the signing key, so the server can start right after.
 	info, err := os.Stat(filepath.Join(dir, "jwt.key"))
 	if err != nil {
@@ -406,19 +402,26 @@ func TestDoctorReportsAnUnfinishedSetup(t *testing.T) {
 	}
 }
 
-func TestDoctorFailsOnAnUnimplementedHypervisor(t *testing.T) {
+func TestDoctorRunsTheRealLibvirtChecks(t *testing.T) {
 	testDir(t)
 	t.Setenv("KUMO_HYPERVISOR", "libvirt")
 
-	code, stdout, stderr := runCLI(t, "", "doctor")
+	// The socket almost certainly does not exist in the test environment, so
+	// the libvirt lines must fail with the reason, not be reported as pending.
+	code, stdout, _ := runCLI(t, "", "doctor")
 	if code != cli.ExitError {
 		t.Fatalf("exit code = %d, want 1 (stdout %s)", code, stdout)
 	}
-	if !strings.Contains(stdout, "FAIL") || !strings.Contains(stdout, "M3.1") {
-		t.Errorf("stdout = %q, want a failing hypervisor line naming M3.1", stdout)
+	for _, want := range []string{"/dev/kvm", "libvirt socket"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("stdout = %q, want a line for %q", stdout, want)
+		}
 	}
-	if !strings.Contains(stderr, "1 of") {
-		t.Errorf("stderr = %q, want the failure count", stderr)
+	if !strings.Contains(stdout, "FAIL") {
+		t.Errorf("stdout = %q, want a failing libvirt line", stdout)
+	}
+	if strings.Contains(stdout, "M3.1") || strings.Contains(stdout, "skip") {
+		t.Errorf("stdout = %q, want no pending libvirt checks left", stdout)
 	}
 }
 

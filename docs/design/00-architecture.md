@@ -87,6 +87,8 @@
 | `KUMO_ALLOWED_ORIGINS` | *(empty)* | dev CORS (Vite at `http://localhost:5173`) |
 | `KUMO_WORKERS` | `4` | task worker count |
 | `KUMO_IMAGE_MAX_BYTES` | `20GiB` | max image import size |
+| `KUMO_IMAGE_TEMP_DIR` | `$KUMO_DATA_DIR/staging` | where a download is staged; must share a filesystem with the images pool |
+| `KUMO_IMAGE_ALLOW_PRIVATE_URLS` | `false` | allow imports from loopback/private/link-local hosts (trusted LAN mirrors) |
 | `KUMO_LOG_LEVEL` | `info` | `debug|info|warn|error` |
 
 ## 6. Startup sequence
@@ -94,9 +96,10 @@
 1. Load config, open SQLite (WAL, `busy_timeout=5000`, `foreign_keys=ON`), run embedded goose migrations.
 2. Ensure JWT key exists.
 3. Connect to hypervisor; **bootstrap**: ensure storage pools and network exist (create if missing: dir pools under `$DATA_DIR/pools/*`, NAT network `192.168.100.0/24` named `kumo-default`).
-4. Seed `instance_types` if empty.
-5. Start worker + reconciler.
-6. Start HTTP server. If no users exist, `/api/v1/system/info` reports `needs_setup: true`; the UI shows first-run admin creation (`POST /auth/setup`, only allowed when zero users exist).
+4. Create the staging directory (`$KUMO_IMAGE_TEMP_DIR`), where image downloads land before they become volumes.
+5. Seed `instance_types` if empty.
+6. Start worker + reconciler. The worker first *recovers* tasks left `running` by a previous process (back to `pending`, attempts preserved) and only then starts claiming.
+7. Start HTTP server. If no users exist, `/api/v1/system/info` reports `needs_setup: true`; the UI shows first-run admin creation (`POST /auth/setup`, only allowed when zero users exist).
 
 ## 7. Error model
 

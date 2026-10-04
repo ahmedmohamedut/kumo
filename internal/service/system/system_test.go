@@ -21,6 +21,15 @@ type stubHypervisor struct {
 
 func (s stubHypervisor) Ping(context.Context) error { return s.err }
 
+// stubKVM is a libvirt-shaped backend: it answers Ping and also knows whether
+// /dev/kvm is usable, which the fake cannot report.
+type stubKVM struct {
+	stubHypervisor
+	kvm bool
+}
+
+func (s stubKVM) HasKVM() bool { return s.kvm }
+
 func TestInfo(t *testing.T) {
 	t.Parallel()
 
@@ -83,6 +92,28 @@ func TestInfo(t *testing.T) {
 				Hypervisor: system.HypervisorInfo{Type: "fake", OK: false},
 			},
 		},
+		{
+			// The daemon answers but hardware acceleration is missing: the
+			// control plane is up, but no guest can boot.
+			name:       "libvirt without kvm",
+			hypervisor: "libvirt",
+			pin:        stubKVM{stubHypervisor: stubHypervisor{}, kvm: false},
+			want: system.Info{
+				Version:    "v0.0.1",
+				NeedsSetup: false,
+				Hypervisor: system.HypervisorInfo{Type: "libvirt", OK: true, KVM: boolPtr(false)},
+			},
+		},
+		{
+			name:       "libvirt with kvm",
+			hypervisor: "libvirt",
+			pin:        stubKVM{stubHypervisor: stubHypervisor{}, kvm: true},
+			want: system.Info{
+				Version:    "v0.0.1",
+				NeedsSetup: false,
+				Hypervisor: system.HypervisorInfo{Type: "libvirt", OK: true, KVM: boolPtr(true)},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -95,7 +126,13 @@ func TestInfo(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Info() error = %v", err)
 			}
-			if got != tt.want {
+			// The KVM field is a pointer so the fake can say "no opinion";
+			// compare the values behind it rather than the addresses.
+			if got.Version != tt.want.Version ||
+				got.NeedsSetup != tt.want.NeedsSetup ||
+				got.Hypervisor.Type != tt.want.Hypervisor.Type ||
+				got.Hypervisor.OK != tt.want.Hypervisor.OK ||
+				!sameBool(got.Hypervisor.KVM, tt.want.Hypervisor.KVM) {
 				t.Errorf("Info() = %+v, want %+v", got, tt.want)
 			}
 		})
@@ -110,5 +147,20 @@ func TestInfoPropagatesStoreErrors(t *testing.T) {
 
 	if _, err := svc.Info(context.Background()); err == nil {
 		t.Fatal("Info() error = nil, want the store error")
+	}
+}
+
+// boolPtr is the address of a bool, for the KVM field.
+func boolPtr(v bool) *bool { return &v }
+
+// sameBool compares two optional bools by value; two nils are equal.
+func sameBool(a, b *bool) bool {
+	switch {
+	case a == nil && b == nil:
+		return true
+	case a == nil || b == nil:
+		return false
+	default:
+		return *a == *b
 	}
 }

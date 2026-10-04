@@ -19,6 +19,13 @@ type HypervisorChecker interface {
 	Ping(ctx context.Context) error
 }
 
+// KVMReporter is the optional half of a backend that knows whether hardware
+// acceleration is usable. libvirt implements it; the fake does not, so the
+// field is null there instead of guessing.
+type KVMReporter interface {
+	HasKVM() bool
+}
+
 // Info is the payload of GET /api/v1/system/info.
 type Info struct {
 	Version    string         `json:"version"`
@@ -26,10 +33,12 @@ type Info struct {
 	Hypervisor HypervisorInfo `json:"hypervisor"`
 }
 
-// HypervisorInfo describes the hypervisor backend.
+// HypervisorInfo describes the hypervisor backend. KVM is nil when the backend
+// cannot answer, which is the case for the in-memory fake.
 type HypervisorInfo struct {
 	Type string `json:"type"`
 	OK   bool   `json:"ok"`
+	KVM  *bool  `json:"kvm"`
 }
 
 // Service implements Info.
@@ -76,6 +85,13 @@ func (s *Service) Info(ctx context.Context) (Info, error) {
 		} else {
 			info.Hypervisor.OK = true
 		}
+	}
+
+	// A nil KVM means the backend has no opinion (the fake); a pointer to false
+	// is the important signal: the daemon is up but no guest can boot.
+	if reporter, ok := s.hypervisorPin.(KVMReporter); ok {
+		kvm := reporter.HasKVM()
+		info.Hypervisor.KVM = &kvm
 	}
 
 	return info, nil

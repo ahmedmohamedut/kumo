@@ -36,7 +36,12 @@ type Hypervisor interface {
 	EnsureInfra(ctx context.Context, cfg InfraConfig) error
 
 	// Volumes.
-	ImportImage(ctx context.Context, name string, r io.Reader, size int64) error
+	//
+	// ImportImage registers an image as a volume in the images pool. The spec
+	// is passed in rather than sniffed, because the caller has already parsed
+	// the header and libvirt needs the capacity up front for the upload path
+	// (docs/design/04-libvirt-integration.md §2).
+	ImportImage(ctx context.Context, name string, r io.Reader, spec ImportSpec) error
 	ImageInfo(ctx context.Context, name string) (ImageInfo, error)
 	DeleteVolume(ctx context.Context, pool, name string) error
 	CreateRootDisk(ctx context.Context, spec RootDiskSpec) error
@@ -76,6 +81,21 @@ const (
 	// FormatRaw is a plain sector image.
 	FormatRaw ImageFormat = "raw"
 )
+
+// ImportSpec describes an image file being registered as a volume.
+//
+// SizeBytes and VirtualSizeBytes are separate on purpose: a 500 MiB qcow2 with a
+// 10 GiB virtual size is the normal case, and conflating them either truncates
+// the image or hands libvirt a capacity too small to boot.
+type ImportSpec struct {
+	// SizeBytes is how many bytes r yields, which bounds a copy or an upload.
+	SizeBytes int64
+	// VirtualSizeBytes is the capacity the guest sees. It is what libvirt puts
+	// in <capacity>.
+	VirtualSizeBytes int64
+	// Format is the on-disk format the header parse found.
+	Format ImageFormat
+}
 
 // ImageInfo describes a volume in the images pool.
 type ImageInfo struct {

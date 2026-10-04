@@ -11,7 +11,7 @@ type Hypervisor interface {
     EnsureInfra(ctx context.Context, cfg InfraConfig) error      // pools + network
 
     // Volumes
-    ImportImage(ctx context.Context, name string, r io.Reader, size int64) error
+    ImportImage(ctx context.Context, name string, src ImportSource) error
     ImageInfo(ctx context.Context, name string) (ImageInfo, error)   // virtual size, format
     DeleteVolume(ctx context.Context, pool, name string) error
     CreateRootDisk(ctx context.Context, spec RootDiskSpec) error     // backing file + resize
@@ -50,12 +50,23 @@ Two **directory** storage pools, created by `EnsureInfra`:
 Permissions: files owned by the libvirt QEMU user (`libvirt-qemu`/`qemu`) — don't hardcode; set via pool `<permissions>` and verify in the doctor check.
 
 ### Image import flow (task `image.import`)
-1. Create DB row `pending`; create task.
-2. Download to a temp file in `$DATA_DIR/tmp` (stream, enforce `KUMO_IMAGE_MAX_BYTES`, update `progress` from `Content-Length`).
+1. Create DB row `pending`; create task. The HTTP handler validates the URL synchronously and never downloads.
+2. Download to a temp file in `$KUMO_IMAGE_TEMP_DIR` (stream, enforce `KUMO_IMAGE_MAX_BYTES`, update `progress` from `Content-Length`).
 3. Verify checksum if provided (`sha256`/`sha512`).
-4. Inspect format/virtual size: parse the qcow2 header (magic `QFI\xfb`, virtual size at offset 24, big-endian u64) in pure Go, or use `qemu-img info --output=json` if present. Reject unknown formats; if `raw`, accept and record.
-5. Create volume in `kumo-images` (`StorageVolCreateXML`) with `capacity` = file size, upload with `StorageVolUpload` (stream). **Alternative for dir pools:** move the file into the pool directory and call `StoragePoolRefresh`. Prefer this (faster); fall back to upload if the pool path isn't local.
-6. Update row: `available`, `size_bytes`, `virtual_size_bytes`, `volume_name`. On any failure: delete partial volume/temp file; set `failed` + `state_reason`.
+4. Inspect format/virtual size in pure Go (`internal/imagefmt`): parse the qcow2 header (magic `QFI\xfb`, virtual size at offset 24, big-endian u64). Reject backing-file images (the chain would dangle once the pool changes); if `raw`, accept and record the rounded-up sector size.
+5. Create the volume in `kumo-images`, named `img-<id>.qcow2`, via one of two paths:
+   - **Directory pool (preferred):** `os.Rename` the staged file into the pool directory, `chmod` it readable by the pool's QEMU user, then `StoragePoolRefresh` so libvirt sees it. This is a metadata operation, not a copy.
+   - **Fallback:** `StorageVolCreateXML` + `StorageVolUpload`, for a pool whose path is not local to kumod.
+6. Update row: `available`, `size_bytes`, `virtual_size_bytes`, `volume_name`. On any failure: delete the partial volume/temp file; set `failed` + `state_reason`.
+
+`ImportSource` carries **both** sizes, because they are different numbers:
+
+| Field | Meaning | Used as |
+|---|---|---|
+| `SizeBytes` | bytes on disk (`ls -l`) | length of the upload / staged file |
+| `VirtualSizeBytes` | guest capacity (qcow2 header, raw rounded up) | libvirt `<capacity>` |
+
+Setting `capacity` to the file size truncates a sparse qcow2 to its compressed length and makes the volume unusable; setting the upload length to the virtual size hangs or fails. The same two numbers are recorded as `size_bytes` and `virtual_size_bytes`.
 
 ## 3. Instance launch flow (task `instance.launch`)
 

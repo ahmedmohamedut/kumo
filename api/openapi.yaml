@@ -454,13 +454,48 @@ paths:
       tags: [Images]
       operationId: deleteImage
       summary: Delete an image
-      description: '`409` while any non-terminated instance uses it.'
+      description: |
+        `409` while any instance references the image, terminated ones
+        included, with the blocking instance ids in the message.
       responses:
         '202':
           description: The deletion was accepted.
           headers:
             Location:
               description: The task that tracks the deletion.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Image'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /images/{id}/retry:
+    parameters:
+      - $ref: '#/components/parameters/ImageID'
+    post:
+      tags: [Images]
+      operationId: retryImageTask
+      summary: Retry a failed image import or deletion
+      description: |
+        Re-queues the task that failed last, with the same payload, and returns
+        `202`. Only an image in `failed` can be retried, so a fresh task is
+        never queued over one that is still running. Use the `source_url`
+        already stored on the image: a download that failed to reach its host
+        usually fails again.
+      responses:
+        '202':
+          description: The retry was accepted.
+          headers:
+            Location:
+              description: The task that tracks the retry.
               schema:
                 type: string
           content:
@@ -1056,6 +1091,12 @@ components:
               enum: [fake, libvirt]
             ok:
               type: boolean
+            kvm:
+              type: boolean
+              description: |
+                Whether `/dev/kvm` is usable. False means the control plane runs
+                but no instance can boot; launches fail as `unavailable`.
+              nullable: true
     SystemCapacity:
       type: object
       description: Host totals versus what is already allocated.
@@ -1238,6 +1279,13 @@ components:
         min_disk_gb:
           type: integer
           description: Smallest root disk this image boots from.
+        task_id:
+          type: string
+          nullable: true
+          description: |
+            The task of the most recent import or delete. Carried by the `202`
+            import and delete responses so the console can follow the work
+            without a second request.
         created_at:
           type: string
           format: date-time

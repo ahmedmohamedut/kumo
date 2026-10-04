@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -14,13 +16,18 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/config"
 	"github.com/ahmedmohamedut/kumo/internal/hypervisor"
 	"github.com/ahmedmohamedut/kumo/internal/hypervisor/fake"
+	libvirt "github.com/ahmedmohamedut/kumo/internal/hypervisor/libvirt"
+	"github.com/ahmedmohamedut/kumo/internal/imagefetch"
 	"github.com/ahmedmohamedut/kumo/internal/logging"
 	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
+	"github.com/ahmedmohamedut/kumo/internal/service/image"
 	"github.com/ahmedmohamedut/kumo/internal/service/keypair"
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
+	"github.com/ahmedmohamedut/kumo/internal/service/task"
 	"github.com/ahmedmohamedut/kumo/internal/store"
 	"github.com/ahmedmohamedut/kumo/internal/version"
 	"github.com/ahmedmohamedut/kumo/internal/webui"
+	"github.com/ahmedmohamedut/kumo/internal/worker"
 )
 
 // fakeSubnet is the private range the in-memory backend hands out addresses
@@ -89,6 +96,56 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		return fmt.Errorf("build the key pair service: %w", err)
 	}
 
+	tasks, err := task.New(task.Options{Store: db})
+	if err != nil {
+		return fmt.Errorf("build the task service: %w", err)
+	}
+
+	// The staging directory holds a download until it becomes a volume, so it
+	// has to exist before the worker runs; putting it under the data directory
+	// keeps it on the same filesystem as the pool.
+	if err := os.MkdirAll(cfg.ImageTempDir, 0o700); err != nil {
+		return fmt.Errorf("create the image staging directory %s: %w", cfg.ImageTempDir, err)
+	}
+
+	images, err := image.New(image.Options{
+		Logger:     logger,
+		Store:      db,
+		Hypervisor: hv,
+		Tasks:      tasks,
+		Downloader: imagefetch.New(imagefetch.Options{
+			MaxBytes:             cfg.ImageMaxBytes,
+			AllowPrivateNetworks: cfg.ImageAllowPrivateURLs,
+		}),
+		ImagesPool: cfg.PoolImages,
+		TempDir:    cfg.ImageTempDir,
+		MaxBytes:   cfg.ImageMaxBytes,
+	})
+	if err != nil {
+		return fmt.Errorf("build the image service: %w", err)
+	}
+
+	// The worker drains the tasks table. Recover runs before the first claim, so
+	// a task the last process was interrupted on is retried instead of stranded.
+	taskPool := worker.New(worker.Options{
+		Logger:   logger,
+		Store:    db,
+		Registry: worker.Registry(images.Handler()),
+		Workers:  cfg.Workers,
+	})
+	if err := taskPool.Start(ctx); err != nil {
+		return fmt.Errorf("start the task worker: %w", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if err := taskPool.Stop(stopCtx); err != nil {
+			logger.ErrorContext(context.WithoutCancel(ctx), "the task worker did not stop cleanly",
+				"error", err)
+		}
+	}()
+	logger.InfoContext(ctx, "task worker is running", "workers", cfg.Workers)
+
 	console, err := webui.New(logger)
 	if err != nil {
 		return fmt.Errorf("prepare web console: %w", err)
@@ -104,6 +161,8 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		System:   systemService,
 		Auth:     authService,
 		KeyPairs: keyPairs,
+		Images:   images,
+		Tasks:    tasks,
 		Signer:   signer,
 		ReadyChecks: []api.Check{
 			{Name: "db", Probe: db.Ping},
@@ -134,8 +193,7 @@ func newHypervisor(cfg *config.Config) (hypervisor.Hypervisor, error) {
 	case config.HypervisorFake:
 		return fake.New(fake.Config{Subnet: fakeSubnet}), nil
 	case config.HypervisorLibvirt:
-		return nil, fmt.Errorf("%w: the libvirt backend is not implemented yet (M3.1); "+
-			"run with KUMO_HYPERVISOR=fake", hypervisor.ErrNotImplemented)
+		return libvirt.New(logging.New(cfg.LogLevel, os.Stdout), cfg.LibvirtURI)
 	default:
 		return nil, fmt.Errorf("%w: %q", config.ErrInvalidHypervisor, cfg.Hypervisor)
 	}

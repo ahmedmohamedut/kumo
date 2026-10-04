@@ -5,10 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/ahmedmohamedut/kumo/internal/auth"
 	"github.com/ahmedmohamedut/kumo/internal/config"
+	"github.com/ahmedmohamedut/kumo/internal/hypervisor"
+	"github.com/ahmedmohamedut/kumo/internal/hypervisor/libvirt"
+	"github.com/ahmedmohamedut/kumo/internal/logging"
 	"github.com/ahmedmohamedut/kumo/internal/store"
 )
 
@@ -24,10 +30,10 @@ var errChecksFailed = errors.New("checks failed")
 type check struct {
 	name string
 	ok   bool
-	// note explains a failure, or says what is not checked yet.
+	// note explains a failure, or adds detail to a passing line.
 	note string
-	// pending marks a check a later milestone implements.
-	pending bool
+	// warn marks a line that reports a risk without blocking the install.
+	warn bool
 }
 
 // runDoctor implements `kumod doctor`. M1.2 only reports what does not need the
@@ -46,16 +52,16 @@ func runDoctor(ctx context.Context, out io.Writer) error {
 		checkDatabase(ctx, cfg),
 		checkSigningKey(cfg),
 		checkHypervisor(cfg),
-		{name: "libvirt socket", pending: true, note: "checked once the backend exists (M3.1)"},
-		{name: "/dev/kvm", pending: true, note: "checked once the backend exists (M3.1)"},
-		{name: "pools and network", pending: true, note: "checked once the backend exists (M3.1)"},
+	}
+	if cfg.Hypervisor == config.HypervisorLibvirt {
+		checks = append(checks, checkLibvirt(ctx, cfg)...)
 	}
 
 	failed := 0
 	for _, c := range checks {
 		switch {
-		case c.pending:
-			fmt.Fprintf(out, "skip  %-18s %s\n", c.name, c.note)
+		case c.warn:
+			fmt.Fprintf(out, "warn  %-18s %s\n", c.name, c.note)
 		case c.ok:
 			fmt.Fprintf(out, "ok    %-18s %s\n", c.name, c.note)
 		default:
@@ -63,9 +69,6 @@ func runDoctor(ctx context.Context, out io.Writer) error {
 			fmt.Fprintf(out, "FAIL  %-18s %s\n", c.name, c.note)
 		}
 	}
-
-	fmt.Fprintln(out, "\nthe libvirt checks are not implemented yet; "+
-		"see docs/design/04-libvirt-integration.md §8")
 
 	if failed > 0 {
 		return fmt.Errorf("%w: %d of %d", errChecksFailed, failed, len(checks))
@@ -99,7 +102,10 @@ func checkDataDir(dir string) check {
 	return check{name: "data directory", ok: true, note: dir}
 }
 
-// checkDiskSpace warns when the data directory is nearly full.
+// checkDiskSpace warns when the data directory is nearly full. The design
+// (04-libvirt-integration.md §8) calls this a warning, not a blocker: a host
+// with 15 GiB left can still import a small image, and `doctor` should not fail
+// a working install because of it.
 func checkDiskSpace(dir string) check {
 	free := freeBytes(dir)
 	if free == 0 {
@@ -110,8 +116,9 @@ func checkDiskSpace(dir string) check {
 	if free < minFreeBytes {
 		return check{
 			name: "disk space",
-			ok:   false,
-			note: note + fmt.Sprintf(", want at least %.0f GiB", gib(minFreeBytes)),
+			ok:   true,
+			warn: true,
+			note: note + fmt.Sprintf(", below the recommended %.0f GiB", gib(minFreeBytes)),
 		}
 	}
 
@@ -150,24 +157,144 @@ func checkSigningKey(cfg *config.Config) check {
 	return check{name: "jwt signing key", ok: true, note: cfg.JWTSecretFile}
 }
 
-// checkHypervisor reports whether the selected backend is usable at all. The
-// libvirt backend is refused by the server until M3.1, so doctor says so instead
-// of pretending an instance could run.
+// checkHypervisor reports which backend is selected. The per-host libvirt
+// checks live in checkLibvirt; this line only names the backend so a
+// misconfigured KUMO_HYPERVISOR is visible at a glance.
 func checkHypervisor(cfg *config.Config) check {
-	if cfg.Hypervisor == config.HypervisorFake {
+	switch cfg.Hypervisor {
+	case config.HypervisorFake:
 		return check{
 			name: "hypervisor",
 			ok:   true,
 			note: "fake (in-memory, for development only)",
 		}
-	}
-
-	return check{
-		name: "hypervisor",
-		ok:   false,
-		note: "libvirt is configured but not implemented yet (M3.1); " +
-			"set KUMO_HYPERVISOR=fake for development",
+	case config.HypervisorLibvirt:
+		return check{name: "hypervisor", ok: true, note: cfg.LibvirtURI}
+	default:
+		return check{
+			name: "hypervisor",
+			ok:   false,
+			note: fmt.Sprintf("%q names no known backend", cfg.Hypervisor),
+		}
 	}
 }
 
 func gib(bytes uint64) float64 { return float64(bytes) / (1 << 30) }
+
+// checkLibvirt runs the host checks of 04-libvirt-integration.md §8 that need a
+// real daemon: /dev/kvm, the socket, QEMU, the pools and the network. Each
+// failure carries the remediation, because a half-configured libvirt host is
+// the single most common reason kumod will not start.
+func checkLibvirt(ctx context.Context, cfg *config.Config) []check {
+	cks := make([]check, 0, 6)
+
+	cks = append(cks, checkKVM())
+
+	client, err := libvirt.New(logging.New(slog.LevelWarn, io.Discard), cfg.LibvirtURI)
+	if err != nil {
+		return append(cks, check{name: "libvirt socket", ok: false, note: err.Error()})
+	}
+	defer client.Close() //nolint:errcheck // the process exits right after
+
+	if err := client.Connect(ctx); err != nil {
+		return append(cks, check{
+			name: "libvirt socket",
+			ok:   false,
+			note: fmt.Sprintf("%s: %v. Is libvirtd running, "+
+				"and is the kumo user in the libvirt group?", cfg.LibvirtURI, err),
+		})
+	}
+
+	if err := client.Ping(ctx); err != nil {
+		return append(cks, check{name: "libvirt socket", ok: false, note: err.Error()})
+	}
+
+	cks = append(cks,
+		check{name: "libvirt socket", ok: true, note: cfg.LibvirtURI},
+		checkQEMU(),
+	)
+
+	// EnsureInfra is idempotent, so doctor uses it as its own probe: it both
+	// reports a missing pool and leaves the host ready for the server to start.
+	infra := hypervisor.InfraConfig{
+		ImagesPool:    cfg.PoolImages,
+		InstancesPool: cfg.PoolInstances,
+		Network:       cfg.Network,
+		DataDir:       cfg.DataDir,
+	}
+
+	if err := client.EnsureInfra(ctx, infra); err != nil {
+		cks = append(cks, check{
+			name: "pools and network",
+			ok:   false,
+			note: fmt.Sprintf("%v. Check that %s is writable by the qemu user "+
+				"and that the kumo user may define networks.",
+				err, cfg.DataDir),
+		})
+	} else {
+		cks = append(cks, check{
+			name: "pools and network",
+			ok:   true,
+			note: fmt.Sprintf("%s, %s, %s", infra.ImagesPool, infra.InstancesPool, infra.Network),
+		})
+	}
+
+	return append(cks, checkIPForward())
+}
+
+// checkKVM reports whether hardware acceleration is usable. Without it the
+// control plane still runs - images import, the console works - but no guest
+// will ever boot, so it is reported as a blocking problem with the fix.
+func checkKVM() check {
+	if libvirt.HasKVM() {
+		return check{name: "/dev/kvm", ok: true, note: "present and accessible"}
+	}
+
+	return check{
+		name: "/dev/kvm",
+		ok:   false,
+		note: "not present; instances cannot run. Load the kvm-intel or kvm-amd " +
+			"module and give the service user access: usermod -aG kvm,libvirt kumo",
+	}
+}
+
+// checkQEMU reports whether a QEMU binary libvirt can use exists. qemu-img is
+// only reported, never required: Kumo parses qcow2 headers itself.
+func checkQEMU() check {
+	const note = "install qemu-system-x86 and qemu-utils"
+
+	if _, err := exec.LookPath("qemu-system-x86_64"); err != nil {
+		if _, err := exec.LookPath("qemu-kvm"); err != nil {
+			return check{name: "qemu", ok: false, note: "no qemu-system-x86_64 in PATH; " + note}
+		}
+	}
+	if _, err := exec.LookPath("qemu-img"); err != nil {
+		return check{name: "qemu", ok: true, warn: true, note: "qemu-img not in PATH (optional); " + note}
+	}
+
+	return check{name: "qemu", ok: true, note: "qemu-system-x86_64 and qemu-img in PATH"}
+}
+
+// checkIPForward reports the sysctl libvirt NAT needs. It is only a warning:
+// the network may already be routed by other means, and libvirt sets it itself
+// on most hosts.
+func checkIPForward() check {
+	const path = "/proc/sys/net/ipv4/ip_forward"
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return check{name: "ip_forward", ok: true, warn: true, note: path + " is not readable"}
+	}
+
+	if value := strings.TrimSpace(string(raw)); value != "1" {
+		return check{
+			name: "ip_forward",
+			ok:   true,
+			warn: true,
+			note: value + "; guests will not reach the network. " +
+				"Enable it: sysctl -w net.ipv4.ip_forward=1",
+		}
+	}
+
+	return check{name: "ip_forward", ok: true, note: "enabled"}
+}
