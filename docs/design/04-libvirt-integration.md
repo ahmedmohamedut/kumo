@@ -87,6 +87,28 @@ on failure at step N: Undefine domain (if defined), delete root disk + seed ISO,
 
 Seed ISO: build in pure Go (`github.com/kdomanski/iso9660`) → write into the instances pool dir → refresh pool. Fallback: shell out to `xorriso`/`genisoimage` only if the pure-Go path proves unreliable (ask first).
 
+Volume names are `<instance-id>-root.qcow2` and `<instance-id>-seed.iso`, built by
+`hypervisor.RootDiskName`/`hypervisor.SeedISOName` so the service that launches, the libvirt backend
+that creates the volumes and the fake that holds them cannot disagree on a name a rollback deletes.
+The serial log goes to `$KUMO_DATA_DIR/console/<instance-id>.log`, the file the console-output
+endpoint of M4.4 serves.
+
+Behavior the steps above do not make obvious:
+
+- **Every step adopts what is already there.** A requeued task (see below) finds its own volumes and
+  its own domain, so `CreateRootDisk`/`CreateSeedISO` treat `ErrAlreadyExists` as success and the
+  domain is reused rather than defined twice.
+- **A shutdown is not a failure.** If the worker's context is done — the process is stopping — the
+  row stays `pending` and nothing is deleted. The worker leaves such a task `running` and the next
+  `Start` requeues it (`worker.Pool.run`), so the right thing is to leave the work for the requeued
+  attempt. Only a real failure marks the row `error` and rolls back.
+- **The final write is not a reason to destroy a running guest.** The state, the uuid, the MAC and
+  the address are written in one statement. If it fails while the guest is up, the domain and its
+  volumes are left alone and the row stays `pending`: the reconciler brings it in line, whereas a
+  rollback here would throw away a booted instance.
+- **Adoption and rollback both tolerate a half-finished step**, because a step that succeeded and then
+  failed to be recorded is the normal case, not an exceptional one.
+
 ### Terminate
 `Destroy` (ignore "not running") → `DomainUndefineFlags` (include NVRAM flag if UEFI) → delete `-root.qcow2` and `-seed.iso` → state `terminated`, `terminated_at` set. Idempotent: every step tolerates "already gone".
 

@@ -6,10 +6,12 @@ package fake
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"net/netip"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -23,6 +25,10 @@ const (
 	firstHostOffset = 10
 
 	gib = 1 << 30
+
+	// GiB is a byte count of one gibibyte, exported so a test can assert on the
+	// size of a volume without repeating the constant.
+	GiB = gib
 
 	// consoleLimit caps the console buffer kept per domain.
 	consoleLimit = 64 << 10
@@ -67,6 +73,7 @@ type Fake struct {
 	capacity       hypervisor.Capacity
 	latency        time.Duration
 	nextHost       uint32
+	leaseDelay     int
 	volumes        map[string]volume
 	domains        map[string]*domain
 	infrastructure hypervisor.InfraConfig
@@ -89,6 +96,12 @@ type volume struct {
 type domain struct {
 	info    hypervisor.DomainInfo
 	console []byte
+	// leasePolls counts the GetDomain calls this domain has answered without an
+	// address yet. It is only used when LeaseDelay is set.
+	leasePolls int
+	// lease is the address this domain gets once its polls run out, empty when
+	// the fake hands out addresses at definition time.
+	lease string
 }
 
 // subscriber is one Events() consumer.
@@ -295,13 +308,18 @@ func (f *Fake) CreateRootDisk(ctx context.Context, spec hypervisor.RootDiskSpec)
 	return nil
 }
 
-// CreateSeedISO stores the rendered NoCloud seed for an instance.
-func (f *Fake) CreateSeedISO(ctx context.Context, name string, seed hypervisor.CloudInit) error {
+// CreateSeedISO stores the rendered NoCloud seed for an instance in the pool it
+// was told to use, which is the instances pool beside the root disks.
+func (f *Fake) CreateSeedISO(ctx context.Context, pool, name string, seed hypervisor.CloudInit) error {
 	if name == "" {
 		return fmt.Errorf("%w: seed iso name must not be empty", ErrInvalidSpec)
 	}
-	if seed.InstanceID == "" {
-		return fmt.Errorf("%w: a seed iso needs an instance id", ErrInvalidSpec)
+	if pool == "" {
+		return fmt.Errorf("%w: a seed iso needs a pool", ErrInvalidSpec)
+	}
+	instanceID := instanceIDFromMetaData(seed.MetaData)
+	if instanceID == "" {
+		return fmt.Errorf("%w: a seed iso needs meta-data with an instance-id", ErrInvalidSpec)
 	}
 	if err := f.begin(ctx, hypervisor.OpCreateSeedISO); err != nil {
 		return err
@@ -312,17 +330,17 @@ func (f *Fake) CreateSeedISO(ctx context.Context, name string, seed hypervisor.C
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	key := volumeKey(f.infrastructure.ImagesPool, name)
+	key := volumeKey(pool, name)
 	if _, ok := f.volumes[key]; ok {
 		return fmt.Errorf("fake: seed iso %q: %w", name, hypervisor.ErrAlreadyExists)
 	}
 	f.volumes[key] = volume{
-		pool:             f.infrastructure.ImagesPool,
+		pool:             pool,
 		name:             name,
 		format:           hypervisor.FormatRaw,
 		sizeBytes:        int64(len(rendered)),
 		virtualSizeBytes: int64(len(rendered)),
-		seed:             seed.InstanceID,
+		seed:             instanceID,
 		content:          rendered,
 	}
 	return nil
@@ -350,17 +368,35 @@ func (f *Fake) DefineAndStart(ctx context.Context, spec hypervisor.DomainSpec) (
 			spec.ID, hypervisor.ErrNotFound)
 	}
 
+	// libvirt assigns a uuid when the XML does not carry one, so the fake does
+	// too: a launched instance that records no uuid would look wrong against a
+	// real backend.
+	uuid := spec.UUID
+	if uuid == "" {
+		uuid = UUIDFor(spec.ID)
+	}
+
+	// The address is allocated once, at definition time, and held back from the
+	// domain until enough polls have passed: a caller that waits for a lease has
+	// to actually wait, without anyone else taking the address meanwhile.
+	address := f.allocateIPLocked()
+	lease := address
+	if f.leaseDelay > 0 {
+		lease = ""
+	}
+
 	d := &domain{
 		info: hypervisor.DomainInfo{
 			ID:        spec.ID,
 			Name:      spec.Name,
-			UUID:      spec.UUID,
+			UUID:      uuid,
 			State:     hypervisor.DomainStateRunning,
-			IP:        f.allocateIPLocked(),
+			IP:        lease,
 			MAC:       MACFor(spec.ID),
 			VCPUs:     spec.VCPUs,
 			MemoryMiB: spec.MemoryMiB,
 		},
+		lease: address,
 	}
 	d.appendConsoleLocked(fmt.Sprintf("[    0.000000] Linux version 6.6.0 (kumo-fake) booting %s\n", spec.Name))
 	f.domains[spec.ID] = d
@@ -535,7 +571,15 @@ func (f *Fake) GetDomain(ctx context.Context, id string) (hypervisor.DomainInfo,
 	if !ok {
 		return hypervisor.DomainInfo{}, fmt.Errorf("fake: domain %q: %w", id, hypervisor.ErrNotFound)
 	}
-	return d.info, nil
+
+	info := d.info
+	if info.IP == "" && d.lease != "" {
+		d.leasePolls++
+		if d.leasePolls > f.leaseDelay {
+			info.IP = d.lease
+		}
+	}
+	return info, nil
 }
 
 // ListDomains returns every domain, ordered by id.
@@ -680,19 +724,108 @@ func (d *domain) appendConsoleLocked(line string) {
 	}
 }
 
-// RootDiskName is the volume name of an instance's root disk.
-func RootDiskName(instanceID string) string {
-	return instanceID + "-root"
+// VolumePath reports where a volume lives, as the libvirt backend does. The fake
+// has no filesystem, so it hands back the path a directory pool would use: a
+// service test asserts the domain spec it passed, not a file.
+func (f *Fake) VolumePath(_ context.Context, pool, name string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	key := volumeKey(pool, name)
+	if _, ok := f.volumes[key]; !ok {
+		return "", fmt.Errorf("fake: the volume %q in %q: %w", name, pool, hypervisor.ErrNotFound)
+	}
+
+	cfg := f.infrastructure
+	dir := filepath.Join(cfg.DataDir, "pools", "instances")
+	if pool == cfg.ImagesPool {
+		dir = filepath.Join(cfg.DataDir, "pools", "images")
+	}
+	return filepath.Join(dir, name), nil
 }
 
+// RootDiskName is the volume name of an instance's root disk, as
+// docs/design/04-libvirt-integration.md §2 names it.
+func RootDiskName(instanceID string) string { return hypervisor.RootDiskName(instanceID) }
+
 // SeedISOName is the volume name of an instance's NoCloud seed.
-func SeedISOName(instanceID string) string {
-	return instanceID + "-seed"
+func SeedISOName(instanceID string) string { return hypervisor.SeedISOName(instanceID) }
+
+// Volume is one volume the fake holds. It exists so a service test can assert
+// what a failed launch left behind, which is the whole point of the rollback.
+type Volume struct {
+	Pool             string
+	Name             string
+	Format           hypervisor.ImageFormat
+	SizeBytes        int64
+	VirtualSizeBytes int64
+	// Backing is the image volume a root disk is a delta of, empty otherwise.
+	Backing string
+	// Seed is the instance id a NoCloud seed belongs to, empty otherwise.
+	Seed string
+	// Content is the rendered seed document, empty otherwise.
+	Content string
+}
+
+// Volumes lists the volumes the fake holds, ordered by pool and then name, so a
+// test can compare a whole set without sorting it itself.
+func (f *Fake) Volumes() []Volume {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make([]Volume, 0, len(f.volumes))
+	for _, v := range f.volumes {
+		out = append(out, Volume{
+			Pool:             v.pool,
+			Name:             v.name,
+			Format:           v.format,
+			SizeBytes:        v.sizeBytes,
+			VirtualSizeBytes: v.virtualSizeBytes,
+			Backing:          v.backing,
+			Seed:             v.seed,
+			Content:          string(v.content),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Pool != out[j].Pool {
+			return out[i].Pool < out[j].Pool
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+// LeaseDelay makes a domain report no address for the first n GetDomain calls,
+// which is what a guest that has not finished its DHCP handshake looks like. It
+// exists so the launch workflow's wait for an address can be tested without
+// sleeping: the delay counts polls, not seconds.
+func (f *Fake) LeaseDelay(polls int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.leaseDelay = polls
+	for _, d := range f.domains {
+		d.leasePolls = 0
+	}
 }
 
 // defaultPrefix is the subnet a zero-value Config falls back to.
 func defaultPrefix() netip.Prefix {
 	return netip.PrefixFrom(netip.AddrFrom4([4]byte{192, 168, 100, 0}), 24)
+}
+
+// UUIDFor derives a stable UUID from a domain id. It is not random, so a test can
+// assert the uuid a launch recorded without depending on a value that changes on
+// every run.
+func UUIDFor(domainID string) string {
+	sum := sha256.Sum256([]byte("kumo-fake-domain:" + domainID))
+
+	var b [16]byte
+	copy(b[:], sum[:16])
+	b[6] = (b[6] & 0x0f) | 0x50 // version 5, derived from a name
+	b[8] = (b[8] & 0x3f) | 0x80 // the RFC 4122 variant
+
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // MACFor derives a stable, locally administered MAC from an instance id.
@@ -704,20 +837,45 @@ func MACFor(instanceID string) string {
 	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5])
 }
 
-// RenderSeed renders the NoCloud seed the way the ISO builder in
-// internal/hypervisor/libvirt does, but as plain text.
+// RenderSeed concatenates the seed documents the way the ISO builder in
+// internal/seediso lays them out, but as plain text: the fake stores what a
+// service test can read, not a real ISO.
+//
+// The documents arrive already rendered, so this only joins them. The
+// YAML separators are what would separate the files inside the image.
 func RenderSeed(seed hypervisor.CloudInit) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "instance-id: %s\n", seed.InstanceID)
-	fmt.Fprintf(&b, "local-hostname: %s\n", seed.Hostname)
-	if seed.UserData != "" {
-		b.WriteString("---\n")
-		b.WriteString(seed.UserData)
-		if !strings.HasSuffix(seed.UserData, "\n") {
+
+	for _, document := range []string{seed.MetaData, seed.NetworkConfig, seed.UserData} {
+		if document == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("---\n")
+		}
+		b.WriteString(document)
+		if !strings.HasSuffix(document, "\n") {
 			b.WriteString("\n")
 		}
 	}
 	return b.String()
+}
+
+// instanceIDFromMetaData reads the instance-id out of a meta-data document. The
+// fake does it the way cloud-init does, by looking at the first lines, because a
+// seed that names no instance is one it cannot attribute to a guest.
+func instanceIDFromMetaData(metaData string) string {
+	for line := range strings.Lines(metaData) {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, "instance-id:"); ok {
+			return strings.TrimSpace(rest)
+		}
+		return ""
+	}
+	return ""
 }
 
 // readImage reads r, refusing to store more than size bytes when size is

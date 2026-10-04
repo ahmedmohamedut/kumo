@@ -440,3 +440,40 @@ func (s *Service) Handler() map[string]worker.Handler {
 func isUniqueViolation(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
+
+// LaunchSource is what a launch needs from an image: the volume to boot from and
+// the facts the seed is rendered from.
+//
+// It is deliberately not part of the Image projection: volume_name is where the
+// image lives inside libvirt, which is an implementation detail an API client has
+// no business reading (docs/design/04-libvirt-integration.md §2).
+type LaunchSource struct {
+	ID         string
+	Name       string
+	State      State
+	VolumeName string
+	// DefaultUser is the login cloud-config grants a key pair to.
+	DefaultUser string
+	// MinDiskGB is the smallest root disk this image boots from.
+	MinDiskGB int
+}
+
+// LaunchSource returns the image a launch boots from.
+func (s *Service) LaunchSource(ctx context.Context, imageID string) (LaunchSource, error) {
+	row, err := s.store.GetImage(ctx, sqlc.GetImageParams{ID: imageID})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return LaunchSource{}, fmt.Errorf("%w: no image %q", service.ErrNotFound, imageID)
+		}
+		return LaunchSource{}, fmt.Errorf("get image: %w", err)
+	}
+
+	return LaunchSource{
+		ID:          row.ID,
+		Name:        row.Name,
+		State:       State(row.State),
+		VolumeName:  row.VolumeName.String,
+		DefaultUser: row.DefaultUser,
+		MinDiskGB:   int(row.MinDiskGb),
+	}, nil
+}

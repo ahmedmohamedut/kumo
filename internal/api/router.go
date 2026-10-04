@@ -13,6 +13,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/auth"
 	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
 	"github.com/ahmedmohamedut/kumo/internal/service/image"
+	"github.com/ahmedmohamedut/kumo/internal/service/instance"
 	"github.com/ahmedmohamedut/kumo/internal/service/instancetype"
 	"github.com/ahmedmohamedut/kumo/internal/service/keypair"
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
@@ -42,6 +43,8 @@ type Options struct {
 	Images *image.Service
 	// InstanceTypes answers the /api/v1/instance-types endpoints.
 	InstanceTypes *instancetype.Service
+	// Instances answers the /api/v1/instances endpoints.
+	Instances *instance.Service
 	// Tasks answers the /api/v1/tasks endpoints, which is where the Location
 	// header of an asynchronous image operation points.
 	Tasks *task.Service
@@ -70,6 +73,7 @@ type Handler struct {
 	keyPairs       *keypair.Service
 	images         *image.Service
 	instanceTypes  *instancetype.Service
+	instances      *instance.Service
 	tasks          *task.Service
 	signer         *auth.Signer
 	refreshTTL     time.Duration
@@ -89,6 +93,7 @@ func NewHandler(opts Options) *Handler {
 		keyPairs:       opts.KeyPairs,
 		images:         opts.Images,
 		instanceTypes:  opts.InstanceTypes,
+		instances:      opts.Instances,
 		tasks:          opts.Tasks,
 		signer:         opts.Signer,
 		refreshTTL:     opts.RefreshTTL,
@@ -163,6 +168,16 @@ func (h *Handler) Router() *gin.Engine {
 	// form, they just may not submit it.
 	if h.instanceTypes != nil {
 		secured.GET("/instance-types", h.listInstanceTypes)
+	}
+
+	// Instances. Reads are open to both roles; launching is admin only, because it
+	// claims the vCPUs, memory and disk of the node (docs/design/01-api.md
+	// §Authorization matrix).
+	if h.instances != nil {
+		secured.GET("/instances", h.listInstances)
+		secured.GET("/instances/:id", h.getInstance)
+		write := secured.Group("", middleware.RequireRole(auth.RoleAdmin))
+		write.POST("/instances", h.launchInstance)
 	}
 
 	// Host capacity. A launch form shows it next to the instance type, so both

@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -22,6 +23,7 @@ import (
 	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
 	"github.com/ahmedmohamedut/kumo/internal/service/capacity"
 	"github.com/ahmedmohamedut/kumo/internal/service/image"
+	"github.com/ahmedmohamedut/kumo/internal/service/instance"
 	"github.com/ahmedmohamedut/kumo/internal/service/instancetype"
 	"github.com/ahmedmohamedut/kumo/internal/service/keypair"
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
@@ -141,12 +143,45 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		return fmt.Errorf("build the image service: %w", err)
 	}
 
+	// The launch workflow needs the pool layout to write a domain XML, which is
+	// knowledge the backend has and the service does not. A backend that cannot
+	// resolve a path is a backend that cannot boot a guest, so the wiring fails
+	// rather than letting every launch fail later.
+	resolver, ok := hv.(instance.VolumeResolver)
+	if !ok {
+		return fmt.Errorf("%w: the %s backend cannot resolve volume paths",
+			config.ErrInvalidHypervisor, cfg.Hypervisor)
+	}
+
+	instances, err := instance.New(instance.Options{
+		Logger:        logger,
+		Store:         db,
+		Hypervisor:    hv,
+		Volumes:       resolver,
+		Tasks:         tasks,
+		Images:        images,
+		Types:         instanceTypes,
+		KeyPairs:      keyPairs,
+		Capacity:      systemService,
+		InstancesPool: cfg.PoolInstances,
+		ImagesPool:    cfg.PoolImages,
+		ConsoleDir:    consoleDir(cfg.DataDir),
+		Network:       cfg.Network,
+		Limits: capacity.Limits{
+			MemoryReserveMiB: cfg.MemoryReserveMiB,
+			VCPUOvercommit:   cfg.VCPUOvercommit,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("build the instance service: %w", err)
+	}
+
 	// The worker drains the tasks table. Recover runs before the first claim, so
 	// a task the last process was interrupted on is retried instead of stranded.
 	taskPool := worker.New(worker.Options{
 		Logger:   logger,
 		Store:    db,
-		Registry: worker.Registry(images.Handler()),
+		Registry: mergeHandlers(images.Handler(), instances.Handler()),
 		Workers:  cfg.Workers,
 	})
 	if err := taskPool.Start(ctx); err != nil {
@@ -179,6 +214,7 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		KeyPairs:      keyPairs,
 		Images:        images,
 		InstanceTypes: instanceTypes,
+		Instances:     instances,
 		Tasks:         tasks,
 		Signer:        signer,
 		ReadyChecks: []api.Check{
@@ -200,6 +236,23 @@ func serve(ctx context.Context, stdout io.Writer) error {
 	logger.InfoContext(context.WithoutCancel(ctx), "kumod stopped")
 
 	return nil
+}
+
+// consoleDir is where the serial console log of every instance is written. It is
+// derived from the data directory rather than configured separately: the logs
+// belong to the same host state as the pools, and a configuration knob nobody
+// would ever change is a knob nobody would ever document.
+func consoleDir(dataDir string) string { return filepath.Join(dataDir, "console") }
+
+// mergeHandlers combines the task handlers of several workflows into one registry.
+func mergeHandlers(registries ...worker.Registry) worker.Registry {
+	merged := worker.Registry{}
+	for _, registry := range registries {
+		for taskType, handler := range registry {
+			merged[taskType] = handler
+		}
+	}
+	return merged
 }
 
 // newHypervisor builds the backend selected by KUMO_HYPERVISOR. The libvirt

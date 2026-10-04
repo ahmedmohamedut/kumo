@@ -356,8 +356,12 @@ export interface paths {
      * @description Runs as a task and answers `202` with the instance in `pending`.
      *     Validation: `name` is an RFC 1123 label of 1-63 characters,
      *     `root_disk_gb` is at least the image's `min_disk_gb` and at most 2048,
-     *     `user_data` is at most 16 KiB, `count` is 1-10, the image must be
+     *     `user_data` is at most 16 KiB, `count` must be 1, the image must be
      *     `available`, and the host must have capacity left.
+     *
+     *     A `count` above 1 is refused in this release rather than given a
+     *     numbering convention the contract does not define; the field stays so a
+     *     client can send it unchanged when it becomes available.
      */
     post: operations['launchInstance']
     delete?: never
@@ -845,7 +849,12 @@ export interface components {
       root_disk_gb?: number
       /** @description Cloud-init payload, at most 16 KiB. Never logged. */
       user_data?: string
-      /** @default 1 */
+      /**
+       * @description Must be 1. The field is part of the contract for a release that can
+       *     launch several instances from one image, and is refused until then
+       *     with a `400` naming `count`.
+       * @default 1
+       */
       count: number
       tags?: components['schemas']['TagMap']
     }

@@ -65,6 +65,10 @@ test: ## Run Go and frontend tests
 test-libvirt: ## Run the opt-in integration tests against a real libvirtd
 	$(GO) test -tags libvirt $(PKGS) -count=1 -timeout 30m
 
+# TestLaunchBootsCirrOS downloads and boots a guest, so it is opt-in: point
+# KUMO_TEST_CIRROS_URL at a CirrOS cloud image (the 0.6.x qcow2 files) to run it.
+# KUMO_TEST_LIBVIRT_URI and KUMO_TEST_LIBVIRT_SOCKET override the daemon it uses.
+
 .PHONY: lint
 lint: ## Run golangci-lint, oxlint, prettier --check and tsc
 	$(GO) tool golangci-lint run

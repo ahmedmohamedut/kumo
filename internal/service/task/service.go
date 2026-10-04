@@ -29,6 +29,9 @@ const (
 	TypeImageImport = "image.import"
 	// TypeImageDelete removes the volume and the row of a deleted image.
 	TypeImageDelete = "image.delete"
+	// TypeInstanceLaunch creates the volumes, the domain and the address of a new
+	// instance.
+	TypeInstanceLaunch = "instance.launch"
 )
 
 // State is the lifecycle of a task. The values mirror the CHECK constraint on

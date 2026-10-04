@@ -49,7 +49,10 @@ type Hypervisor interface {
 	ImageInfo(ctx context.Context, name string) (ImageInfo, error)
 	DeleteVolume(ctx context.Context, pool, name string) error
 	CreateRootDisk(ctx context.Context, spec RootDiskSpec) error
-	CreateSeedISO(ctx context.Context, name string, seed CloudInit) error
+	// CreateSeedISO writes the rendered seed data as a volume in pool. The pool
+	// is named rather than assumed because a seed ISO is per-instance data and
+	// belongs beside the root disks, not with the images every instance shares.
+	CreateSeedISO(ctx context.Context, pool, name string, seed CloudInit) error
 
 	// Domains.
 	DefineAndStart(ctx context.Context, spec DomainSpec) (DomainInfo, error)
@@ -120,10 +123,20 @@ type RootDiskSpec struct {
 }
 
 // CloudInit is the seed data rendered into an instance's NoCloud ISO.
+//
+// Every document arrives rendered. The rules about which key goes into which
+// user-data shape live in internal/service/cloudinit, so a backend never has to
+// know what a cloud-config is, and the two backends cannot drift apart on what a
+// seed looks like.
 type CloudInit struct {
-	InstanceID string
-	Hostname   string
-	UserData   string
+	// MetaData is the NoCloud meta-data document, which carries the instance id
+	// and the hostname.
+	MetaData string
+	// UserData is the cloud-init payload, empty when the launch supplied none.
+	UserData string
+	// NetworkConfig is the network-config v2 document, empty when the seed
+	// should leave the guest's networking to the image.
+	NetworkConfig string
 }
 
 // DomainSpec is everything needed to write a domain definition.
@@ -142,6 +155,16 @@ type DomainSpec struct {
 	ConsoleLogPath string
 	Network        string
 }
+
+// RootDiskName is the volume name of an instance's root disk. The service that
+// launches, the libvirt backend that creates it and the fake that holds it all
+// derive the name here, so a rollback cannot delete a volume under a different
+// name than the one the launch created (docs/design/04-libvirt-integration.md §2).
+func RootDiskName(instanceID string) string { return instanceID + "-root.qcow2" }
+
+// SeedISOName is the volume name of an instance's NoCloud seed, for the same
+// reason as RootDiskName.
+func SeedISOName(instanceID string) string { return instanceID + "-seed.iso" }
 
 // DomainState is the backend state of a domain, mapped to instance states by
 // the reconciler.

@@ -101,7 +101,7 @@ should show the state until a percentage exists (M3.3).
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/instances` | List (filter `?state=running&q=web`) |
+| GET | `/instances` | List (filter `?state=running&q=web`, `?page_size=`, `?page_token=`, `?sort=launched_at:asc`) |
 | POST | `/instances` | Launch (async, `202`) |
 | GET | `/instances/{id}` | Detail |
 | PATCH | `/instances/{id}` | Update `name`, `tags` |
@@ -119,16 +119,29 @@ Launch request:
   "user_data": "#cloud-config\npackages: [nginx]\n",
   "count": 1, "tags": {"env":"dev"} }
 ```
-Validation: `name` 1–63 chars RFC-1123 label-ish; `root_disk_gb` ≥ image `min_disk_gb` (default: the image's virtual size rounded up), ≤ 2048; `user_data` ≤ 16 KiB; `count` 1–10 (MVP: 1 is acceptable); image must be `available`; host capacity check (`quota_exceeded`).
+Validation: `name` 1–63 chars RFC-1123 label-ish; `root_disk_gb` ≥ image `min_disk_gb` (default: the image's virtual size rounded up), ≤ 2048; `user_data` ≤ 16 KiB; `count` must be 1 (a count above 1 is a `400` naming `count`: the field is in the contract for a release that launches several instances from one image, and naming them — `i-2-web`? `web-2`? — is a convention this document does not define, so the launch is refused rather than invented); image must be `available`; the instance type must exist; the host capacity check (`429` `quota_exceeded`).
+
+`POST /instances` answers `202` with the instance in `pending` and a `Location` header pointing at
+the task that tracks the launch. The boot itself (root disk, seed ISO, domain, address) happens in
+the worker; see `04-libvirt-integration.md` §3. `409` is reserved for the lifecycle actions of
+M4.4, which is where per-resource locking starts.
 
 Instance resource:
 ```json
 { "id": "i-…", "name": "web-1", "state": "running", "state_reason": null,
-  "image_id": "img-…", "instance_type": "kumo.small", "vcpus": 1, "memory_mib": 2048,
-  "root_disk_gb": 20, "key_pair_id": "key-…", "private_ip": "192.168.100.23",
-  "mac_address": "52:54:00:…", "launched_at": "…", "tags": {}, "task_id": "task-…" }
+  "image_id": "img-…", "image_name": "ubuntu-2404", "instance_type": "kumo.small",
+  "vcpus": 1, "memory_mib": 2048, "root_disk_gb": 20, "key_pair_id": "key-…",
+  "key_pair_name": "laptop", "private_ip": "192.168.100.23",
+  "mac_address": "52:54:00:…", "user_data": null, "launched_at": "…",
+  "terminated_at": null, "updated_at": "…", "tags": {}, "task_id": "task-…" }
 ```
-`user_data` is never returned by list; detail returns it only to admins.
+`user_data` is never returned by list; detail returns it only to admins. The libvirt uuid is on the
+row, not in the response: it is a backend detail the reconciler matches domains with, not something a
+user acts on.
+
+`state_reason` carries why an instance is in `error` — a failed launch writes the reason it failed
+with (the step, and the error from the backend). `task_id` is the task of the most recent state
+change, so the console follows a launch without guessing which task it was.
 
 ## Tasks
 
