@@ -28,6 +28,7 @@ func TestLoadDefaults(t *testing.T) {
 		DataDir:        "/var/lib/kumo",
 		DBPath:         "/var/lib/kumo/kumo.db",
 		ImageMaxBytes:  20 << 30,
+		ImageTempDir:   "/var/lib/kumo/staging",
 		Hypervisor:     config.HypervisorLibvirt,
 		LibvirtURI:     "unix:///var/run/libvirt/libvirt-sock",
 		PoolImages:     "kumo-images",
@@ -160,6 +161,36 @@ func TestLoadFromEnv(t *testing.T) {
 			},
 		},
 		{
+			name: "image temp dir",
+			env:  map[string]string{"KUMO_IMAGE_TEMP_DIR": "/srv/kumo/staging"},
+			check: func(t *testing.T, cfg *config.Config) {
+				t.Helper()
+				if cfg.ImageTempDir != "/srv/kumo/staging" {
+					t.Errorf("ImageTempDir = %q", cfg.ImageTempDir)
+				}
+			},
+		},
+		{
+			name: "image private urls refused by default",
+			env:  map[string]string{},
+			check: func(t *testing.T, cfg *config.Config) {
+				t.Helper()
+				if cfg.ImageAllowPrivateURLs {
+					t.Error("ImageAllowPrivateURLs = true, want false by default")
+				}
+			},
+		},
+		{
+			name: "image private urls opt in",
+			env:  map[string]string{"KUMO_IMAGE_ALLOW_PRIVATE_URLS": "true"},
+			check: func(t *testing.T, cfg *config.Config) {
+				t.Helper()
+				if !cfg.ImageAllowPrivateURLs {
+					t.Error("ImageAllowPrivateURLs = false, want true")
+				}
+			},
+		},
+		{
 			name: "log level",
 			env:  map[string]string{"KUMO_LOG_LEVEL": "debug"},
 			check: func(t *testing.T, cfg *config.Config) {
@@ -234,6 +265,10 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		{name: "cookie secure not a bool", env: map[string]string{"KUMO_COOKIE_SECURE": "yes-please"}},
 		{name: "image max bytes not a size", env: map[string]string{"KUMO_IMAGE_MAX_BYTES": "20 gigs"}},
 		{name: "negative image max bytes", env: map[string]string{"KUMO_IMAGE_MAX_BYTES": "-1"}},
+		{
+			name: "image private urls not a bool",
+			env:  map[string]string{"KUMO_IMAGE_ALLOW_PRIVATE_URLS": "yes please"},
+		},
 		{name: "unknown log level", env: map[string]string{"KUMO_LOG_LEVEL": "trace"}},
 	}
 

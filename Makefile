@@ -88,6 +88,9 @@ sqlc: ## Regenerate sqlc code from internal/store/queries
 .PHONY: openapi
 openapi: ## Validate api/openapi.yaml and regenerate the TypeScript types
 	$(NPM) --prefix $(WEB) run gen:api --if-present
+	# openapi-typescript emits its own formatting, which `make lint` rejects, so
+	# the generated file is formatted before the tree is checked again.
+	$(NPM) --prefix $(WEB) run format --if-present
 
 .PHONY: version
 version: ## Print the version this build would carry

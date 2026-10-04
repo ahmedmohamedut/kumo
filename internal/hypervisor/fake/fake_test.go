@@ -37,12 +37,31 @@ func newFake(t *testing.T) *fake.Fake {
 	return f
 }
 
+// qcow2Spec is the import spec of a qcow2-looking image of len(content) bytes,
+// whose virtual size is twice the file.
+func qcow2Spec(content []byte) hypervisor.ImportSpec {
+	return hypervisor.ImportSpec{
+		SizeBytes:        int64(len(content)),
+		VirtualSizeBytes: int64(len(content)) * 2,
+		Format:           hypervisor.FormatQCOW2,
+	}
+}
+
+// rawSpec is the import spec of a plain file of size bytes.
+func rawSpec(size int64) hypervisor.ImportSpec {
+	return hypervisor.ImportSpec{
+		SizeBytes:        size,
+		VirtualSizeBytes: size,
+		Format:           hypervisor.FormatRaw,
+	}
+}
+
 // importImage stores a qcow2-looking image in the images pool.
 func importImage(t *testing.T, f *fake.Fake, name string) {
 	t.Helper()
 
 	content := append([]byte("QFI\xfb"), bytes.Repeat([]byte{0x00}, 1023)...)
-	if err := f.ImportImage(t.Context(), name, bytes.NewReader(content), int64(len(content))); err != nil {
+	if err := f.ImportImage(t.Context(), name, bytes.NewReader(content), qcow2Spec(content)); err != nil {
 		t.Fatalf("ImportImage(%q) error = %v", name, err)
 	}
 }
@@ -97,10 +116,10 @@ func TestImportImage(t *testing.T) {
 	ctx := t.Context()
 
 	qcow2 := append([]byte("QFI\xfb"), bytes.Repeat([]byte{0x01}, 2047)...)
-	if err := f.ImportImage(ctx, "img-qcow2", bytes.NewReader(qcow2), int64(len(qcow2))); err != nil {
+	if err := f.ImportImage(ctx, "img-qcow2", bytes.NewReader(qcow2), qcow2Spec(qcow2)); err != nil {
 		t.Fatalf("ImportImage() error = %v", err)
 	}
-	if err := f.ImportImage(ctx, "img-raw", strings.NewReader("not a qcow2"), 11); err != nil {
+	if err := f.ImportImage(ctx, "img-raw", strings.NewReader("not a qcow2"), rawSpec(11)); err != nil {
 		t.Fatalf("ImportImage() error = %v", err)
 	}
 
@@ -139,12 +158,23 @@ func TestImportImageErrors(t *testing.T) {
 		image     string
 		content   string
 		size      int64
+		format    hypervisor.ImageFormat
 		wantErrIs error
 		wantErr   string
 	}{
 		{name: "empty name", image: "", content: "x", size: 1, wantErr: "image name"},
 		{name: "empty content", image: "img-empty", content: "", size: 0, wantErr: "empty"},
 		{name: "too large", image: "img-big", content: "123456", size: 3, wantErr: "larger than"},
+		{
+			// A workflow that declares qcow2 for a plain file would hand libvirt
+			// a volume that cannot boot, so the fake refuses it.
+			name:      "declared format disagrees with the header",
+			image:     "img-mismatch",
+			content:   "not a qcow2",
+			size:      12,
+			format:    hypervisor.FormatQCOW2,
+			wantErrIs: fake.ErrFormatMismatch,
+		},
 		{
 			name:      "duplicate",
 			image:     "img-duplicate",
@@ -163,7 +193,12 @@ func TestImportImageErrors(t *testing.T) {
 				importImage(t, f, tt.image)
 			}
 
-			err := f.ImportImage(ctx, tt.image, strings.NewReader(tt.content), tt.size)
+			err := f.ImportImage(ctx, tt.image, strings.NewReader(tt.content),
+				hypervisor.ImportSpec{
+					SizeBytes:        tt.size,
+					VirtualSizeBytes: tt.size,
+					Format:           tt.format,
+				})
 			if err == nil {
 				t.Fatal("ImportImage() error = nil, want an error")
 			}

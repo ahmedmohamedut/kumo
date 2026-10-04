@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatAbsoluteTime, formatRelativeTime } from '@/lib/format'
+import { formatAbsoluteTime, formatBytes, formatGiB, formatRelativeTime } from '@/lib/format'
 
 /** The reference "now" every case below is measured against. */
 const NOW = new Date('2026-03-15T12:00:00Z')
@@ -48,5 +48,42 @@ describe('formatAbsoluteTime', () => {
 
   it('marks an unparseable timestamp', () => {
     expect(formatAbsoluteTime('')).toBe('—')
+  })
+})
+
+describe('formatBytes', () => {
+  const cases: ReadonlyArray<[string, number | null | undefined, string]> = [
+    ['bytes', 512, '512 B'],
+    ['a kibibyte boundary', 1024, '1.0 KiB'],
+    ['kibibytes', 1536, '1.5 KiB'],
+    ['a mebibyte boundary', 1024 * 1024, '1.0 MiB'],
+    ['a tiny image on disk', 1128, '1.1 KiB'],
+    ['a gibibyte boundary', 1024 ** 3, '1.0 GiB'],
+    ['a cloud image', 590 * 1024 * 1024, '590.0 MiB'],
+    ['zero', 0, '0 B'],
+    ['unknown', null, '—'],
+    ['absent', undefined, '—'],
+  ]
+
+  it.each(cases)('%s', (_label, value, want) => {
+    expect(formatBytes(value)).toBe(want)
+  })
+
+  it('refuses a negative size rather than printing it', () => {
+    expect(formatBytes(-1)).toBe('—')
+  })
+})
+
+describe('formatGiB', () => {
+  const cases: ReadonlyArray<[string, number | null | undefined, string]> = [
+    ['a whole size', 10, '10 GiB'],
+    ['a fractional size rounds', 10.4, '10 GiB'],
+    ['zero', 0, '0 GiB'],
+    ['unknown', null, '—'],
+    ['absent', undefined, '—'],
+  ]
+
+  it.each(cases)('%s', (_label, value, want) => {
+    expect(formatGiB(value)).toBe(want)
   })
 })

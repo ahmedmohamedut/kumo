@@ -5,6 +5,9 @@ import type { components } from '@/types/api'
 type AuthUser = components['schemas']['AuthUser']
 type SystemInfo = components['schemas']['SystemInfo']
 type KeyPair = components['schemas']['KeyPair']
+type Image = components['schemas']['Image']
+type Task = components['schemas']['Task']
+type CatalogImage = components['schemas']['CatalogImage']
 
 /**
  * MSW handlers for the auth and system endpoints (03-frontend.md §8). The auth
@@ -135,6 +138,242 @@ export function addMockUsedBy(id: string, instanceID: string): void {
  * "setup is closed", which is the state each test starts from.
  */
 /**
+ * Image and task fixtures.
+ *
+ * The four image states are all represented, because the console has to render
+ * each one and the interesting rendering (a progress bar, a failure reason) only
+ * exists for some of them. `referenced_by` is the same internal field the key
+ * pair fixtures carry as `used_by`: it is stripped from every response and is
+ * what makes a delete answer 409.
+ */
+export interface MockImage extends Image {
+  referenced_by: string[]
+}
+
+const INITIAL_IMAGES: MockImage[] = [
+  {
+    id: 'img-0a1b2c3d4e5f60718',
+    name: 'ubuntu-22.04',
+    description: 'Ubuntu 22.04 LTS, cloud image',
+    state: 'available',
+    state_reason: null,
+    progress: 100,
+    format: 'qcow2',
+    architecture: 'x86_64',
+    os_family: 'Ubuntu',
+    os_version: '22.04',
+    default_user: 'ubuntu',
+    source_url: 'https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img',
+    checksum: null,
+    size_bytes: 687_997_184,
+    min_disk_gb: 8,
+    task_id: 'task-0a1b2c3d4e5f60701',
+    created_at: '2026-01-02T09:30:00Z',
+    updated_at: '2026-01-02T09:41:00Z',
+    tags: { base: 'cloud' },
+    referenced_by: [],
+  },
+  {
+    id: 'img-0b2c3d4e5f6071890',
+    name: 'debian-12-generic',
+    state: 'downloading',
+    state_reason: null,
+    progress: 42,
+    architecture: 'x86_64',
+    os_family: 'Debian',
+    os_version: '12',
+    source_url:
+      'https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2',
+    size_bytes: null,
+    min_disk_gb: 8,
+    task_id: 'task-0a1b2c3d4e5f60702',
+    created_at: '2026-01-03T08:00:00Z',
+    updated_at: '2026-01-03T08:02:00Z',
+    tags: {},
+    referenced_by: [],
+  },
+  {
+    id: 'img-0c2d3e4f5a6071819',
+    name: 'rocky-9-arm64',
+    state: 'failed',
+    state_reason: 'the source returned 403 for the requested image',
+    progress: 0,
+    architecture: 'aarch64',
+    os_family: 'Rocky',
+    os_version: '9',
+    source_url:
+      'https://dl.rockylinux.org/vault/rocky/9/images/arm64/Rocky-9-GenericCloud.latest.arm64.qcow2',
+    min_disk_gb: 10,
+    task_id: 'task-0a1b2c3d4e5f60703',
+    created_at: '2026-01-04T12:00:00Z',
+    updated_at: '2026-01-04T12:00:30Z',
+    tags: {},
+    referenced_by: [],
+  },
+  {
+    id: 'img-0d3e4f5a6071829',
+    name: 'alpine-3.20',
+    state: 'available',
+    state_reason: null,
+    progress: 100,
+    format: 'qcow2',
+    architecture: 'x86_64',
+    os_family: 'Alpine',
+    os_version: '3.20',
+    default_user: 'alpine',
+    source_url:
+      'https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/cloud/alpine-3.20.1-x86_64.qcow2',
+    size_bytes: 67_108_864,
+    min_disk_gb: 1,
+    task_id: 'task-0a1b2c3d4e5f60704',
+    created_at: '2026-01-05T07:15:00Z',
+    updated_at: '2026-01-05T07:16:00Z',
+    tags: {},
+    // A running instance launches from it, so deleting it answers 409.
+    referenced_by: ['i-0a1b2c3d4e5f60718'],
+  },
+]
+
+const INITIAL_TASKS: Task[] = [
+  {
+    id: 'task-0a1b2c3d4e5f60701',
+    type: 'image.import',
+    resource_id: 'img-0a1b2c3d4e5f60718',
+    state: 'succeeded',
+    progress: 100,
+    created_at: '2026-01-02T09:30:00Z',
+    updated_at: '2026-01-02T09:41:00Z',
+  },
+  {
+    id: 'task-0a1b2c3d4e5f60702',
+    type: 'image.import',
+    resource_id: 'img-0b2c3d4e5f6071890',
+    state: 'running',
+    progress: 42,
+    created_at: '2026-01-03T08:00:00Z',
+    updated_at: '2026-01-03T08:02:00Z',
+  },
+  {
+    id: 'task-0a1b2c3d4e5f60703',
+    type: 'image.import',
+    resource_id: 'img-0c2d3e4f5a6071819',
+    state: 'failed',
+    error: 'the source returned 403 for the requested image',
+    created_at: '2026-01-04T12:00:00Z',
+    updated_at: '2026-01-04T12:00:30Z',
+  },
+  {
+    id: 'task-0a1b2c3d4e5f60704',
+    type: 'image.import',
+    resource_id: 'img-0d3e4f5a6071829',
+    state: 'succeeded',
+    progress: 100,
+    created_at: '2026-01-05T07:15:00Z',
+    updated_at: '2026-01-05T07:16:00Z',
+  },
+]
+
+/**
+ * The catalog of well-known images the import page offers, the same three entries
+ * the backend serves first (`internal/service/image/catalog.go`).
+ *
+ * The ids are bare tokens and the names are picker labels: the console turns the
+ * id into the image name, because a name may not contain the spaces and
+ * parentheses a label wants.
+ */
+const CATALOG: CatalogImage[] = [
+  {
+    id: 'ubuntu-2404',
+    name: 'Ubuntu 24.04 LTS',
+    description: "Canonical's long term support release, server image",
+    os_family: 'ubuntu',
+    os_version: '24.04',
+    architecture: 'x86_64',
+    default_user: 'ubuntu',
+    min_disk_gb: 8,
+    source_url:
+      'https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img',
+    checksum_url: 'https://cloud-images.ubuntu.com/releases/noble/release/SHA256SUMS',
+  },
+  {
+    id: 'debian-12',
+    name: 'Debian 12 (bookworm)',
+    description: "Debian's current stable release, generic cloud image",
+    os_family: 'debian',
+    os_version: '12',
+    architecture: 'x86_64',
+    default_user: 'debian',
+    min_disk_gb: 8,
+    source_url:
+      'https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2',
+  },
+  {
+    id: 'alpine-320',
+    name: 'Alpine 3.20',
+    description: 'Small general purpose image',
+    os_family: 'alpine',
+    os_version: '3.20',
+    architecture: 'x86_64',
+    default_user: 'alpine',
+    min_disk_gb: 1,
+    source_url:
+      'https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/cloud/alpine-3.20.1-x86_64.qcow2',
+  },
+]
+
+/** freshImages and freshTasks are private copies, so no test can mutate the originals. */
+function freshImages(): MockImage[] {
+  return INITIAL_IMAGES.map((image) => ({
+    ...image,
+    tags: { ...image.tags },
+    referenced_by: [...image.referenced_by],
+  }))
+}
+
+function freshTasks(): Task[] {
+  return INITIAL_TASKS.map((task) => ({ ...task }))
+}
+
+let images: MockImage[] = freshImages()
+let tasks: Task[] = freshTasks()
+
+/** mockImages is the current fixture table, for assertions. */
+export function mockImages(): MockImage[] {
+  return images
+}
+
+/** mockTasks is the current task table, for assertions. */
+export function mockTasks(): Task[] {
+  return tasks
+}
+
+/** setMockImages replaces the fixture table, e.g. to start from an empty list. */
+export function setMockImages(next: MockImage[]): void {
+  images = next
+}
+
+/** addMockImageReference marks an image as launched-from by an instance. */
+export function addMockImageReference(id: string, instanceID: string): void {
+  images = images.map((image) =>
+    image.id === id ? { ...image, referenced_by: [...image.referenced_by, instanceID] } : image,
+  )
+}
+
+/**
+ * nextResourceID mints an id like the ones kumod generates (`img-`/`task-` plus
+ * 17 hex characters), derived from the shared counter so two fixtures minted in
+ * the same test cannot collide.
+ */
+function nextResourceID(prefix: 'img' | 'task'): string {
+  return `${prefix}-0f1e2d3c4b5a6${String((counter += 1)).padStart(5, '0')}`
+}
+
+/** stripImage drops the internal `referenced_by`, which no response carries. */
+function stripImage({ referenced_by: _referencedBy, ...image }: MockImage): Image {
+  return image
+}
+
+/**
  * resetMockState forgets every issued token and puts the instance back to
  * "setup is closed", which is the state each test starts from.
  *
@@ -148,6 +387,8 @@ export function resetMockState(): void {
   accessTokens = new Map()
   info = { ...info, needs_setup: false }
   keyPairs = freshKeyPairs()
+  images = freshImages()
+  tasks = freshTasks()
 }
 
 /** setMockNeedsSetup opens or closes the first-run setup path. */
@@ -322,6 +563,247 @@ export const handlers = [
     return HttpResponse.json(stripInternal(imported), { status: 201 })
   }),
 
+  // ---------------------------------------------------------------- images ---
+
+  http.get('/api/v1/images', ({ request }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    const params = new URL(request.url).searchParams
+    const query = params.get('q')
+    const state = params.get('state')
+    const items = images
+      // `q` matches the name only, the same as the SQL the backend runs.
+      .filter((image) => query === null || image.name.toLowerCase().includes(query.toLowerCase()))
+      .filter((image) => state === null || image.state === state)
+      // Newest first, the API's default order.
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .map(stripImage)
+    return HttpResponse.json({ items, next_page_token: null })
+  }),
+
+  http.get('/api/v1/images/catalog', ({ request }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    return HttpResponse.json({ items: CATALOG, next_page_token: null })
+  }),
+
+  // The import answers 202 with the image in `pending` and the id of the task
+  // that will do the work. It never waits for the download, which is the whole
+  // point of the task (01-api.md §Images).
+  http.post('/api/v1/images/import', async ({ request }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const body = (await request.json()) as components['schemas']['ImportImageRequest']
+    const fieldError = validateNewImage(body.name, body.source_url, body.os_family, images)
+    if (fieldError !== null) {
+      return invalidArgument(fieldError.field, fieldError.reason)
+    }
+    const task: Task = {
+      id: nextResourceID('task'),
+      type: 'image.import',
+      state: 'pending',
+      created_at: '2026-01-06T00:00:00Z',
+      updated_at: '2026-01-06T00:00:00Z',
+    }
+    const image: MockImage = {
+      id: nextResourceID('img'),
+      name: body.name,
+      description: body.description,
+      state: 'pending',
+      state_reason: null,
+      progress: 0,
+      architecture: body.architecture,
+      os_family: body.os_family,
+      os_version: body.os_version,
+      default_user: body.default_user,
+      source_url: body.source_url,
+      checksum: body.checksum ?? null,
+      min_disk_gb: body.min_disk_gb,
+      task_id: task.id,
+      created_at: '2026-01-06T00:00:00Z',
+      updated_at: '2026-01-06T00:00:00Z',
+      tags: { ...body.tags },
+      referenced_by: [],
+    }
+    tasks = [task, ...tasks]
+    images = [image, ...images]
+    return HttpResponse.json(stripImage(image), { status: 202 })
+  }),
+
+  http.get('/api/v1/images/:id', ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    const image = images.find((candidate) => candidate.id === params.id)
+    if (image === undefined) {
+      return apiError(404, 'not_found', `no image "${String(params.id)}"`)
+    }
+    return HttpResponse.json(stripImage(image))
+  }),
+
+  http.patch('/api/v1/images/:id', async ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const body = (await request.json()) as components['schemas']['UpdateImageRequest']
+    const id = String(params.id)
+    const image = images.find((candidate) => candidate.id === id)
+    if (image === undefined) {
+      return apiError(404, 'not_found', `no image "${id}"`)
+    }
+    if (body.name !== undefined && body.name !== image.name) {
+      const fieldError = validateNewImage(body.name, image.source_url ?? '', 'linux', images)
+      if (fieldError !== null) {
+        return invalidArgument(fieldError.field, fieldError.reason)
+      }
+    }
+    const updated: MockImage = {
+      ...image,
+      ...(body.name === undefined ? {} : { name: body.name }),
+      ...(body.description === undefined ? {} : { description: body.description }),
+      ...(body.tags === undefined ? {} : { tags: { ...body.tags } }),
+      updated_at: '2026-01-06T01:00:00Z',
+    }
+    images = images.map((candidate) => (candidate.id === id ? updated : candidate))
+    return HttpResponse.json(stripImage(updated))
+  }),
+
+  // Deleting is a task too: the answer is 202 with the image in `deleting`, and
+  // the row only disappears when that task finishes. The mock leaves it there so
+  // a test can watch the state the console renders.
+  http.delete('/api/v1/images/:id', ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const id = String(params.id)
+    const image = images.find((candidate) => candidate.id === id)
+    if (image === undefined) {
+      return apiError(404, 'not_found', `no image "${id}"`)
+    }
+    if (image.referenced_by.length > 0) {
+      return apiError(
+        409,
+        'conflict',
+        `the image "${image.name}" is still referenced by ${image.referenced_by.join(', ')}`,
+      )
+    }
+    const task: Task = {
+      id: nextResourceID('task'),
+      type: 'image.delete',
+      resource_id: id,
+      state: 'pending',
+      created_at: '2026-01-06T02:00:00Z',
+      updated_at: '2026-01-06T02:00:00Z',
+    }
+    tasks = [task, ...tasks]
+    images = images.map((candidate) =>
+      candidate.id === id
+        ? {
+            ...candidate,
+            state: 'deleting' as const,
+            task_id: task.id,
+            updated_at: task.created_at,
+          }
+        : candidate,
+    )
+    return HttpResponse.json(
+      stripImage(images.find((candidate) => candidate.id === id) as MockImage),
+      {
+        status: 202,
+      },
+    )
+  }),
+
+  http.post('/api/v1/images/:id/retry', ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const id = String(params.id)
+    const image = images.find((candidate) => candidate.id === id)
+    if (image === undefined) {
+      return apiError(404, 'not_found', `no image "${id}"`)
+    }
+    if (image.state !== 'failed') {
+      return apiError(409, 'conflict', `the image "${image.name}" is not in a failed state`)
+    }
+    const task: Task = {
+      id: nextResourceID('task'),
+      type: 'image.import',
+      resource_id: id,
+      state: 'pending',
+      created_at: '2026-01-06T03:00:00Z',
+      updated_at: '2026-01-06T03:00:00Z',
+    }
+    tasks = [task, ...tasks]
+    images = images.map((candidate) =>
+      candidate.id === id
+        ? {
+            ...candidate,
+            state: 'pending' as const,
+            state_reason: null,
+            progress: 0,
+            task_id: task.id,
+            updated_at: task.created_at,
+          }
+        : candidate,
+    )
+    return HttpResponse.json(
+      stripImage(images.find((candidate) => candidate.id === id) as MockImage),
+      { status: 202 },
+    )
+  }),
+
+  // ----------------------------------------------------------------- tasks ---
+
+  http.get('/api/v1/tasks', ({ request }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    const params = new URL(request.url).searchParams
+    const resourceId = params.get('resource_id')
+    const state = params.get('state')
+    const items = tasks
+      .filter((task) => resourceId === null || task.resource_id === resourceId)
+      .filter((task) => state === null || task.state === state)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    return HttpResponse.json({ items, next_page_token: null })
+  }),
+
+  http.get('/api/v1/tasks/:id', ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    const task = tasks.find((candidate) => candidate.id === params.id)
+    if (task === undefined) {
+      return apiError(404, 'not_found', `no task "${String(params.id)}"`)
+    }
+    return HttpResponse.json(task)
+  }),
+
   http.delete('/api/v1/key-pairs/:id', ({ request, params }) => {
     const user = requireUser(request)
     if (user === undefined) {
@@ -389,6 +871,31 @@ function validateNewKeyPair(
   }
   if (existing.some((pair) => pair.name === name)) {
     return { field: 'name', reason: `a key pair named "${name}" already exists` }
+  }
+  return null
+}
+
+/** validateNewImage is the shared import rule: a name, an http(s) URL and an OS. */
+function validateNewImage(
+  name: string,
+  sourceURL: string,
+  osFamily: string,
+  existing: MockImage[],
+): { field: string; reason: string } | null {
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(name)) {
+    return {
+      field: 'name',
+      reason: "must be 1-128 characters of letters, digits, '.', '_' or '-'",
+    }
+  }
+  if (existing.some((image) => image.name === name)) {
+    return { field: 'name', reason: `an image named "${name}" already exists` }
+  }
+  if (!/^https?:\/\//i.test(sourceURL)) {
+    return { field: 'source_url', reason: 'must be an http or https URL' }
+  }
+  if (osFamily.trim() === '') {
+    return { field: 'os_family', reason: 'must not be empty' }
   }
   return null
 }

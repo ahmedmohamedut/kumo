@@ -12,8 +12,10 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/api/middleware"
 	"github.com/ahmedmohamedut/kumo/internal/auth"
 	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
+	"github.com/ahmedmohamedut/kumo/internal/service/image"
 	"github.com/ahmedmohamedut/kumo/internal/service/keypair"
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
+	"github.com/ahmedmohamedut/kumo/internal/service/task"
 )
 
 // Check is a single readiness probe.
@@ -35,6 +37,11 @@ type Options struct {
 	Auth *authservice.Service
 	// KeyPairs answers the /api/v1/key-pairs endpoints.
 	KeyPairs *keypair.Service
+	// Images answers the /api/v1/images endpoints.
+	Images *image.Service
+	// Tasks answers the /api/v1/tasks endpoints, which is where the Location
+	// header of an asynchronous image operation points.
+	Tasks *task.Service
 	// Signer verifies access tokens and guards every authenticated route.
 	Signer *auth.Signer
 	// RefreshTTL is the lifetime of the refresh cookie.
@@ -58,6 +65,8 @@ type Handler struct {
 	system         *system.Service
 	auth           *authservice.Service
 	keyPairs       *keypair.Service
+	images         *image.Service
+	tasks          *task.Service
 	signer         *auth.Signer
 	refreshTTL     time.Duration
 	cookieSecure   bool
@@ -74,6 +83,8 @@ func NewHandler(opts Options) *Handler {
 		system:         opts.System,
 		auth:           opts.Auth,
 		keyPairs:       opts.KeyPairs,
+		images:         opts.Images,
+		tasks:          opts.Tasks,
 		signer:         opts.Signer,
 		refreshTTL:     opts.RefreshTTL,
 		cookieSecure:   opts.CookieSecure,
@@ -127,6 +138,27 @@ func (h *Handler) Router() *gin.Engine {
 		write.POST("/key-pairs/import", h.importKeyPair)
 		write.PATCH("/key-pairs/:id", h.updateKeyPair)
 		write.DELETE("/key-pairs/:id", h.deleteKeyPair)
+	}
+
+	// Images. Reads are open to both roles; imports, patches and deletions are
+	// admin only, because they change the pool every instance boots from.
+	if h.images != nil {
+		secured.GET("/images", h.listImages)
+		// The catalog is a static route and must win over /images/:id.
+		secured.GET("/images/catalog", h.listImageCatalog)
+		secured.GET("/images/:id", h.getImage)
+		write := secured.Group("", middleware.RequireRole(auth.RoleAdmin))
+		write.POST("/images/import", h.importImage)
+		write.POST("/images/:id/retry", h.retryImageImport)
+		write.PATCH("/images/:id", h.updateImage)
+		write.DELETE("/images/:id", h.deleteImage)
+	}
+
+	// Tasks are readable by both roles: a viewer may watch an image import that
+	// an admin started.
+	if h.tasks != nil {
+		secured.GET("/tasks", h.listTasks)
+		secured.GET("/tasks/:id", h.getTask)
 	}
 
 	engine.NoRoute(h.notFound)

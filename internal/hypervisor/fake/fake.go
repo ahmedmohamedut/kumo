@@ -41,6 +41,9 @@ var (
 	// ErrImageTooLarge is returned when an image is bigger than the declared
 	// size.
 	ErrImageTooLarge = errors.New("fake: image is larger than the declared size")
+	// ErrFormatMismatch is returned when the declared format disagrees with the
+	// header, which would otherwise produce a volume that cannot boot.
+	ErrFormatMismatch = errors.New("fake: image format mismatch")
 )
 
 // Config configures a Fake. The zero value is usable.
@@ -171,9 +174,10 @@ func (f *Fake) EnsureInfra(ctx context.Context, cfg hypervisor.InfraConfig) erro
 	return nil
 }
 
-// ImportImage copies r into a volume of the images pool, enforcing size when it
-// is greater than zero.
-func (f *Fake) ImportImage(ctx context.Context, name string, r io.Reader, size int64) error {
+// ImportImage copies r into a volume of the images pool, enforcing SizeBytes as
+// the upper bound. The declared format is cross-checked against the header, so a
+// workflow that lies about the format is caught here rather than at boot.
+func (f *Fake) ImportImage(ctx context.Context, name string, r io.Reader, spec hypervisor.ImportSpec) error {
 	if name == "" {
 		return fmt.Errorf("%w: image name must not be empty", ErrInvalidSpec)
 	}
@@ -181,7 +185,7 @@ func (f *Fake) ImportImage(ctx context.Context, name string, r io.Reader, size i
 		return err
 	}
 
-	content, err := readImage(r, size)
+	content, err := readImage(r, spec.SizeBytes)
 	if err != nil {
 		return err
 	}
@@ -196,12 +200,18 @@ func (f *Fake) ImportImage(ctx context.Context, name string, r io.Reader, size i
 	if _, exists := f.volumes[key]; exists {
 		return fmt.Errorf("fake: volume %q: %w", name, hypervisor.ErrAlreadyExists)
 	}
+	detected := detectFormat(content)
+	if spec.Format != "" && detected != spec.Format {
+		return fmt.Errorf("%w: the image is %s, the caller declared %s",
+			ErrFormatMismatch, detected, spec.Format)
+	}
+
 	f.volumes[key] = volume{
 		pool:             f.infrastructure.ImagesPool,
 		name:             name,
-		format:           detectFormat(content),
+		format:           detected,
 		sizeBytes:        int64(len(content)),
-		virtualSizeBytes: virtualSize(size, int64(len(content))),
+		virtualSizeBytes: virtualSize(spec.VirtualSizeBytes, int64(len(content))),
 		content:          content,
 	}
 	return nil

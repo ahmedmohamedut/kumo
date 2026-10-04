@@ -45,7 +45,7 @@ Stack: React 18, TypeScript (strict), Vite, Redux Toolkit + RTK Query, React Rou
 | `/instances/:id` | InstanceDetail | Tabs: Details, Storage, Tags, Console output |
 | `/images` | ImagesList | Table + Import button |
 | `/images/import` | ImportImage | Form with catalog picker |
-| `/images/:id` | ImageDetail | |
+| `/images/:id` | ImageDetail | Details, tags, activity (tasks), retry/delete |
 | `/key-pairs` | KeyPairsList | Table + Create/Import |
 | `/key-pairs/create` | CreateKeyPair | Shows private key once in a modal with Download .pem + Copy |
 | `/key-pairs/import` | ImportKeyPair | |
@@ -77,6 +77,8 @@ src/features/notifications/   // flashbar slice + hooks
 ```
 
 RTK Query tags: `Instance`, `Image`, `KeyPair`, `Task`. Mutations invalidate lists. Pages with transitional resources use `pollingInterval: 5000`, otherwise 30000.
+
+The interval follows the data, not the route: the images and tasks pages pass `pollInterval(items)` to the hook, which returns 5000 while anything is `pending`/`downloading`/`deleting` (images) or `pending`/`running` (tasks) and 30000 once everything has settled. RTK Query types `pollingInterval` as a constant on the endpoint, so the value has to come from the cached copy of the query — read through `endpoints.<name>.select(args)` in a `useAppSelector` — and be passed as a per-hook option. An operator who leaves the tab open during an import watches it arrive, and does not then pay for a 5 s loop over a settled table forever.
 
 ## 6. Page specs
 
@@ -115,7 +117,15 @@ On submit → `POST /instances` → navigate to the detail page and show a succe
 `ContentLayout` header with name, ID, state indicator and actions. `Tabs`: **Details** (`ColumnLayout` of `KeyValuePairs`: ID, state, type, vCPU, memory, image, key pair, IPs, launch time, MAC), **Storage** (root disk), **Tags**, **Console output** (`<pre>` with Refresh; VNC console button added in M5), **Tasks** (recent tasks).
 
 ### 6.4 Images
-List columns: Name, Image ID, OS, Architecture, State (+ `ProgressBar` while downloading), Size, Created. Actions: Import image, Delete (disabled if in use; show server error). Import form: pick from **catalog** (autofills URL/checksum/default user) or custom URL; algorithm/checksum; OS metadata; min disk.
+List columns: Name, Image ID, OS, Architecture, State, Size, Min disk, Created. The OS column shows `os_family os_version`, falling back to the source URL's host when an import carried no OS metadata. Filtering is server-side (`?q=`) with the filter kept in the URL; sorting and paging run over the fetched page (`page_size` is the API maximum, so one request covers a whole node).
+
+The State cell carries the whole state, not just its name: `state_reason` under a failed or pending indicator, and a `ProgressBar` while a download is under way. The bar appears only once a percentage exists — a chunked download has no `Content-Length`, and a bar frozen at 0% for the length of a 600 MB transfer reads as "nothing is happening" when something very much is.
+
+Actions: Import image, Delete (confirmation modal naming the image; a refused delete stays on the page and shows the `409`, which names the instances that block it). Import and Delete answer `202`, so both leave the operator on a page that follows the task: the import form goes to the new image, the delete returns to the list where the row shows `deleting` until the task finishes.
+
+Detail page (`ContentLayout`): state indicator, Details (`Grid` of label/value rows: ID, architecture, OS, default user, format, size, min disk, source URL, checksum, timestamps), Tags, and Activity — the tasks for that image with their state and error. Retry import appears only for a failed image; a retry queues a **new** task rather than resurrecting the old one.
+
+Import form: pick from **catalog** or paste a URL, plus algorithm/checksum, OS metadata, default user and min disk. Choosing a catalog entry fills in the URL, the OS, the default user and the min disk from what the node already knows; the **name** comes from the catalog `id` and not its `name`, because a picker label ("Debian 12 (bookworm)") is not a legal image name. A catalog entry carries a `checksum_url`, a link to the vendor's `SHA256SUMS` — not a digest the API can verify on its own, so the checksum field stays empty until the operator pastes the hash.
 
 ### 6.5 Key pairs
 List columns: Name, ID, Type, Fingerprint, Created. Actions: Create key pair, Import, Delete.

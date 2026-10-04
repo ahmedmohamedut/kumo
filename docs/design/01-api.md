@@ -36,7 +36,7 @@ Access JWT claims: `sub` (user id), `role`, `iat`, `exp`, `jti`. Password policy
 | Method | Path | Description |
 |---|---|---|
 | GET | `/healthz`, `/readyz` | (no auth, outside `/api/v1`) |
-| GET | `/api/v1/system/info` | (no auth) `{version, needs_setup, hypervisor: {type, ok}}` |
+| GET | `/api/v1/system/info` | (no auth) `{version, needs_setup, hypervisor: {type, ok, kvm}}` (`kvm` is null when the backend cannot answer) |
 | GET | `/api/v1/system/capacity` | Host CPU/memory/disk totals vs allocated |
 
 ## Instance types
@@ -77,7 +77,8 @@ Create response (`201`):
 | POST | `/images/upload` | Multipart upload of qcow2/raw/img (async finalize) — *M3b, optional* |
 | GET | `/images/{id}` | Detail |
 | PATCH | `/images/{id}` | Update `name`, `description`, `tags` |
-| DELETE | `/images/{id}` | Delete. `409` if any non-terminated instance uses it |
+| DELETE | `/images/{id}` | Delete. `409` if any instance references it, terminated ones included (see `02-data-model.md`) |
+| POST | `/images/{id}/retry` | Retry the last failed import or delete (async, `202`). `409` unless the image is `failed` |
 | GET | `/images/catalog` | Curated well-known cloud images (Ubuntu, Debian, Rocky, Alma, Fedora, Alpine) with URLs & checksum URLs, to power a "quick import" picker |
 
 Import request:
@@ -88,7 +89,11 @@ Import request:
   "os_family": "ubuntu", "os_version": "24.04", "architecture": "x86_64",
   "default_user": "ubuntu", "min_disk_gb": 10 }
 ```
-Image states: `pending → downloading → available`, `failed`, `deleting`. The response during download carries `progress` (0–100) when known.
+Image states: `pending → downloading → available`, `failed`, `deleting`.
+`progress` is a percentage of the server's `Content-Length`, so it stays `0` while a chunked
+download streams — most image CDNs answer that way — and jumps to `100` when the image is
+published. The state is the signal that work is happening; a progress bar built on top of it
+should show the state until a percentage exists (M3.3).
 
 ## Instances
 

@@ -304,13 +304,41 @@ export interface paths {
     post?: never
     /**
      * Delete an image
-     * @description `409` while any non-terminated instance uses it.
+     * @description `409` while any instance references the image, terminated ones
+     *     included, with the blocking instance ids in the message.
      */
     delete: operations['deleteImage']
     options?: never
     head?: never
     /** Rename or re-tag an image */
     patch: operations['updateImage']
+    trace?: never
+  }
+  '/images/{id}/retry': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Image id. */
+        id: components['parameters']['ImageID']
+      }
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Retry a failed image import or deletion
+     * @description Re-queues the task that failed last, with the same payload, and returns
+     *     `202`. Only an image in `failed` can be retried, so a fresh task is
+     *     never queued over one that is still running. Use the `source_url`
+     *     already stored on the image: a download that failed to reach its host
+     *     usually fails again.
+     */
+    post: operations['retryImageTask']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
     trace?: never
   }
   '/instances': {
@@ -598,6 +626,11 @@ export interface components {
         /** @enum {string} */
         type: 'fake' | 'libvirt'
         ok: boolean
+        /**
+         * @description Whether `/dev/kvm` is usable. False means the control plane runs
+         *     but no instance can boot; launches fail as `unavailable`.
+         */
+        kvm?: boolean | null
       }
     }
     /** @description Host totals versus what is already allocated. */
@@ -698,6 +731,12 @@ export interface components {
       size_bytes?: number | null
       /** @description Smallest root disk this image boots from. */
       min_disk_gb?: number
+      /**
+       * @description The task of the most recent import or delete. Carried by the `202`
+       *     import and delete responses so the console can follow the work
+       *     without a second request.
+       */
+      task_id?: string | null
       /** Format: date-time */
       created_at: string
       /** Format: date-time */
@@ -1487,6 +1526,35 @@ export interface operations {
         }
       }
       400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+    }
+  }
+  retryImageTask: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Image id. */
+        id: components['parameters']['ImageID']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The retry was accepted. */
+      202: {
+        headers: {
+          /** @description The task that tracks the retry. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Image']
+        }
+      }
       401: components['responses']['Unauthorized']
       403: components['responses']['PermissionDenied']
       404: components['responses']['NotFound']

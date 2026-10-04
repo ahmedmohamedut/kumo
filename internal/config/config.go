@@ -44,6 +44,15 @@ type Config struct {
 	DataDir       string
 	DBPath        string
 	ImageMaxBytes int64
+	// ImageTempDir is where a download is staged before it becomes a volume.
+	// It defaults to DataDir/staging and must live on the same filesystem as the
+	// images pool, so placing a volume is a rename and not a copy.
+	ImageTempDir string
+	// ImageAllowPrivateURLs lifts the loopback, private and link-local blocks
+	// on image downloads. It exists for deployments that mirror images on the
+	// LAN and must stay false otherwise, because the console is admin-only but
+	// still a browser away from the metadata service.
+	ImageAllowPrivateURLs bool
 
 	// Hypervisor
 	Hypervisor    string
@@ -77,7 +86,9 @@ const (
 	DefaultCookieSecure  = true
 	DefaultWorkers       = 4
 	DefaultImageMaxBytes = int64(20) << 30 // 20 GiB
-	DefaultLogLevel      = slog.LevelInfo
+	// DefaultStagingDirName is the directory under DataDir that stages downloads.
+	DefaultStagingDirName = "staging"
+	DefaultLogLevel       = slog.LevelInfo
 )
 
 // Load reads the configuration from the process environment, applies the
@@ -145,6 +156,16 @@ func Load() (*Config, error) {
 		}
 		cfg.ImageMaxBytes = n
 	}
+	if v, ok := os.LookupEnv("KUMO_IMAGE_TEMP_DIR"); ok {
+		cfg.ImageTempDir = v
+	}
+	if v, ok := os.LookupEnv("KUMO_IMAGE_ALLOW_PRIVATE_URLS"); ok {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("%w: KUMO_IMAGE_ALLOW_PRIVATE_URLS: %w", ErrInvalidValue, err)
+		}
+		cfg.ImageAllowPrivateURLs = b
+	}
 	if v, ok := os.LookupEnv("KUMO_LOG_LEVEL"); ok {
 		level, err := ParseLogLevel(v)
 		if err != nil {
@@ -164,6 +185,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.JWTSecretFile == "" {
 		cfg.JWTSecretFile = filepath.Join(cfg.DataDir, "jwt.key")
+	}
+	if cfg.ImageTempDir == "" {
+		cfg.ImageTempDir = filepath.Join(cfg.DataDir, DefaultStagingDirName)
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -231,6 +255,9 @@ func (c *Config) Validate() error {
 	if c.ImageMaxBytes <= 0 {
 		return fmt.Errorf("%w: KUMO_IMAGE_MAX_BYTES must be positive, got %d",
 			ErrInvalidSize, c.ImageMaxBytes)
+	}
+	if c.ImageTempDir == "" {
+		return fmt.Errorf("%w: KUMO_IMAGE_TEMP_DIR must not be empty", ErrInvalidValue)
 	}
 	return nil
 }

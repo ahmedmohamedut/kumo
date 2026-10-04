@@ -67,3 +67,53 @@ export function formatAbsoluteTime(value: string): string {
     .replace('T', ' ')
     .replace(/\.\d+Z$/, ' UTC')
 }
+
+/** Units a size is rendered in, coarsest last. */
+const KIB = 1024
+const MIB = 1024 * KIB
+const GIB = 1024 * MIB
+const TIB = 1024 * GIB
+
+/**
+ * formatBytes renders a byte count the way an operator reads a disk size: one
+ * decimal place, and the unit that keeps the number small (1.4 GiB, not
+ * 1503238553 bytes).
+ *
+ * `null` and `undefined` render as an em dash. That is not a placeholder: an
+ * image whose size is still unknown shows "—" rather than "0 B", which would
+ * read as an empty image.
+ */
+export function formatBytes(value: number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return '—'
+  }
+  if (!Number.isFinite(value) || value < 0) {
+    return '—'
+  }
+  if (value < KIB) {
+    return `${Math.round(value)} B`
+  }
+
+  const [magnitude, unit] =
+    value < MIB
+      ? [value / KIB, 'KiB']
+      : value < GIB
+        ? [value / MIB, 'MiB']
+        : value < TIB
+          ? [value / GIB, 'GiB']
+          : [value / TIB, 'TiB']
+
+  return `${magnitude.toFixed(1)} ${unit}`
+}
+
+/**
+ * formatGiB renders a whole number of gigabytes, which is how the API speaks
+ * about disk sizes (`min_disk_gb`, `root_disk_gb`). It returns an em dash for
+ * null/undefined for the same reason as `formatBytes`.
+ */
+export function formatGiB(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value < 0) {
+    return '—'
+  }
+  return `${Math.round(value)} GiB`
+}
