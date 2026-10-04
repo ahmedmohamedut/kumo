@@ -34,8 +34,10 @@ const (
 // Sentinel errors for calls the fake rejects outright. They mark a programming
 // error in the caller rather than a backend failure.
 var (
-	// ErrInvalidSpec is returned when a caller passes an incomplete spec.
-	ErrInvalidSpec = errors.New("fake: invalid spec")
+	// ErrInvalidSpec is returned when a caller passes an incomplete spec. It is
+	// the shared sentinel so a caller can match it without knowing which backend
+	// answered.
+	ErrInvalidSpec = hypervisor.ErrInvalidSpec
 	// ErrEmptyImage is returned when an image carries no bytes.
 	ErrEmptyImage = errors.New("fake: image is empty")
 	// ErrImageTooLarge is returned when an image is bigger than the declared

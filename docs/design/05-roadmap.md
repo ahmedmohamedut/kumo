@@ -47,8 +47,9 @@ Work through tasks **in order**, one per PR. Each task lists acceptance criteria
 
 - [x] **M4.1 Instance types + capacity**: seed types, `GET /instance-types`, `GET /system/capacity`, capacity check.
   AC: the capacity rules are documented in `00-architecture.md` §6; a launch check and the capacity report share one implementation.
-- [ ] **M4.2 Cloud-init + domain XML builders**: pure functions with golden-file tests (`service/cloudinit`, `hypervisor/libvirt/domainxml`), ISO9660 seed builder.
+- [x] **M4.2 Cloud-init + domain XML builders**: pure functions with golden-file tests (`service/cloudinit`, `hypervisor/libvirt/domainxml`), ISO9660 seed builder.
   AC: golden tests; cloud-init merge cases covered (no user data, cloud-config, script).
+  Done: `internal/service/cloudinit` renders meta-data, network-config and user-data (generated default user, verbatim pass-through, cloud-config merge, MIME for a script, duplicate-key and malformed-YAML refusals). `internal/hypervisor/libvirt/domainxml` builds the domain XML from `encoding/xml` structs with golden files; `internal/seediso` writes the `cidata` image and is tested by reading the ISO back.
 - [ ] **M4.3 Launch workflow**: `instance.launch` task per `04-libvirt-integration.md §3`, rollback on failure, IP discovery.
   AC: fake-hypervisor tests for success and each failure step leaving no orphans; real-libvirt integration test boots CirrOS.
 - [ ] **M4.4 Lifecycle actions**: start/stop/reboot/terminate, per-resource locking (`409` on conflict), console-output endpoint.

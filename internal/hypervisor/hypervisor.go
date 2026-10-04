@@ -22,6 +22,10 @@ var (
 	// ErrInvalidState is returned when a lifecycle transition does not apply to
 	// the current state, for example starting a running domain.
 	ErrInvalidState = errors.New("hypervisor: invalid state")
+	// ErrInvalidSpec is returned when a caller passes a spec that could only
+	// produce something the backend would reject, for example a domain with no
+	// root disk.
+	ErrInvalidSpec = errors.New("hypervisor: invalid spec")
 	// ErrNotImplemented is returned by backends whose features are not built
 	// yet, so callers can degrade instead of crashing.
 	ErrNotImplemented = errors.New("hypervisor: not implemented")

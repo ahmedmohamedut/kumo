@@ -10,8 +10,10 @@ tool (
 )
 
 require (
+	github.com/digitalocean/go-libvirt v0.0.0-20260814190004-1a83157e1858
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
+	github.com/kdomanski/iso9660 v0.4.0
 	github.com/pressly/goose/v3 v3.24.1
 	golang.org/x/crypto v0.57.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -87,7 +89,6 @@ require (
 	github.com/dave/dst v0.27.3 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/denis-tingaikin/go-header v0.5.0 // indirect
-	github.com/digitalocean/go-libvirt v0.0.0-20260814190004-1a83157e1858 // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/elastic/go-sysinfo v1.11.2 // indirect

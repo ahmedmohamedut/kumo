@@ -176,7 +176,10 @@ Build via Go structs/`text/template` with escaped values (names/ids are validate
 
 Implementation notes:
 - Omit `<emulator>`; libvirt resolves it. Remove the comment above when implementing.
-- The `<serial type='file'>` + `<console>` duplication above is illustrative; use one `serial` with log file (`<log file=… append='on'/>`) or `type='pty'` + `<log>`; choose what works with the target libvirt version and record the choice here.
+- The `<serial type='file'>` + `<console>` duplication above is illustrative. **Choice taken: `<serial type='pty'>` with `<log file=… append='on'/>`, plus `<console type='pty'>` on the same port.** A pty is what `virsh console` needs to attach, and the log file is what the console-output endpoint reads, so one device serves both without a guest ever blocking on a full file. `<log>` is a child of `<serial>` since libvirt 1.3, which is well below any host Kumo supports. When `ConsoleLogPath` is empty the `<log>` element is left out rather than emitted with an empty path.
+- The XML is produced by `internal/hypervisor/libvirt/domainxml` from `encoding/xml` structs, never by formatting a template, so operator input is escaped by the encoder. Golden files live in `internal/hypervisor/libvirt/domainxml/testdata`; run `go test ./internal/hypervisor/libvirt/domainxml -update` after an intentional change.
+- `<graphics>` binds to `127.0.0.1`; `<channel type='unix'>` is the qemu-guest-agent socket that IP discovery reads.
+- The seed ISO is built by `internal/seediso`, which is independent of libvirt and of the instance service: it takes the three already-rendered documents and writes them into an ISO9660 image labelled `cidata`. Writing goes through a temporary file and a rename, so a failed build never leaves a truncated ISO at a path about to be attached to a domain.
 - UEFI/aarch64 support is out of scope for M4; leave `Firmware` field in `DomainSpec` for later (`<os firmware='efi'>`).
 - Honor `/dev/kvm` absence: `EnsureInfra`/`Ping` should report `kvm: false` in `/system/info`, and launches fail with `unavailable`.
 
