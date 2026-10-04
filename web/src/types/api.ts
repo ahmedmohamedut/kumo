@@ -633,7 +633,7 @@ export interface components {
         kvm?: boolean | null
       }
     }
-    /** @description Host totals versus what is already allocated. */
+    /** @description Host totals versus what is already allocated. `total` is measured by the hypervisor (node vCPUs multiplied by the configured overcommit ratio, node memory, and the size of the instances pool); `allocated` is summed from the instances table, counting every instance that is not `terminated`. The capacity rules are documented in `00-architecture.md` §6. */
     SystemCapacity: {
       vcpus: components['schemas']['CapacityMetric']
       memory_bytes: components['schemas']['CapacityMetric']

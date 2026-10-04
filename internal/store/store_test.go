@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ahmedmohamedut/kumo/internal/hypervisor"
 	"github.com/ahmedmohamedut/kumo/internal/store"
 	"github.com/ahmedmohamedut/kumo/internal/store/storetest"
 )
@@ -311,5 +312,97 @@ func insertUser(t *testing.T, db *store.Store, id, role string) {
 		 VALUES (?, ?, 'hash', ?, 'now', 'now')`, id, id, role)
 	if err != nil {
 		t.Fatalf("insert user %q: %v", id, err)
+	}
+}
+
+func TestAllocatedCapacity(t *testing.T) {
+	t.Parallel()
+
+	// A terminated instance keeps its row for history but holds nothing, so it
+	// must not keep consuming the node's capacity.
+	tests := []struct {
+		name      string
+		instances []allocatedInstance
+		want      hypervisor.Capacity
+	}{
+		{
+			name: "an empty database allocates nothing",
+		},
+		{
+			name: "live instances add up",
+			instances: []allocatedInstance{
+				{id: "i-aaa", state: "running", vcpus: 2, memoryMiB: 4096, diskGB: 20},
+				{id: "i-bbb", state: "stopped", vcpus: 1, memoryMiB: 1024, diskGB: 10},
+				{id: "i-ccc", state: "pending", vcpus: 4, memoryMiB: 8192, diskGB: 40},
+			},
+			want: hypervisor.Capacity{VCPUs: 7, MemoryBytes: 13 << 30, DiskBytes: 70 << 30},
+		},
+		{
+			name: "terminated instances are left out",
+			instances: []allocatedInstance{
+				{id: "i-aaa", state: "running", vcpus: 2, memoryMiB: 4096, diskGB: 20},
+				{id: "i-bbb", state: "terminated", vcpus: 8, memoryMiB: 32768, diskGB: 100},
+			},
+			want: hypervisor.Capacity{VCPUs: 2, MemoryBytes: 4 << 30, DiskBytes: 20 << 30},
+		},
+		{
+			name: "a node whose instances were all terminated is free again",
+			instances: []allocatedInstance{
+				{id: "i-aaa", state: "terminated", vcpus: 8, memoryMiB: 32768, diskGB: 100},
+			},
+			want: hypervisor.Capacity{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			db := storetest.New(t)
+			ctx := t.Context()
+			for _, in := range tt.instances {
+				insertAllocatedInstance(t, db, in)
+			}
+
+			got, err := db.AllocatedCapacity(ctx)
+			if err != nil {
+				t.Fatalf("AllocatedCapacity() error = %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("AllocatedCapacity() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// allocatedInstance is one row of the instances table that the capacity sum
+// reads. It carries only the columns the sum touches.
+type allocatedInstance struct {
+	id        string
+	state     string
+	vcpus     int64
+	memoryMiB int64
+	diskGB    int64
+}
+
+func insertAllocatedInstance(t *testing.T, db *store.Store, in allocatedInstance) {
+	t.Helper()
+
+	ctx := t.Context()
+	if _, err := db.Exec(ctx,
+		`INSERT OR IGNORE INTO instance_types (id, vcpus, memory_mib) VALUES ('kumo.small', 1, 2048)`); err != nil {
+		t.Fatalf("insert instance type: %v", err)
+	}
+	if _, err := db.Exec(ctx,
+		`INSERT OR IGNORE INTO images (id, name, state, created_at, updated_at)
+		 VALUES ('img-00000000000000000', 'img-00000000000000000', 'available', 'now', 'now')`); err != nil {
+		t.Fatalf("insert image: %v", err)
+	}
+	if _, err := db.Exec(ctx,
+		`INSERT INTO instances (id, name, state, image_id, instance_type, vcpus, memory_mib,
+		   root_disk_gb, launched_at, updated_at)
+		 VALUES (?, ?, ?, 'img-00000000000000000', 'kumo.small', ?, ?, ?, 'now', 'now')`,
+		in.id, in.id, in.state, in.vcpus, in.memoryMiB, in.diskGB); err != nil {
+		t.Fatalf("insert instance %q: %v", in.id, err)
 	}
 }

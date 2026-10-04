@@ -37,15 +37,17 @@ Access JWT claims: `sub` (user id), `role`, `iat`, `exp`, `jti`. Password policy
 |---|---|---|
 | GET | `/healthz`, `/readyz` | (no auth, outside `/api/v1`) |
 | GET | `/api/v1/system/info` | (no auth) `{version, needs_setup, hypervisor: {type, ok, kvm}}` (`kvm` is null when the backend cannot answer) |
-| GET | `/api/v1/system/capacity` | Host CPU/memory/disk totals vs allocated |
+| GET | `/api/v1/system/capacity` | Host CPU/memory/disk totals vs allocated; see `00-architecture.md` §6 |
 
 ## Instance types
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/instance-types` | List presets (read-only in v1) |
+| GET | `/instance-types` | List presets (read-only in v1), smallest first |
 
 Seed set: `kumo.nano` (1 vCPU/512 MiB), `kumo.micro` (1/1 GiB), `kumo.small` (1/2 GiB), `kumo.medium` (2/4 GiB), `kumo.large` (2/8 GiB), `kumo.xlarge` (4/16 GiB), `kumo.2xlarge` (8/32 GiB).
+
+Seeding is idempotent (`INSERT OR IGNORE`): a preset edited on the node survives a restart.
 
 ## Key pairs
 

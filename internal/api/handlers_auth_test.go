@@ -453,7 +453,7 @@ func buildAuthRouter(t *testing.T, cookieSecure bool, clock func() time.Time) (*
 	handler := api.NewHandler(api.Options{
 		Logger:       logger,
 		GinMode:      gin.TestMode,
-		System:       system.New(logger, "test", "fake", nil, nil),
+		System:       system.New(logger, "test", "fake", nil, nil, nil),
 		Auth:         svc,
 		Signer:       signer,
 		RefreshTTL:   7 * 24 * time.Hour,

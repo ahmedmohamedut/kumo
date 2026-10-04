@@ -70,6 +70,11 @@ type Config struct {
 	// Runtime
 	Workers  int
 	LogLevel slog.Level
+
+	// Capacity. The launch check refuses a guest the node cannot hold; see
+	// docs/design/00-architecture.md §5 and internal/service/capacity.
+	MemoryReserveMiB int64
+	VCPUOvercommit   int
 }
 
 // Default values, see docs/design/00-architecture.md §5.
@@ -86,6 +91,11 @@ const (
 	DefaultCookieSecure  = true
 	DefaultWorkers       = 4
 	DefaultImageMaxBytes = int64(20) << 30 // 20 GiB
+	// DefaultMemoryReserveMiB is the memory a node keeps for itself, so a launch
+	// never hands the last of the host's RAM to a guest.
+	DefaultMemoryReserveMiB = int64(1024)
+	// DefaultVCPUOvercommit is how many guest vCPUs one host vCPU may carry.
+	DefaultVCPUOvercommit = 4
 	// DefaultStagingDirName is the directory under DataDir that stages downloads.
 	DefaultStagingDirName = "staging"
 	DefaultLogLevel       = slog.LevelInfo
@@ -95,20 +105,22 @@ const (
 // documented defaults and validates the result.
 func Load() (*Config, error) {
 	cfg := &Config{
-		Listen:         DefaultListen,
-		DataDir:        DefaultDataDir,
-		Hypervisor:     DefaultHypervisor,
-		LibvirtURI:     DefaultLibvirtURI,
-		PoolImages:     DefaultPoolImages,
-		PoolInstances:  DefaultPoolInstances,
-		Network:        DefaultNetwork,
-		AccessTTL:      DefaultAccessTTL,
-		RefreshTTL:     DefaultRefreshTTL,
-		CookieSecure:   DefaultCookieSecure,
-		Workers:        DefaultWorkers,
-		ImageMaxBytes:  DefaultImageMaxBytes,
-		LogLevel:       DefaultLogLevel,
-		AllowedOrigins: nil,
+		Listen:           DefaultListen,
+		DataDir:          DefaultDataDir,
+		Hypervisor:       DefaultHypervisor,
+		LibvirtURI:       DefaultLibvirtURI,
+		PoolImages:       DefaultPoolImages,
+		PoolInstances:    DefaultPoolInstances,
+		Network:          DefaultNetwork,
+		AccessTTL:        DefaultAccessTTL,
+		RefreshTTL:       DefaultRefreshTTL,
+		CookieSecure:     DefaultCookieSecure,
+		Workers:          DefaultWorkers,
+		ImageMaxBytes:    DefaultImageMaxBytes,
+		MemoryReserveMiB: DefaultMemoryReserveMiB,
+		VCPUOvercommit:   DefaultVCPUOvercommit,
+		LogLevel:         DefaultLogLevel,
+		AllowedOrigins:   nil,
 	}
 
 	if v, ok := os.LookupEnv("KUMO_LISTEN"); ok {
@@ -165,6 +177,20 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("%w: KUMO_IMAGE_ALLOW_PRIVATE_URLS: %w", ErrInvalidValue, err)
 		}
 		cfg.ImageAllowPrivateURLs = b
+	}
+	if v, ok := os.LookupEnv("KUMO_MEMORY_RESERVE_MIB"); ok {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%w: KUMO_MEMORY_RESERVE_MIB: %w", ErrInvalidValue, err)
+		}
+		cfg.MemoryReserveMiB = n
+	}
+	if v, ok := os.LookupEnv("KUMO_VCPU_OVERCOMMIT"); ok {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("%w: KUMO_VCPU_OVERCOMMIT: %w", ErrInvalidValue, err)
+		}
+		cfg.VCPUOvercommit = n
 	}
 	if v, ok := os.LookupEnv("KUMO_LOG_LEVEL"); ok {
 		level, err := ParseLogLevel(v)
@@ -258,6 +284,13 @@ func (c *Config) Validate() error {
 	}
 	if c.ImageTempDir == "" {
 		return fmt.Errorf("%w: KUMO_IMAGE_TEMP_DIR must not be empty", ErrInvalidValue)
+	}
+	if c.MemoryReserveMiB < 0 {
+		return fmt.Errorf("%w: KUMO_MEMORY_RESERVE_MIB must not be negative, got %d",
+			ErrInvalidValue, c.MemoryReserveMiB)
+	}
+	if c.VCPUOvercommit < 1 {
+		return fmt.Errorf("%w: KUMO_VCPU_OVERCOMMIT must be >= 1, got %d", ErrInvalidValue, c.VCPUOvercommit)
 	}
 	return nil
 }

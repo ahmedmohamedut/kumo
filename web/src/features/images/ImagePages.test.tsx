@@ -186,10 +186,12 @@ describe('ImageDetailPage', () => {
     renderWithProviders(<Pages />, { route: '/images/img-0c2d3e4f5a6071819' })
 
     expect(await screen.findByRole('heading', { name: 'rocky-9-arm64' })).toBeInTheDocument()
-    expect(screen.getByText('image.import')).toBeInTheDocument()
+    // The task list is a second query, so it is waited for rather than assumed to
+    // have landed with the image.
+    expect(await screen.findByText('image.import')).toBeInTheDocument()
     // One "Failed" for the image state, one for the task that failed: the image
     // says what happened, the task says which run it happened in.
-    expect(screen.getAllByText('Failed')).toHaveLength(2)
+    expect(await screen.findAllByText('Failed')).toHaveLength(2)
     expect(screen.getAllByText(/403/).length).toBeGreaterThan(0)
     expect(mockTasks().filter((task) => task.resource_id === 'img-0c2d3e4f5a6071819')).toHaveLength(
       1,

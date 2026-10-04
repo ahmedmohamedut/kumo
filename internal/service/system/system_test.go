@@ -2,10 +2,21 @@ package system_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/ahmedmohamedut/kumo/internal/hypervisor"
 	"github.com/ahmedmohamedut/kumo/internal/logging"
+	"github.com/ahmedmohamedut/kumo/internal/service/capacity"
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
+)
+
+// The two failures the capacity report can hit. Static, so a test can assert
+// that the service passed the backend's own error on instead of inventing its
+// own on the way out.
+var (
+	errNodeUnavailable = errors.New("libvirt is restarting")
+	errDatabaseLocked  = errors.New("database is locked")
 )
 
 type stubUsers struct {
@@ -120,7 +131,7 @@ func TestInfo(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			svc := system.New(logging.Discard(), "v0.0.1", tt.hypervisor, tt.users, tt.pin)
+			svc := system.New(logging.Discard(), "v0.0.1", tt.hypervisor, tt.users, tt.pin, nil)
 
 			got, err := svc.Info(context.Background())
 			if err != nil {
@@ -143,7 +154,7 @@ func TestInfoPropagatesStoreErrors(t *testing.T) {
 	t.Parallel()
 
 	svc := system.New(logging.Discard(), "v0.0.1", "fake",
-		stubUsers{err: context.Canceled}, stubHypervisor{})
+		stubUsers{err: context.Canceled}, stubHypervisor{}, nil)
 
 	if _, err := svc.Info(context.Background()); err == nil {
 		t.Fatal("Info() error = nil, want the store error")
@@ -162,5 +173,135 @@ func sameBool(a, b *bool) bool {
 		return false
 	default:
 		return *a == *b
+	}
+}
+
+// stubCapacity is a backend that can also measure the host, which is what both
+// shipped backends do.
+type stubCapacity struct {
+	stubHypervisor
+	total hypervisor.Capacity
+	err   error
+}
+
+func (s stubCapacity) Capacity(context.Context) (hypervisor.Capacity, error) {
+	return s.total, s.err
+}
+
+type stubAllocator struct {
+	allocated hypervisor.Capacity
+	err       error
+}
+
+func (s stubAllocator) AllocatedCapacity(context.Context) (hypervisor.Capacity, error) {
+	return s.allocated, s.err
+}
+
+func TestCapacity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		pin       system.HypervisorChecker
+		allocator system.Allocator
+		want      capacity.Report
+	}{
+		{
+			name:      "totals from the host against the instances that exist",
+			pin:       stubCapacity{total: hypervisor.Capacity{VCPUs: 8, MemoryBytes: 16 << 30, DiskBytes: 250 << 30}},
+			allocator: stubAllocator{allocated: hypervisor.Capacity{VCPUs: 2, MemoryBytes: 4 << 30, DiskBytes: 20 << 30}},
+			want: capacity.Report{
+				// 8 vCPUs at the default ratio of 4.
+				VCPUs:       capacity.Metric{Total: 32, Allocated: 2},
+				MemoryBytes: capacity.Metric{Total: 16 << 30, Allocated: 4 << 30},
+				DiskBytes:   capacity.Metric{Total: 250 << 30, Allocated: 20 << 30},
+			},
+		},
+		{
+			name:      "a backend that cannot measure itself reports zeros, not an error",
+			pin:       stubCapacity{err: hypervisor.ErrNotImplemented},
+			allocator: stubAllocator{allocated: hypervisor.Capacity{VCPUs: 1, MemoryBytes: 2 << 30, DiskBytes: 20 << 30}},
+			want: capacity.Report{
+				VCPUs:       capacity.Metric{Allocated: 1},
+				MemoryBytes: capacity.Metric{Allocated: 2 << 30},
+				DiskBytes:   capacity.Metric{Allocated: 20 << 30},
+			},
+		},
+		{
+			name:      "a backend that only answers Ping contributes nothing",
+			pin:       stubHypervisor{},
+			allocator: stubAllocator{},
+			want:      capacity.Report{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			svc := system.New(logging.Discard(), "v0.0.1", "fake", nil, tt.pin, tt.allocator)
+
+			got, err := svc.Capacity(context.Background())
+			if err != nil {
+				t.Fatalf("Capacity() error = %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("Capacity() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCapacityPropagatesRealFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		pin       system.HypervisorChecker
+		allocator system.Allocator
+		wantErr   error
+	}{
+		{
+			name:      "the host could not be measured",
+			pin:       stubCapacity{err: errNodeUnavailable},
+			allocator: stubAllocator{},
+			wantErr:   errNodeUnavailable,
+		},
+		{
+			name:      "the database could not be summed",
+			pin:       stubCapacity{total: hypervisor.Capacity{VCPUs: 1}},
+			allocator: stubAllocator{err: errDatabaseLocked},
+			wantErr:   errDatabaseLocked,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			svc := system.New(logging.Discard(), "v0.0.1", "fake", nil, tt.pin, tt.allocator)
+
+			_, err := svc.Capacity(context.Background())
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("Capacity() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestCapacityUsesTheConfiguredLimits(t *testing.T) {
+	t.Parallel()
+
+	svc := system.New(logging.Discard(), "v0.0.1", "fake", nil,
+		stubCapacity{total: hypervisor.Capacity{VCPUs: 8, MemoryBytes: 16 << 30}},
+		stubAllocator{})
+	svc.SetLimits(capacity.Limits{VCPUOvercommit: 2})
+
+	got, err := svc.Capacity(context.Background())
+	if err != nil {
+		t.Fatalf("Capacity() error = %v", err)
+	}
+	if got.VCPUs.Total != 16 {
+		t.Errorf("Capacity().VCPUs.Total = %d, want 16 at the configured ratio of 2", got.VCPUs.Total)
 	}
 }

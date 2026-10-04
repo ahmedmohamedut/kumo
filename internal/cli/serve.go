@@ -20,7 +20,9 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/imagefetch"
 	"github.com/ahmedmohamedut/kumo/internal/logging"
 	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
+	"github.com/ahmedmohamedut/kumo/internal/service/capacity"
 	"github.com/ahmedmohamedut/kumo/internal/service/image"
+	"github.com/ahmedmohamedut/kumo/internal/service/instancetype"
 	"github.com/ahmedmohamedut/kumo/internal/service/keypair"
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
 	"github.com/ahmedmohamedut/kumo/internal/service/task"
@@ -73,7 +75,21 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		return fmt.Errorf("bootstrap hypervisor infrastructure: %w", err)
 	}
 
-	systemService := system.New(logger, version.Version, cfg.Hypervisor, db, hv)
+	systemService := system.New(logger, version.Version, cfg.Hypervisor, db, hv, db)
+	systemService.SetLimits(capacity.Limits{
+		MemoryReserveMiB: cfg.MemoryReserveMiB,
+		VCPUOvercommit:   cfg.VCPUOvercommit,
+	})
+
+	// The instance type presets are data, not schema, so they are seeded on
+	// every boot: INSERT OR IGNORE keeps a preset an operator edited by hand.
+	instanceTypes, err := instancetype.New(instancetype.Options{Store: db})
+	if err != nil {
+		return fmt.Errorf("build the instance type service: %w", err)
+	}
+	if err := instanceTypes.Seed(ctx); err != nil {
+		return fmt.Errorf("seed the instance types: %w", err)
+	}
 
 	signer, err := auth.NewSignerFromFile(cfg.JWTSecretFile, cfg.AccessTTL)
 	if err != nil {
@@ -156,14 +172,15 @@ func serve(ctx context.Context, stdout io.Writer) error {
 	}
 
 	handler := api.NewHandler(api.Options{
-		Logger:   logger,
-		GinMode:  ginMode(cfg.LogLevel),
-		System:   systemService,
-		Auth:     authService,
-		KeyPairs: keyPairs,
-		Images:   images,
-		Tasks:    tasks,
-		Signer:   signer,
+		Logger:        logger,
+		GinMode:       ginMode(cfg.LogLevel),
+		System:        systemService,
+		Auth:          authService,
+		KeyPairs:      keyPairs,
+		Images:        images,
+		InstanceTypes: instanceTypes,
+		Tasks:         tasks,
+		Signer:        signer,
 		ReadyChecks: []api.Check{
 			{Name: "db", Probe: db.Ping},
 			{Name: "hypervisor", Probe: hv.Ping},

@@ -89,29 +89,59 @@
 | `KUMO_IMAGE_MAX_BYTES` | `20GiB` | max image import size |
 | `KUMO_IMAGE_TEMP_DIR` | `$KUMO_DATA_DIR/staging` | where a download is staged; must share a filesystem with the images pool |
 | `KUMO_IMAGE_ALLOW_PRIVATE_URLS` | `false` | allow imports from loopback/private/link-local hosts (trusted LAN mirrors) |
+| `KUMO_MEMORY_RESERVE_MIB` | `1024` | host memory kept out of the pool of allocatable RAM |
+| `KUMO_VCPU_OVERCOMMIT` | `4` | vCPUs offered per host vCPU in `GET /system/capacity` and the launch check |
 | `KUMO_LOG_LEVEL` | `info` | `debug|info|warn|error` |
 
-## 6. Startup sequence
+## 6. Capacity accounting
+
+`GET /system/capacity` reports what the node has against what it has handed out, per
+metric as `{total, allocated}`:
+
+| Metric | `total` | `allocated` |
+|---|---|---|
+| vCPUs | host vCPUs × `KUMO_VCPU_OVERCOMMIT` | Σ `instances.vcpus` |
+| memory | host RAM from libvirt | Σ `instances.memory_mib` |
+| disk | size of `KUMO_POOL_INSTANCES` | Σ `instances.root_disk_gb` |
+
+The split is deliberate:
+
+- **`total` comes from the hypervisor, `allocated` from SQLite.** libvirt knows the
+  node and the pool but not whether a disk backing an overlay was written; SQLite knows
+  what was asked for but can drift. Summing the request keeps the report equal to what
+  the launch check reserved, which is the number that must never be exceeded.
+- **`allocated` counts every instance whose state is not `terminated`.** A terminated
+  row is kept for history and holds nothing, so it must stop consuming quota or a node
+  could never launch again after enough terminations.
+- **Free is derived, never stored.** `Free = total − allocated`, less
+  `KUMO_MEMORY_RESERVE_MIB` for memory so the host keeps room for itself. The same
+  arithmetic backs the launch check in `internal/service/capacity`, so what the console
+  shows and what a launch accepts cannot drift apart.
+
+Both sums are vCPU-overcommitted CPU, so `allocated > total` is possible by design on
+memory- or disk-bound nodes; the endpoint reports that rather than hiding it.
+
+## 7. Startup sequence
 
 1. Load config, open SQLite (WAL, `busy_timeout=5000`, `foreign_keys=ON`), run embedded goose migrations.
 2. Ensure JWT key exists.
 3. Connect to hypervisor; **bootstrap**: ensure storage pools and network exist (create if missing: dir pools under `$DATA_DIR/pools/*`, NAT network `192.168.100.0/24` named `kumo-default`).
 4. Create the staging directory (`$KUMO_IMAGE_TEMP_DIR`), where image downloads land before they become volumes.
-5. Seed `instance_types` if empty.
+5. Seed the `kumo.*` `instance_types` presets. Seeding is idempotent (`INSERT OR IGNORE`), so a preset an operator tuned on the node survives a restart.
 6. Start worker + reconciler. The worker first *recovers* tasks left `running` by a previous process (back to `pending`, attempts preserved) and only then starts claiming.
 7. Start HTTP server. If no users exist, `/api/v1/system/info` reports `needs_setup: true`; the UI shows first-run admin creation (`POST /auth/setup`, only allowed when zero users exist).
 
-## 7. Error model
+## 8. Error model
 
 Domain errors in `service` map to HTTP: `ErrInvalid→400/422`, `ErrUnauthorized→401`, `ErrForbidden→403`, `ErrNotFound→404`, `ErrConflict→409`, anything else `500` (message hidden, request ID logged).
 
-## 8. Observability
+## 9. Observability
 
 - `slog` JSON logs with `request_id`, `user_id`, `resource_id`, `task_id`.
 - `GET /healthz` (liveness), `GET /readyz` (DB + hypervisor reachable).
 - Prometheus metrics at `/metrics` (admin-only or loopback) — post-MVP.
 
-## 9. Future-proofing (don't build now, don't preclude)
+## 10. Future-proofing (don't build now, don't preclude)
 
 - Multi-host: `hosts` table, `Hypervisor` per host, scheduler picks host.
 - Other services (S3, RDS, …) as modules registered under `/api/v1/<service>` and nav groups in the console.

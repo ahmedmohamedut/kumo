@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ahmedmohamedut/kumo/internal/config"
+	"github.com/ahmedmohamedut/kumo/internal/service/capacity"
 )
 
 // Config is read from the process environment, so these tests mutate the
@@ -23,23 +24,25 @@ func TestLoadDefaults(t *testing.T) {
 	}
 
 	want := config.Config{
-		Listen:         ":8080",
-		AllowedOrigins: nil,
-		DataDir:        "/var/lib/kumo",
-		DBPath:         "/var/lib/kumo/kumo.db",
-		ImageMaxBytes:  20 << 30,
-		ImageTempDir:   "/var/lib/kumo/staging",
-		Hypervisor:     config.HypervisorLibvirt,
-		LibvirtURI:     "unix:///var/run/libvirt/libvirt-sock",
-		PoolImages:     "kumo-images",
-		PoolInstances:  "kumo-instances",
-		Network:        "kumo-default",
-		JWTSecretFile:  "/var/lib/kumo/jwt.key",
-		AccessTTL:      15 * time.Minute,
-		RefreshTTL:     168 * time.Hour,
-		CookieSecure:   true,
-		Workers:        4,
-		LogLevel:       slog.LevelInfo,
+		Listen:           ":8080",
+		AllowedOrigins:   nil,
+		DataDir:          "/var/lib/kumo",
+		DBPath:           "/var/lib/kumo/kumo.db",
+		ImageMaxBytes:    20 << 30,
+		ImageTempDir:     "/var/lib/kumo/staging",
+		Hypervisor:       config.HypervisorLibvirt,
+		LibvirtURI:       "unix:///var/run/libvirt/libvirt-sock",
+		PoolImages:       "kumo-images",
+		PoolInstances:    "kumo-instances",
+		Network:          "kumo-default",
+		JWTSecretFile:    "/var/lib/kumo/jwt.key",
+		AccessTTL:        15 * time.Minute,
+		RefreshTTL:       168 * time.Hour,
+		CookieSecure:     true,
+		Workers:          4,
+		LogLevel:         slog.LevelInfo,
+		MemoryReserveMiB: config.DefaultMemoryReserveMiB,
+		VCPUOvercommit:   config.DefaultVCPUOvercommit,
 	}
 
 	if !reflect.DeepEqual(*cfg, want) {
@@ -191,6 +194,26 @@ func TestLoadFromEnv(t *testing.T) {
 			},
 		},
 		{
+			name: "memory reserve",
+			env:  map[string]string{"KUMO_MEMORY_RESERVE_MIB": "4096"},
+			check: func(t *testing.T, cfg *config.Config) {
+				t.Helper()
+				if cfg.MemoryReserveMiB != 4096 {
+					t.Errorf("MemoryReserveMiB = %d, want 4096", cfg.MemoryReserveMiB)
+				}
+			},
+		},
+		{
+			name: "vcpu overcommit",
+			env:  map[string]string{"KUMO_VCPU_OVERCOMMIT": "2"},
+			check: func(t *testing.T, cfg *config.Config) {
+				t.Helper()
+				if cfg.VCPUOvercommit != 2 {
+					t.Errorf("VCPUOvercommit = %d, want 2", cfg.VCPUOvercommit)
+				}
+			},
+		},
+		{
 			name: "log level",
 			env:  map[string]string{"KUMO_LOG_LEVEL": "debug"},
 			check: func(t *testing.T, cfg *config.Config) {
@@ -269,6 +292,11 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 			name: "image private urls not a bool",
 			env:  map[string]string{"KUMO_IMAGE_ALLOW_PRIVATE_URLS": "yes please"},
 		},
+		{name: "negative memory reserve", env: map[string]string{"KUMO_MEMORY_RESERVE_MIB": "-1"}},
+		{name: "memory reserve not a number", env: map[string]string{"KUMO_MEMORY_RESERVE_MIB": "half"}},
+		{name: "zero vcpu overcommit", env: map[string]string{"KUMO_VCPU_OVERCOMMIT": "0"}},
+		{name: "negative vcpu overcommit", env: map[string]string{"KUMO_VCPU_OVERCOMMIT": "-2"}},
+		{name: "vcpu overcommit not a number", env: map[string]string{"KUMO_VCPU_OVERCOMMIT": "many"}},
 		{name: "unknown log level", env: map[string]string{"KUMO_LOG_LEVEL": "trace"}},
 	}
 
@@ -283,6 +311,27 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 				t.Fatal("Load() error = nil, want an error")
 			}
 		})
+	}
+}
+
+// The capacity package carries its own defaults so it can be used without the
+// config, and kumod overrides them with the config on boot. The two copies have to
+// agree, or a service built directly in a test would enforce different rules than
+// the running node.
+func TestCapacityDefaultsMatchTheConfiguration(t *testing.T) {
+	t.Parallel()
+
+	clearKumoEnv(t)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if got, want := cfg.MemoryReserveMiB, capacity.DefaultLimits().MemoryReserveMiB; got != want {
+		t.Errorf("DefaultMemoryReserveMiB = %d, but internal/service/capacity defaults to %d", got, want)
+	}
+	if got, want := cfg.VCPUOvercommit, capacity.DefaultLimits().VCPUOvercommit; got != want {
+		t.Errorf("DefaultVCPUOvercommit = %d, but internal/service/capacity defaults to %d", got, want)
 	}
 }
 

@@ -420,7 +420,7 @@ func newKeyPairRouter(t *testing.T) (*gin.Engine, *store.Store) {
 	handler := api.NewHandler(api.Options{
 		Logger:       logger,
 		GinMode:      gin.TestMode,
-		System:       system.New(logger, "test", "fake", nil, nil),
+		System:       system.New(logger, "test", "fake", nil, nil, nil),
 		Auth:         svc,
 		KeyPairs:     keyPairs,
 		Signer:       signer,

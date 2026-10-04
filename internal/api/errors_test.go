@@ -18,7 +18,7 @@ import (
 )
 
 func systemService(logger *slog.Logger) *system.Service {
-	return system.New(logger, "test", "fake", nil, nil)
+	return system.New(logger, "test", "fake", nil, nil, nil)
 }
 
 // errDialTimeout stands in for an unexpected dependency failure.

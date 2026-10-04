@@ -13,6 +13,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/auth"
 	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
 	"github.com/ahmedmohamedut/kumo/internal/service/image"
+	"github.com/ahmedmohamedut/kumo/internal/service/instancetype"
 	"github.com/ahmedmohamedut/kumo/internal/service/keypair"
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
 	"github.com/ahmedmohamedut/kumo/internal/service/task"
@@ -39,6 +40,8 @@ type Options struct {
 	KeyPairs *keypair.Service
 	// Images answers the /api/v1/images endpoints.
 	Images *image.Service
+	// InstanceTypes answers the /api/v1/instance-types endpoints.
+	InstanceTypes *instancetype.Service
 	// Tasks answers the /api/v1/tasks endpoints, which is where the Location
 	// header of an asynchronous image operation points.
 	Tasks *task.Service
@@ -66,6 +69,7 @@ type Handler struct {
 	auth           *authservice.Service
 	keyPairs       *keypair.Service
 	images         *image.Service
+	instanceTypes  *instancetype.Service
 	tasks          *task.Service
 	signer         *auth.Signer
 	refreshTTL     time.Duration
@@ -84,6 +88,7 @@ func NewHandler(opts Options) *Handler {
 		auth:           opts.Auth,
 		keyPairs:       opts.KeyPairs,
 		images:         opts.Images,
+		instanceTypes:  opts.InstanceTypes,
 		tasks:          opts.Tasks,
 		signer:         opts.Signer,
 		refreshTTL:     opts.RefreshTTL,
@@ -152,6 +157,18 @@ func (h *Handler) Router() *gin.Engine {
 		write.POST("/images/:id/retry", h.retryImageImport)
 		write.PATCH("/images/:id", h.updateImage)
 		write.DELETE("/images/:id", h.deleteImage)
+	}
+
+	// Instance types are read-only presets: a viewer picks one in the launch
+	// form, they just may not submit it.
+	if h.instanceTypes != nil {
+		secured.GET("/instance-types", h.listInstanceTypes)
+	}
+
+	// Host capacity. A launch form shows it next to the instance type, so both
+	// roles read it.
+	if h.system != nil {
+		secured.GET("/system/capacity", h.systemCapacity)
 	}
 
 	// Tasks are readable by both roles: a viewer may watch an image import that

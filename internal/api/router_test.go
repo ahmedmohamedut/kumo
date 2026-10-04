@@ -126,7 +126,7 @@ func TestSystemInfo(t *testing.T) {
 	t.Run("without a store", func(t *testing.T) {
 		t.Parallel()
 
-		svc := system.New(logging.Discard(), "test", "fake", nil, nil)
+		svc := system.New(logging.Discard(), "test", "fake", nil, nil, nil)
 		recorder, response := call(t, testRouter(t, nil, nil, svc), http.MethodGet, "/api/v1/system/info")
 
 		if response.StatusCode != http.StatusOK {
@@ -151,7 +151,7 @@ func TestSystemInfo(t *testing.T) {
 		t.Parallel()
 
 		logger, logs := testLogger()
-		svc := system.New(logger, "test", "libvirt", failingUsers{}, nil)
+		svc := system.New(logger, "test", "libvirt", failingUsers{}, nil, nil)
 
 		recorder, response := call(t, testRouter(t, logger, nil, svc), http.MethodGet, "/api/v1/system/info")
 
@@ -621,7 +621,7 @@ func testRouterWith(
 		logger = logging.Discard()
 	}
 	if svc == nil {
-		svc = system.New(logger, "test", "fake", nil, nil)
+		svc = system.New(logger, "test", "fake", nil, nil, nil)
 	}
 
 	handler := api.NewHandler(api.Options{

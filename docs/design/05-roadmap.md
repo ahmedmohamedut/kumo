@@ -45,7 +45,8 @@ Work through tasks **in order**, one per PR. Each task lists acceptance criteria
 
 ## M4 — Instances (core)
 
-- [ ] **M4.1 Instance types + capacity**: seed types, `GET /instance-types`, `GET /system/capacity`, capacity check.
+- [x] **M4.1 Instance types + capacity**: seed types, `GET /instance-types`, `GET /system/capacity`, capacity check.
+  AC: the capacity rules are documented in `00-architecture.md` §6; a launch check and the capacity report share one implementation.
 - [ ] **M4.2 Cloud-init + domain XML builders**: pure functions with golden-file tests (`service/cloudinit`, `hypervisor/libvirt/domainxml`), ISO9660 seed builder.
   AC: golden tests; cloud-init merge cases covered (no user data, cloud-config, script).
 - [ ] **M4.3 Launch workflow**: `instance.launch` task per `04-libvirt-integration.md §3`, rollback on failure, IP discovery.

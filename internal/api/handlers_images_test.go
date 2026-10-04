@@ -126,7 +126,7 @@ func newImageRouter(t *testing.T) imageRouter {
 	handler := api.NewHandler(api.Options{
 		Logger:       logger,
 		GinMode:      gin.TestMode,
-		System:       system.New(logger, "test", "fake", nil, nil),
+		System:       system.New(logger, "test", "fake", nil, nil, nil),
 		Auth:         authSvc,
 		Images:       images,
 		Tasks:        tasks,
