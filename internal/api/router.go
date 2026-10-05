@@ -176,8 +176,20 @@ func (h *Handler) Router() *gin.Engine {
 	if h.instances != nil {
 		secured.GET("/instances", h.listInstances)
 		secured.GET("/instances/:id", h.getInstance)
-		write := secured.Group("", middleware.RequireRole(auth.RoleAdmin))
-		write.POST("/instances", h.launchInstance)
+
+		// Everything below needs an administrator. Launching and the lifecycle
+		// actions change what runs on the node, and the console output is the boot
+		// log of a guest, which carries whatever the cloud-init of that instance
+		// printed into it (docs/design/01-api.md §Instances).
+		admin := secured.Group("", middleware.RequireRole(auth.RoleAdmin))
+		admin.POST("/instances", h.launchInstance)
+		admin.PATCH("/instances/:id", h.updateInstance)
+		admin.DELETE("/instances/:id", h.terminateInstance)
+		admin.POST("/instances/:id/start", h.startInstance)
+		admin.POST("/instances/:id/stop", h.stopInstance)
+		admin.POST("/instances/:id/reboot", h.rebootInstance)
+		admin.GET("/instances/:id/console-output", h.instanceConsoleOutput)
+		admin.GET("/instances/:id/console", h.openInstanceConsole)
 	}
 
 	// Host capacity. A launch form shows it next to the instance type, so both

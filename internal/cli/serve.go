@@ -167,6 +167,7 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		ImagesPool:    cfg.PoolImages,
 		ConsoleDir:    consoleDir(cfg.DataDir),
 		Network:       cfg.Network,
+		StopTimeout:   cfg.StopTimeout,
 		Limits: capacity.Limits{
 			MemoryReserveMiB: cfg.MemoryReserveMiB,
 			VCPUOvercommit:   cfg.VCPUOvercommit,

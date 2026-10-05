@@ -57,16 +57,18 @@ func (s *Service) LaunchHandler(ctx context.Context, t worker.Task) error {
 		return fmt.Errorf("%w: launch task %s names no instance", ErrBadTaskPayload, t.ID)
 	}
 
-	row, err := s.store.GetInstance(ctx, sqlc.GetInstanceParams{ID: payload.InstanceID})
+	// The launch holds the instance for as long as the guest takes to boot, so a
+	// lifecycle action asked for in the meantime is refused with a conflict
+	// instead of interleaving with the steps below. claimed also skips an
+	// instance that is on its way out: a launch must not rebuild what a terminate
+	// is deleting.
+	row, release, skip, err := s.claimed(ctx, t, payload.InstanceID)
+	defer release()
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			// The row is gone, so there is nothing to launch and nothing to clean
-			// up: the instance was deleted while the task was queued.
-			s.logger.InfoContext(ctx, "instance: launch skipped, the instance is gone",
-				"instance_id", payload.InstanceID, "task_id", t.ID)
-			return nil
-		}
-		return fmt.Errorf("get instance %q: %w", payload.InstanceID, err)
+		return err
+	}
+	if skip {
+		return nil
 	}
 
 	// A launch that already finished is a no-op. Without this a requeued task
@@ -429,6 +431,10 @@ func ensureDir(path string, perm os.FileMode) error {
 // Handler returns the task types this workflow answers, for the worker registry.
 func (s *Service) Handler() map[string]worker.Handler {
 	return map[string]worker.Handler{
-		task.TypeInstanceLaunch: worker.HandlerFunc(s.LaunchHandler),
+		task.TypeInstanceLaunch:    worker.HandlerFunc(s.LaunchHandler),
+		task.TypeInstanceStart:     worker.HandlerFunc(s.StartHandler),
+		task.TypeInstanceStop:      worker.HandlerFunc(s.StopHandler),
+		task.TypeInstanceReboot:    worker.HandlerFunc(s.RebootHandler),
+		task.TypeInstanceTerminate: worker.HandlerFunc(s.TerminateHandler),
 	}
 }

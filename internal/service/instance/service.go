@@ -1,11 +1,12 @@
-// Package instance owns instances: launching them, listing them and reading
-// one back.
+// Package instance owns instances: launching them, moving them through their
+// lifecycle, listing them and reading one back.
 //
 // A launch is a long operation, so POST /instances only writes the row and a
 // task and answers 202; the root disk, the seed ISO, the domain and the address
 // are made by the worker running the instance.launch task
 // (docs/design/04-libvirt-integration.md §3). Nothing in this package blocks an
-// HTTP request on libvirt.
+// HTTP request on libvirt. The lifecycle actions of M4.4 follow the same rule:
+// each one writes the state it implies and a task, and the worker runs it.
 package instance
 
 import (
@@ -24,6 +25,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
 	"github.com/ahmedmohamedut/kumo/internal/service/task"
 	"github.com/ahmedmohamedut/kumo/internal/store"
+	"github.com/ahmedmohamedut/kumo/internal/worker/locks"
 )
 
 // State is the lifecycle of an instance. The values mirror the CHECK constraint
@@ -111,10 +113,19 @@ const (
 // Bounds on the wait for a guest address, as
 // docs/design/04-libvirt-integration.md §3 step 4 prescribes: an instance that
 // never takes an address is a launch that failed, not one that is still coming.
+// The same bounds cover a start, which boots a guest that has to ask for an
+// address again.
 const (
 	defaultPollInterval = 2 * time.Second
 	defaultPollTimeout  = 120 * time.Second
 )
+
+// defaultStopTimeout is the watchdog of docs/design/04-libvirt-integration.md §3
+// "Stop / start / reboot": how long a graceful stop waits for the guest to power
+// off before the task gives up. A guest that ignores the ACPI request does not
+// become off by waiting longer, so the wait is bounded and the operator is left
+// with a force.
+const defaultStopTimeout = 90 * time.Second
 
 // Launch bounds, from the validation of POST /instances in
 // docs/design/01-api.md §Instances.
@@ -170,12 +181,19 @@ type Options struct {
 	ConsoleDir string
 	// Network is the libvirt network the domain is attached to.
 	Network string
+	// Locks serializes the operations of one instance (docs/design/00-architecture.md
+	// §4). A nil value gets a set of its own, which is right for a process that
+	// runs one instance service; a test that has to hold a lock passes its own.
+	Locks *locks.Set
 	// Limits are the capacity rules of the node.
 	Limits capacity.Limits
 	// PollInterval and PollTimeout bound the wait for a guest address, as
 	// docs/design/04-libvirt-integration.md §3 step 4 describes.
 	PollInterval time.Duration
 	PollTimeout  time.Duration
+	// StopTimeout bounds the wait for a graceful stop to reach the guest. It comes
+	// from KUMO_STOP_TIMEOUT; a zero value gets defaultStopTimeout.
+	StopTimeout time.Duration
 	// Now overrides the clock in tests.
 	Now func() time.Time
 }
@@ -195,9 +213,11 @@ type Service struct {
 	imagesPool    string
 	consoleDir    string
 	network       string
+	locks         *locks.Set
 	limits        capacity.Limits
 	pollInterval  time.Duration
 	pollTimeout   time.Duration
+	stopTimeout   time.Duration
 	now           func() time.Time
 }
 
@@ -266,11 +286,17 @@ func New(opts Options) (*Service, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
+	if opts.Locks == nil {
+		opts.Locks = locks.New()
+	}
 	if opts.PollInterval <= 0 {
 		opts.PollInterval = defaultPollInterval
 	}
 	if opts.PollTimeout <= 0 {
 		opts.PollTimeout = defaultPollTimeout
+	}
+	if opts.StopTimeout <= 0 {
+		opts.StopTimeout = defaultStopTimeout
 	}
 	if opts.Limits.VCPUOvercommit < 1 {
 		opts.Limits.VCPUOvercommit = 1
@@ -290,12 +316,20 @@ func New(opts Options) (*Service, error) {
 		imagesPool:    opts.ImagesPool,
 		consoleDir:    opts.ConsoleDir,
 		network:       opts.Network,
+		locks:         opts.Locks,
 		limits:        opts.Limits,
 		pollInterval:  opts.PollInterval,
 		pollTimeout:   opts.PollTimeout,
+		stopTimeout:   opts.StopTimeout,
 		now:           opts.Now,
 	}, nil
 }
+
+// LockKey is the key this service serializes the operations of one instance with
+// (docs/design/00-architecture.md §4). It is exported because the lock belongs to
+// the instance rather than to the service: anything else that acts on the same
+// instance has to take the very same key, or the two operations interleave.
+func LockKey(instanceID string) string { return "instance:" + instanceID }
 
 // formatTime renders a time the way the schema stores it.
 func formatTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }

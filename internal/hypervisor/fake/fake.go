@@ -63,6 +63,11 @@ type Config struct {
 	Capacity hypervisor.Capacity
 	// Latency is simulated per operation, for timeout and ordering tests.
 	Latency time.Duration
+	// IgnoreShutdown makes Shutdown accept the request and leave the domain
+	// running, the way a guest without an ACPI handler does. libvirt answers the
+	// same way: the request is delivered and nothing happens. It exists so the
+	// watchdog of a graceful stop can be tested without waiting out the real one.
+	IgnoreShutdown bool
 }
 
 // Fake is an in-memory hypervisor.Hypervisor. It is safe for concurrent use.
@@ -72,6 +77,7 @@ type Fake struct {
 	subnet         netip.Prefix
 	capacity       hypervisor.Capacity
 	latency        time.Duration
+	ignoreShutdown bool
 	nextHost       uint32
 	leaseDelay     int
 	volumes        map[string]volume
@@ -128,15 +134,16 @@ func New(cfg Config) *Fake {
 	}
 
 	return &Fake{
-		subnet:     subnet,
-		capacity:   capacity,
-		latency:    cfg.Latency,
-		nextHost:   firstHostOffset,
-		volumes:    make(map[string]volume),
-		domains:    make(map[string]*domain),
-		failOnce:   make(map[hypervisor.Op]error),
-		failAlways: make(map[hypervisor.Op]error),
-		subs:       make(map[*subscriber]struct{}),
+		subnet:         subnet,
+		capacity:       capacity,
+		latency:        cfg.Latency,
+		ignoreShutdown: cfg.IgnoreShutdown,
+		nextHost:       firstHostOffset,
+		volumes:        make(map[string]volume),
+		domains:        make(map[string]*domain),
+		failOnce:       make(map[hypervisor.Op]error),
+		failAlways:     make(map[hypervisor.Op]error),
+		subs:           make(map[*subscriber]struct{}),
 	}
 }
 
@@ -462,6 +469,12 @@ func (f *Fake) Shutdown(ctx context.Context, id string) error {
 		return fmt.Errorf("fake: domain %q is %s, not running: %w",
 			id, d.info.State, hypervisor.ErrInvalidState)
 	}
+	if f.ignoreShutdown {
+		// The request was accepted and nothing happened, which is what libvirt
+		// answers for a guest that does not listen on the ACPI channel.
+		d.appendConsoleLocked("[    2.884120] kumo-fake: poweroff requested by ACPI (ignored)\n")
+		return nil
+	}
 
 	d.info.State = hypervisor.DomainStateShutoff
 	d.appendConsoleLocked("[    2.884120] kumo-fake: poweroff requested by ACPI\n")
@@ -616,6 +629,24 @@ func (f *Fake) ConsoleOutput(ctx context.Context, id string, maxBytes int) ([]by
 		return append([]byte(nil), d.console...), nil
 	}
 	return append([]byte(nil), d.console[len(d.console)-maxBytes:]...), nil
+}
+
+// WriteConsole appends to the console buffer of a domain, the way a guest writing
+// to its serial port would.
+//
+// The lifecycle operations write a line or two each, which is not enough to test
+// anything about a console that serves the tail of a long log: the real thing is
+// a file that has been growing for days.
+func (f *Fake) WriteConsole(_ context.Context, id, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	d, ok := f.domains[id]
+	if !ok {
+		return fmt.Errorf("fake: domain %q: %w", id, hypervisor.ErrNotFound)
+	}
+	d.appendConsoleLocked(text)
+	return nil
 }
 
 // Capacity returns the fake host's totals.

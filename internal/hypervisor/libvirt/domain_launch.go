@@ -214,7 +214,7 @@ func (c *Client) Undefine(ctx context.Context, id string) error {
 		}
 
 		if err := conn.DomainUndefineFlags(dom, golibvirt.DomainUndefineNvram); err != nil {
-			if isNotFound(err) {
+			if isNoDomain(err) || isNotFound(err) {
 				return fmt.Errorf("the domain %q: %w", id, hypervisor.ErrNotFound)
 			}
 			return fmt.Errorf("undefine the domain %q: %w", id, err)
@@ -229,7 +229,7 @@ func (c *Client) Undefine(ctx context.Context, id string) error {
 func lookupDomain(conn *golibvirt.Libvirt, id string) (golibvirt.Domain, error) {
 	dom, err := conn.DomainLookupByName(id)
 	if err != nil {
-		if isNotFound(err) {
+		if isNoDomain(err) || isNotFound(err) {
 			return golibvirt.Domain{}, fmt.Errorf("the domain %q: %w", id, hypervisor.ErrNotFound)
 		}
 		return golibvirt.Domain{}, fmt.Errorf("look the domain %q up: %w", id, err)
@@ -242,7 +242,7 @@ func lookupDomain(conn *golibvirt.Libvirt, id string) (golibvirt.Domain, error) 
 func checkDomainExists(conn *golibvirt.Libvirt, id string) error {
 	_, err := conn.DomainLookupByName(id)
 	if err != nil {
-		if isNotFound(err) {
+		if isNoDomain(err) || isNotFound(err) {
 			return fmt.Errorf("the domain %q disappeared right after it was started: %w",
 				id, hypervisor.ErrNotFound)
 		}
@@ -322,10 +322,31 @@ type domainDesc struct {
 	UUID    string     `xml:"uuid"`
 	Memory  memoryDesc `xml:"memory"`
 	VCPU    vcpuDesc   `xml:"vcpu"`
+	Serial  serialDesc `xml:"serial"`
 	Devices struct {
 		Interfaces []interfaceDesc `xml:"interface"`
 	} `xml:"devices"`
 }
+
+// serialDesc is the first serial port of a domain, which is the one Kumo uses for
+// the guest console: <serial type='pty'><log file='…' append='on'/></serial>.
+//
+// The log element is what says where the bytes go; the pty has no path of its
+// own, so a description without a log element has no console file to read.
+type serialDesc struct {
+	Type string `xml:"type,attr"`
+	Log  struct {
+		File   string `xml:"file,attr"`
+		Append string `xml:"append,attr"`
+	} `xml:"log"`
+}
+
+// ConsoleLog is the file libvirt writes the serial console of this domain to.
+//
+// Reading the path back from the definition is what lets the console-output
+// endpoint serve the log without Kumo having to know where its own domain builder
+// put it, and it keeps working for a definition an operator edited.
+func (d domainDesc) ConsoleLog() string { return strings.TrimSpace(d.Serial.Log.File) }
 
 // memoryDesc is a memory figure with the unit libvirt wrote it in.
 type memoryDesc struct {

@@ -41,6 +41,7 @@ func TestLoadDefaults(t *testing.T) {
 		CookieSecure:     true,
 		Workers:          4,
 		LogLevel:         slog.LevelInfo,
+		StopTimeout:      config.DefaultStopTimeout,
 		MemoryReserveMiB: config.DefaultMemoryReserveMiB,
 		VCPUOvercommit:   config.DefaultVCPUOvercommit,
 	}
@@ -130,6 +131,16 @@ func TestLoadFromEnv(t *testing.T) {
 				}
 				if cfg.RefreshTTL != 24*time.Hour {
 					t.Errorf("RefreshTTL = %s", cfg.RefreshTTL)
+				}
+			},
+		},
+		{
+			name: "stop timeout",
+			env:  map[string]string{"KUMO_STOP_TIMEOUT": "30s"},
+			check: func(t *testing.T, cfg *config.Config) {
+				t.Helper()
+				if cfg.StopTimeout != 30*time.Second {
+					t.Errorf("StopTimeout = %s, want 30s", cfg.StopTimeout)
 				}
 			},
 		},
@@ -285,6 +296,9 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 			"KUMO_REFRESH_TTL": "30m",
 		}},
 		{name: "negative access ttl", env: map[string]string{"KUMO_ACCESS_TTL": "-1m", "KUMO_REFRESH_TTL": "1h"}},
+		{name: "stop timeout not a duration", env: map[string]string{"KUMO_STOP_TIMEOUT": "90 seconds"}},
+		{name: "zero stop timeout", env: map[string]string{"KUMO_STOP_TIMEOUT": "0s"}},
+		{name: "negative stop timeout", env: map[string]string{"KUMO_STOP_TIMEOUT": "-90s"}},
 		{name: "cookie secure not a bool", env: map[string]string{"KUMO_COOKIE_SECURE": "yes-please"}},
 		{name: "image max bytes not a size", env: map[string]string{"KUMO_IMAGE_MAX_BYTES": "20 gigs"}},
 		{name: "negative image max bytes", env: map[string]string{"KUMO_IMAGE_MAX_BYTES": "-1"}},

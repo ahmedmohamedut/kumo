@@ -109,8 +109,8 @@ should show the state until a percentage exists (M3.3).
 | POST | `/instances/{id}/stop` | ACPI graceful shutdown; `?force=true` → destroy |
 | POST | `/instances/{id}/reboot` | ACPI reboot; `?force=true` → reset |
 | DELETE | `/instances/{id}` | Terminate: destroy domain, delete disks. `202` |
-| GET | `/instances/{id}/console-output` | Last N KiB of serial console log |
-| GET | `/instances/{id}/console` | WebSocket → VNC proxy (*M5*) |
+| GET | `/instances/{id}/console-output` | Last N KiB of serial console log (`?tail_kib=`, admin only) |
+| GET | `/instances/{id}/console` | WebSocket → VNC proxy (*M5*, admin only, `501` until then) |
 
 Launch request:
 ```json
@@ -123,8 +123,61 @@ Validation: `name` 1–63 chars RFC-1123 label-ish; `root_disk_gb` ≥ image `mi
 
 `POST /instances` answers `202` with the instance in `pending` and a `Location` header pointing at
 the task that tracks the launch. The boot itself (root disk, seed ISO, domain, address) happens in
-the worker; see `04-libvirt-integration.md` §3. `409` is reserved for the lifecycle actions of
-M4.4, which is where per-resource locking starts.
+the worker; see `04-libvirt-integration.md` §3.
+
+### Lifecycle actions
+
+`POST /instances/{id}/start`, `POST /instances/{id}/stop`, `POST /instances/{id}/reboot` and
+`DELETE /instances/{id}` all answer `202` with the instance and a `Location` header pointing at the
+task that tracks the work. None of them blocks on the guest: a boot, an ACPI shutdown and a
+teardown all take longer than an HTTP request, so the response says the action was *accepted* and
+the state it left behind, and the state changes again when the task finishes.
+
+Each action is only accepted from the states that make sense for it. That is the state machine of
+`00-architecture.md` §4, not a guess about what the operator probably meant:
+
+| Action | Accepted from | State written when accepted |
+|---|---|---|
+| `start` | `stopped` | none: the row stays `stopped` until the guest is up (`pending` means a launch) |
+| `stop` | `running`, `stopping` | `stopping` |
+| `reboot` | `running` | none |
+| `DELETE` | `pending`, `running`, `stopping`, `stopped`, `terminating`, `error` | `terminating` |
+
+A `stop` that leaves a guest which ignores its ACPI request times out and leaves the row in
+`stopping`; `stopping` is therefore also a state a stop may be asked from, so `?force=true` is the
+way out. `DELETE` is answered without a task for an instance that is already `terminated`, so the
+call is safe to repeat when a client never saw the first answer. `DELETE` keeps the row with
+`terminated_at` set (see `02-data-model.md`), so the name becomes reusable and the launch inputs
+stay for history.
+
+`?force=true` is the destructive shortcut: a forced stop destroys the domain instead of asking the
+guest, and a forced reboot resets it instead of asking the guest to restart. It has to be a
+boolean: `?force=maybe` is a `400` about `force`, not a `false`, because a stop that was meant to
+be forced would otherwise come back as a graceful request the guest can refuse.
+
+`409 conflict` means the request was well formed and the instance was not in a state to accept it.
+Three things produce it, and all three say in the message what to do instead: a lifecycle action
+that is already queued or running for that instance (the worker holds a per-instance lock while it
+works on one, and a task row that is still `pending` or `running` counts even when no worker holds
+the lock, e.g. after a restart), a state the action does not apply to, and a name that
+`PATCH /instances/{id}` cannot take because a live instance already has it.
+
+`PATCH /instances/{id}` renames and re-tags, and nothing else: the CPU count, the disk size and the
+image an instance boots from are inputs of a launch, and changing them on a running instance would
+claim something the host is not doing. A body that carries neither a `name` nor a `tags` is a `400`
+about `body`. An absent `tags` leaves the tags alone and `{}` drops every tag, because the console
+sends the whole set and a merge would keep a tag the operator deleted in the form.
+
+`GET /instances/{id}/console-output` answers `{ "instance_id": "i-…", "output": "…" }` with the
+last `tail_kib` KiB of the serial console log (1–1024, default 64; anything else is a `400` about
+`tail_kib`). The bytes come from the file the domain writes through libvirt's `<log>` element, so
+an instance whose domain is gone is a `404` rather than an empty log, and a definition an operator
+edited still reports the log it writes. Both this endpoint and `GET /instances/{id}/console` are
+administrator-only: the console of a guest carries whatever its cloud-init printed.
+
+`GET /instances/{id}/console` is registered and answers `501` (`unavailable`) until the VNC proxy
+of M5 exists, after checking that the instance does: a missing instance is a `404`, because a
+client that cannot tell "not built yet" from "no such instance" cannot recover from either.
 
 Instance resource:
 ```json
