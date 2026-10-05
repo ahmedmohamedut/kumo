@@ -9,6 +9,8 @@ import { ImagesListPage } from '@/features/images/ImagesListPage'
 import { ImageDetailPage } from '@/features/images/ImageDetailPage'
 import { ImportImagePage } from '@/features/images/ImportImagePage'
 import { InstancesListPage } from '@/features/instances/InstancesListPage'
+import { LaunchInstancePage } from '@/features/instances/LaunchInstancePage'
+import { InstanceDetailPage } from '@/features/instances/InstanceDetailPage'
 import { KeyPairsListPage } from '@/features/keypairs/KeyPairsListPage'
 import { CreateKeyPairPage } from '@/features/keypairs/CreateKeyPairPage'
 import { ImportKeyPairPage } from '@/features/keypairs/ImportKeyPairPage'
@@ -32,6 +34,8 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <DashboardPage /> },
       { path: 'instances', element: <InstancesListPage /> },
+      { path: 'instances/launch', element: <LaunchInstancePage /> },
+      { path: 'instances/:instanceId', element: <InstanceDetailPage /> },
       { path: 'images', element: <ImagesListPage /> },
       { path: 'images/import', element: <ImportImagePage /> },
       { path: 'images/:imageId', element: <ImageDetailPage /> },

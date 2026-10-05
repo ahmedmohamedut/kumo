@@ -99,7 +99,9 @@ State → `StatusIndicator`:
 | stopped | `stopped` | Stopped |
 | terminating | `in-progress` | Terminating |
 | terminated | `stopped` | Terminated |
-| error | `error` | Error (tooltip: `state_reason`) |
+| error | `error` | Error (with `state_reason` underneath) |
+
+The reason is rendered as small inactive text *below* the indicator, not as the indicator's tooltip. A tooltip is only reachable on hover, which hides the one thing an operator scanning a column of failures is looking for; a `pending` row says what it is waiting for on the same grounds.
 
 ### 6.2 Launch instance (form)
 Sections (`SpaceBetween` of `Container`s, sticky footer actions Cancel / **Launch instance**):
@@ -115,6 +117,10 @@ On submit → `POST /instances` → navigate to the detail page and show a succe
 
 ### 6.3 Instance detail
 `ContentLayout` header with name, ID, state indicator and actions. `Tabs`: **Details** (`ColumnLayout` of `KeyValuePairs`: ID, state, type, vCPU, memory, image, key pair, IPs, launch time, MAC), **Storage** (root disk), **Tags**, **Console output** (`<pre>` with Refresh; VNC console button added in M5), **Tasks** (recent tasks).
+
+The lifecycle actions are here as well as on the list. An operator who followed a launch to this page is watching an instance come up, and the thing they want when a boot hangs is Stop — not three clicks and a page change away. The guard table and the confirmations are shared with the list, so the two cannot disagree.
+
+`user_data` is not shown. The endpoint only carries it for an administrator (01-api.md §Instances) and the launch form is the only place it is typed; the detail page has nothing useful to add, and printing a secret-adjacent payload into a page an operator might screenshot is not a trade worth making.
 
 ### 6.4 Images
 List columns: Name, Image ID, OS, Architecture, State, Size, Min disk, Created. The OS column shows `os_family os_version`, falling back to the source URL's host when an import carried no OS metadata. Filtering is server-side (`?q=`) with the filter kept in the URL; sorting and paging run over the fetched page (`page_size` is the API maximum, so one request covers a whole node).
