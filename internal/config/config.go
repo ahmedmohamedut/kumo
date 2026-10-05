@@ -71,6 +71,12 @@ type Config struct {
 	Workers  int
 	LogLevel slog.Level
 
+	// StopTimeout is how long a graceful stop waits for the guest to power off
+	// before the task gives up and leaves the instance in stopping for the
+	// operator to force. It is a wait on a guest, not on the host: a guest that
+	// ignores ACPI is still running when the wait is over.
+	StopTimeout time.Duration
+
 	// Capacity. The launch check refuses a guest the node cannot hold; see
 	// docs/design/00-architecture.md §5 and internal/service/capacity.
 	MemoryReserveMiB int64
@@ -91,6 +97,11 @@ const (
 	DefaultCookieSecure  = true
 	DefaultWorkers       = 4
 	DefaultImageMaxBytes = int64(20) << 30 // 20 GiB
+	// DefaultStopTimeout is the watchdog of a graceful stop. Ninety seconds is
+	// longer than the shutdown of a cloud image that is doing what it was asked
+	// (a systemd unit, a service that refuses to die) and shorter than an
+	// operator is willing to watch a spinner.
+	DefaultStopTimeout = 90 * time.Second
 	// DefaultMemoryReserveMiB is the memory a node keeps for itself, so a launch
 	// never hands the last of the host's RAM to a guest.
 	DefaultMemoryReserveMiB = int64(1024)
@@ -114,6 +125,7 @@ func Load() (*Config, error) {
 		Network:          DefaultNetwork,
 		AccessTTL:        DefaultAccessTTL,
 		RefreshTTL:       DefaultRefreshTTL,
+		StopTimeout:      DefaultStopTimeout,
 		CookieSecure:     DefaultCookieSecure,
 		Workers:          DefaultWorkers,
 		ImageMaxBytes:    DefaultImageMaxBytes,
@@ -236,6 +248,13 @@ func (c *Config) loadDurations() error {
 		}
 		c.RefreshTTL = d
 	}
+	if v, ok := os.LookupEnv("KUMO_STOP_TIMEOUT"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("%w: KUMO_STOP_TIMEOUT: %w", ErrInvalidDuration, err)
+		}
+		c.StopTimeout = d
+	}
 	return nil
 }
 
@@ -277,6 +296,10 @@ func (c *Config) Validate() error {
 	if c.RefreshTTL <= c.AccessTTL {
 		return fmt.Errorf("%w: KUMO_REFRESH_TTL must be longer than KUMO_ACCESS_TTL, got %s",
 			ErrInvalidDuration, c.RefreshTTL)
+	}
+	if c.StopTimeout <= 0 {
+		return fmt.Errorf("%w: KUMO_STOP_TIMEOUT must be positive, got %s",
+			ErrInvalidDuration, c.StopTimeout)
 	}
 	if c.ImageMaxBytes <= 0 {
 		return fmt.Errorf("%w: KUMO_IMAGE_MAX_BYTES must be positive, got %d",

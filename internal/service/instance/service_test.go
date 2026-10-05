@@ -3,6 +3,7 @@ package instance_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -28,6 +29,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/store/sqlc"
 	"github.com/ahmedmohamedut/kumo/internal/store/storetest"
 	"github.com/ahmedmohamedut/kumo/internal/worker"
+	"github.com/ahmedmohamedut/kumo/internal/worker/locks"
 )
 
 // errBackendSaidNo is what the fake is told to return at the step under test.
@@ -62,6 +64,7 @@ type harness struct {
 	images  *image.Service
 	keyPair *keypair.Service
 	tasks   *task.Service
+	locks   *locks.Set
 	console string
 	now     *time.Time
 }
@@ -139,7 +142,17 @@ func newHarnessWith(t *testing.T, hvConfig fake.Config, opts instance.Options) h
 	if opts.PollTimeout == 0 {
 		opts.PollTimeout = time.Second
 	}
+	// Same reasoning for the watchdog of a graceful stop: a test that watches a
+	// guest ignore its ACPI request sets its own, and the rest never reach it.
+	if opts.StopTimeout == 0 {
+		opts.StopTimeout = 100 * time.Millisecond
+	}
 	opts.Limits = capacity.Limits{MemoryReserveMiB: 1024, VCPUOvercommit: 4}
+
+	// The lock set is the service's own, and the harness keeps it so a test can
+	// hold an instance the way a running workflow does.
+	lockSet := locks.New()
+	opts.Locks = lockSet
 
 	opts.Logger = logging.Discard()
 	opts.Store = db
@@ -168,6 +181,7 @@ func newHarnessWith(t *testing.T, hvConfig fake.Config, opts instance.Options) h
 		images:  images,
 		keyPair: pairs,
 		tasks:   tasks,
+		locks:   lockSet,
 		console: console,
 		now:     &now,
 	}
@@ -273,15 +287,28 @@ func (h *harness) pendingImage(t *testing.T, name string) image.LaunchSource {
 	return source
 }
 
-// launch runs the launch task the way the worker does.
+// launch runs the launch task the way the worker does: the real task row with the
+// payload the service stored, and the bookkeeping the pool does once the handler
+// returned. Running it a second time is how a requeued task arrives, so the
+// workflow has to adopt the first run rather than fail on it.
 func (h *harness) launch(t *testing.T, instanceID string) error {
 	t.Helper()
-	return h.svc.LaunchHandler(t.Context(), worker.Task{
-		ID:         "task-test",
-		Type:       task.TypeInstanceLaunch,
-		ResourceID: instanceID,
-		Payload:    []byte(fmt.Sprintf(`{"instance_id":%q}`, instanceID)),
+
+	row, err := h.store.GetLatestInstanceTask(t.Context(), sqlc.GetLatestInstanceTaskParams{
+		ResourceID: sql.NullString{String: instanceID, Valid: true},
 	})
+	if err != nil {
+		t.Fatalf("GetLatestInstanceTask(%q): %v", instanceID, err)
+	}
+
+	err = h.svc.LaunchHandler(t.Context(), worker.Task{
+		ID:         row.ID,
+		Type:       row.Type,
+		ResourceID: instanceID,
+		Payload:    json.RawMessage(row.Payload),
+	})
+	h.finishTask(t, row, err)
+	return err
 }
 
 // volumeNames lists the volumes of a pool, so a rollback can be asserted without

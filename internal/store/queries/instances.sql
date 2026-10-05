@@ -53,6 +53,32 @@ SET private_ip = ?2,
 WHERE id = ?1
 RETURNING *;
 
+-- PATCH /instances/{id}. The name is the only column an operator may change:
+-- everything else on the row is either a launch input (a vCPU count, a disk
+-- size) or runtime data libvirt owns. The partial unique index
+-- idx_instances_name_live refuses a duplicate name and the caller maps the
+-- violation onto 409.
+-- name: RenameInstance :one
+UPDATE instances
+SET name = ?2,
+    updated_at = ?3
+WHERE id = ?1
+RETURNING *;
+
+-- The end of a terminate. terminated_at is written together with the state,
+-- because a row that says terminated without a time cannot be ordered against the
+-- ones that followed it, and the row outlives the domain on purpose: it keeps
+-- the launch inputs for history and releases the name for reuse through the
+-- partial unique index (docs/design/02-data-model.md).
+-- name: MarkInstanceTerminated :one
+UPDATE instances
+SET state = 'terminated',
+    state_reason = NULL,
+    terminated_at = ?2,
+    updated_at = ?3
+WHERE id = ?1
+RETURNING *;
+
 -- Keyset pagination over (launched_at, id); instr(haystack, '') is 1 in
 -- SQLite, so an empty query matches every row, and an empty state_filter
 -- matches every state.

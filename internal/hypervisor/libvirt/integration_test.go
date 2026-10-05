@@ -4,6 +4,7 @@ package libvirt_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -168,6 +169,10 @@ const maxImageBytes = 1 << 30
 // prove are the ones that only a real hypervisor proves: that QEMU can open a
 // volume from a directory pool, that the domain XML is accepted, and that the
 // guest finishes a DHCP handshake at all.
+//
+// The tail is the M4.4 lifecycle: the power calls and the console log are made
+// against the same live domain, because a backend method that compiles and is
+// never called against libvirt is not a backend method that works.
 func TestLaunchBootsCirrOS(t *testing.T) {
 	url := cirrosURL()
 	if url == "" {
@@ -329,6 +334,96 @@ func TestLaunchBootsCirrOS(t *testing.T) {
 	// that booted has to have left one.
 	if _, err := os.Stat(consoleLog); err != nil {
 		t.Errorf("stat the console log: %v", err)
+	}
+
+	// The M4.4 calls, on a domain that is really up. The console tail is read from
+	// the path in the domain's own <log> element rather than from one rebuilt here,
+	// so a backend that guessed the path instead of asking libvirt would answer
+	// with nothing.
+	out, err := client.ConsoleOutput(ctx, instanceID, 64<<10)
+	if err != nil {
+		t.Fatalf("ConsoleOutput(): %v", err)
+	}
+	if len(out) == 0 {
+		t.Error("ConsoleOutput() returned nothing for a domain that has booted")
+	}
+	if tail, err := client.ConsoleOutput(ctx, instanceID, 64); err != nil {
+		t.Errorf("ConsoleOutput(64): %v", err)
+	} else if len(tail) > 64 {
+		t.Errorf("ConsoleOutput(64) returned %d bytes, want at most 64", len(tail))
+	}
+
+	// A reset is QEMU's own, not the guest's, so it is the one power call whose
+	// outcome the host guarantees.
+	if err := client.Reset(ctx, instanceID); err != nil {
+		t.Errorf("Reset(): %v", err)
+	}
+
+	// A domain that libvirt does not know has to come back as ErrNotFound, because
+	// that is what the workflows match on to record an instance as an error.
+	for name, call := range map[string]func(context.Context, string) error{
+		"Start":         func(ctx context.Context, id string) error { return client.Start(ctx, id) },
+		"Shutdown":      func(ctx context.Context, id string) error { return client.Shutdown(ctx, id) },
+		"Reboot":        func(ctx context.Context, id string) error { return client.Reboot(ctx, id) },
+		"Reset":         func(ctx context.Context, id string) error { return client.Reset(ctx, id) },
+		"ConsoleOutput": func(ctx context.Context, id string) error { _, err := client.ConsoleOutput(ctx, id, 1024); return err },
+	} {
+		if err := call(ctx, "i-it-not-here"); !errors.Is(err, hypervisor.ErrNotFound) {
+			t.Errorf("%s() on a missing domain = %v, want ErrNotFound", name, err)
+		}
+	}
+
+	// An ACPI shutdown only has to be delivered: whether the guest acts on it is
+	// the guest's business, and CirrOS answers it where many minimal images do not.
+	switch err := client.Shutdown(ctx, instanceID); {
+	case err == nil:
+		if !waitForState(client, instanceID, hypervisor.DomainStateShutoff, 60*time.Second) {
+			t.Log("the guest ignored the ACPI request; the call was still delivered")
+		}
+	case errors.Is(err, hypervisor.ErrInvalidState):
+		t.Log("libvirt refused the ACPI request; skipping the graceful stop")
+	default:
+		t.Errorf("Shutdown(): %v", err)
+	}
+
+	// A forced stop leaves nothing running, and a start boots the definition that is
+	// still there: the pair is what a stop/start of an instance does, and neither
+	// step may redefine the domain.
+	if err := client.Destroy(ctx, instanceID); err != nil && !errors.Is(err, hypervisor.ErrNotFound) {
+		t.Errorf("Destroy(): %v", err)
+	}
+	if err := client.Start(ctx, instanceID); err != nil {
+		t.Errorf("Start(): %v", err)
+	}
+	if info, err := client.GetDomain(ctx, instanceID); err != nil {
+		t.Errorf("GetDomain() after the start: %v", err)
+	} else if info.State == hypervisor.DomainStateShutoff {
+		t.Error("the domain is still shut off after Start()")
+	}
+	if err := client.Destroy(ctx, instanceID); err != nil && !errors.Is(err, hypervisor.ErrNotFound) {
+		t.Errorf("Destroy() at the end: %v", err)
+	}
+}
+
+// waitForState polls a domain until it reports want, and reports whether it got
+// there. It fails the test only on an error it cannot interpret, so a caller can
+// treat "did not get there" as a property of the guest rather than a failure.
+func waitForState(
+	client *kumolibvirt.Client, id string, want hypervisor.DomainState, within time.Duration,
+) bool {
+	deadline := time.Now().Add(within)
+	for {
+		info, err := client.GetDomain(context.Background(), id)
+		switch {
+		case err != nil:
+			return false
+		case info.State == want:
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(2 * time.Second)
 	}
 }
 

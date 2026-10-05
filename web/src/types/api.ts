@@ -1838,6 +1838,7 @@ export interface operations {
           'application/json': components['schemas']['ConsoleOutput']
         }
       }
+      400: components['responses']['InvalidArgument']
       401: components['responses']['Unauthorized']
       403: components['responses']['PermissionDenied']
       404: components['responses']['NotFound']

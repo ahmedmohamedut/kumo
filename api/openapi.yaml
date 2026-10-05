@@ -762,6 +762,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ConsoleOutput'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

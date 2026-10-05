@@ -61,7 +61,7 @@
   `pending → running ⇄ stopping → stopped → running`, `* → terminating → terminated`, `* → error`.
   Transitional states (`pending`, `stopping`, `terminating`) are owned by a task. Steady states are observed from libvirt.
 - **Tasks:** table `tasks` (`pending|running|succeeded|failed`). Worker pool (default 4) claims tasks with an atomic `UPDATE ... WHERE state='pending'`. On startup, tasks left `running` are marked `failed` (or retried if the type is idempotent) and the owning resource moves to `error` or is reconciled.
-- **Per-resource lock:** an in-process keyed mutex (`internal/worker/locks`) serializes operations on the same instance/image ID. Reject conflicting actions with `409`.
+- **Per-resource lock:** an in-process keyed mutex (`internal/worker/locks`) serializes operations on the same instance/image ID. Reject conflicting actions with `409`. A request takes the lock without waiting (so an operator pressing stop twice is told the instance is busy); a task waits for it, because two queued tasks for one instance are going to run in some order. An unfinished task row counts as busy too, since a task killed with the process holds no lock until it is requeued.
 - **Reconciler (every 10 s, plus libvirt lifecycle events):**
   1. List domains from libvirt, match by name == instance ID.
   2. DB instance without a domain and not `pending`/`terminated` → mark `error` (`domain_missing`).
@@ -86,6 +86,7 @@
 | `KUMO_COOKIE_SECURE` | `true` | set `false` for plain-HTTP dev |
 | `KUMO_ALLOWED_ORIGINS` | *(empty)* | dev CORS (Vite at `http://localhost:5173`) |
 | `KUMO_WORKERS` | `4` | task worker count |
+| `KUMO_STOP_TIMEOUT` | `90s` | how long a graceful stop waits for the guest before the task fails and the instance stays `stopping` |
 | `KUMO_IMAGE_MAX_BYTES` | `20GiB` | max image import size |
 | `KUMO_IMAGE_TEMP_DIR` | `$KUMO_DATA_DIR/staging` | where a download is staged; must share a filesystem with the images pool |
 | `KUMO_IMAGE_ALLOW_PRIVATE_URLS` | `false` | allow imports from loopback/private/link-local hosts (trusted LAN mirrors) |

@@ -112,8 +112,52 @@ Behavior the steps above do not make obvious:
 ### Terminate
 `Destroy` (ignore "not running") → `DomainUndefineFlags` (include NVRAM flag if UEFI) → delete `-root.qcow2` and `-seed.iso` → state `terminated`, `terminated_at` set. Idempotent: every step tolerates "already gone".
 
+The row stays behind with `terminated_at` set (see `02-data-model.md`): it keeps the launch inputs
+for history and, through the partial unique index on the name, releases the name for reuse. So
+`DeleteInstance` has no caller — the row *is* the history, and only a purge would delete it.
+
+Every terminate step treats "no such domain" as done, which is what makes the workflow safe to run
+twice: a task interrupted after deleting the seed ISO is requeued on the next start and has to be
+able to finish.
+
 ### Stop / start / reboot
 `stop` → `DomainShutdown` (ACPI); a 90 s watchdog task escalates only if `?force=true` was requested; otherwise UI shows `stopping` until guest is off. `force` → `DomainDestroy`. `reboot` → `DomainReboot`; `force` → `DomainReset`.
+
+What the task does around those calls, and why the row moves where it does:
+
+- **`DomainShutdown` is a request, not a fact.** libvirt answers as soon as QEMU has been told, so
+  the task polls the domain until it is no longer running, bounded by `KUMO_STOP_TIMEOUT` (90 s).
+  On timeout the task fails, the row stays `stopping`, and the operator force-stops — which is why
+  `stopping` is one of the states a stop may start from. A domain that is gone counts as stopped: the
+  outcome the caller wanted is true, so the row becomes `stopped` rather than `error`.
+- **`?force=true` does not wait.** `DomainDestroy` leaves nothing running, so the row is `stopped` as
+  soon as the call returns.
+- **`start` has no transitional state.** The row stays `stopped` until the domain reports running,
+  because `pending` means a launch that has no domain yet (see `00-architecture.md` §4). A domain
+  that libvirt does not know is an `error` with `state_reason` starting `domain_missing: `, the same
+  conclusion the reconciler reaches.
+- **`reboot` writes nothing on success.** The instance was running and is running again. A guest
+  that is not running under a row that says it is becomes `stopped` and the task fails, so the row
+  stops claiming something the host is not doing.
+- **A domain that libvirt refuses for its state is not an error of the host.** `Start` on a running
+  domain and `Shutdown` on a shut-off one come back as libvirt's `ERR_OPERATION_INVALID`; the
+  service maps them to `hypervisor.ErrInvalidState` and decides: a start that finds the domain
+  already running adopts it, a reboot that finds it stopped records that instead.
+
+### One lock per instance
+A launch and every lifecycle action hold `locks.Set` on `instance.LockKey(id)` for as long as they
+work on the instance, so two tasks can never work on the same domain at once. The two callers treat
+it differently on purpose:
+
+- **A request** (`POST /instances/{id}/stop` and friends) uses `TryAcquire` and answers `409` with
+  the name of the holder, because an operator pressing stop twice deserves to be told the instance
+  is busy, not to wait behind a task they cannot see.
+- **A task** uses `Acquire` and waits, because two queued tasks for one instance are going to run in
+  some order and the queue will run them both.
+
+The task row is the second guard: a task left `pending` or `running` by a killed process holds no
+lock until the pool requeues it, so an action is also refused when the latest task of the instance
+is unfinished.
 
 ## 4. cloud-init defaults
 

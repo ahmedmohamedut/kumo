@@ -32,6 +32,15 @@ const (
 	// TypeInstanceLaunch creates the volumes, the domain and the address of a new
 	// instance.
 	TypeInstanceLaunch = "instance.launch"
+	// TypeInstanceStart boots a domain that was shut off.
+	TypeInstanceStart = "instance.start"
+	// TypeInstanceStop powers an instance down, gracefully or not.
+	TypeInstanceStop = "instance.stop"
+	// TypeInstanceReboot restarts a running domain.
+	TypeInstanceReboot = "instance.reboot"
+	// TypeInstanceTerminate destroys the domain and deletes the volumes of an
+	// instance, which is the only operation that releases its allocation.
+	TypeInstanceTerminate = "instance.terminate"
 )
 
 // State is the lifecycle of a task. The values mirror the CHECK constraint on

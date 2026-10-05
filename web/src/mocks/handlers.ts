@@ -8,6 +8,9 @@ type KeyPair = components['schemas']['KeyPair']
 type Image = components['schemas']['Image']
 type Task = components['schemas']['Task']
 type CatalogImage = components['schemas']['CatalogImage']
+type Instance = components['schemas']['Instance']
+type InstanceType = components['schemas']['InstanceType']
+type LaunchInstanceRequest = components['schemas']['LaunchInstanceRequest']
 
 /**
  * MSW handlers for the auth and system endpoints (03-frontend.md §8). The auth
@@ -321,6 +324,131 @@ const CATALOG: CatalogImage[] = [
   },
 ]
 
+/**
+ * MOCK_INSTANCE_TYPES are the presets `GET /instance-types` serves. They are the
+ * same three `internal/service/instance/types.go` defines, so a launch made
+ * against the mock and one made against a real node describe the same shape.
+ */
+const MOCK_INSTANCE_TYPES: InstanceType[] = [
+  { id: 'kumo.small', vcpus: 2, memory_mib: 4096, description: 'Small' },
+  { id: 'kumo.medium', vcpus: 4, memory_mib: 8192, description: 'Medium' },
+  { id: 'kumo.large', vcpus: 8, memory_mib: 16384, description: 'Large' },
+]
+
+/**
+ * Instance fixtures.
+ *
+ * One row per lifecycle state the list has to render, because the state cell is
+ * where most of the interesting rendering lives: `web-1` is running, `web-2` is
+ * still `pending` (the launch task has not finished), `db-1` carries a
+ * `state_reason` so the error cell has something to show, and `old-1` is
+ * `terminated` so the row that outlives its instance is covered too.
+ *
+ * `i-0a1b2c3d4e5f60718` is the instance the key pair and image fixtures already
+ * reference, so the 409s those pages test stay consistent with these.
+ */
+const INITIAL_INSTANCES: Instance[] = [
+  {
+    id: 'i-0a1b2c3d4e5f60718',
+    name: 'web-1',
+    state: 'running',
+    state_reason: null,
+    image_id: 'img-0d3e4f5a6071829',
+    image_name: 'alpine-3.20',
+    instance_type: 'kumo.small',
+    vcpus: 2,
+    memory_mib: 4096,
+    root_disk_gb: 8,
+    key_pair_id: 'key-0a1b2c3d4e5f60718',
+    key_pair_name: 'legacy-rsa',
+    private_ip: '10.0.0.11',
+    mac_address: '52:54:00:11:22:33',
+    user_data: null,
+    task_id: null,
+    launched_at: '2026-01-03T09:00:00Z',
+    terminated_at: null,
+    updated_at: '2026-01-03T09:00:40Z',
+    tags: { env: 'prod' },
+  },
+  {
+    id: 'i-0b2c3d4e5f6071890',
+    name: 'web-2',
+    // Launched but not yet running: the launch task is still working, which is
+    // what makes the list poll at 5 s.
+    state: 'pending',
+    state_reason: null,
+    image_id: 'img-0b2c3d4e5f6071829',
+    image_name: 'ubuntu-22.04',
+    instance_type: 'kumo.small',
+    vcpus: 2,
+    memory_mib: 4096,
+    root_disk_gb: 20,
+    key_pair_id: null,
+    key_pair_name: null,
+    private_ip: null,
+    mac_address: null,
+    user_data: null,
+    task_id: 'task-0a1b2c3d4e5f60710',
+    launched_at: '2026-01-05T11:00:00Z',
+    terminated_at: null,
+    updated_at: '2026-01-05T11:00:00Z',
+    tags: {},
+  },
+  {
+    id: 'i-0c2d3e4f5a6071819',
+    name: 'db-1',
+    state: 'error',
+    // A reason that names a cause and a value, so a test can assert the cell
+    // carries something more than "Error".
+    state_reason: 'the guest did not boot: root disk 2 GiB is below the 8 GiB image needs',
+    image_id: 'img-0b2c3d4e5f6071829',
+    image_name: 'ubuntu-22.04',
+    instance_type: 'kumo.medium',
+    vcpus: 4,
+    memory_mib: 8192,
+    root_disk_gb: 2,
+    key_pair_id: null,
+    key_pair_name: null,
+    private_ip: null,
+    mac_address: '52:54:00:44:55:66',
+    user_data: null,
+    task_id: 'task-0a1b2c3d4e5f60711',
+    launched_at: '2026-01-04T14:00:00Z',
+    terminated_at: null,
+    updated_at: '2026-01-04T14:02:00Z',
+    tags: {},
+  },
+  {
+    id: 'i-0d2e3f4a5b6071829',
+    name: 'old-1',
+    // Terminated: the row is kept as history so the name can be reused, which is
+    // why the list still shows it.
+    state: 'terminated',
+    state_reason: null,
+    image_id: 'img-0d3e4f5a6071829',
+    image_name: 'alpine-3.20',
+    instance_type: 'kumo.small',
+    vcpus: 2,
+    memory_mib: 4096,
+    root_disk_gb: 8,
+    key_pair_id: null,
+    key_pair_name: null,
+    private_ip: null,
+    mac_address: null,
+    user_data: null,
+    task_id: null,
+    launched_at: '2026-01-02T08:00:00Z',
+    terminated_at: '2026-01-04T10:00:00Z',
+    updated_at: '2026-01-04T10:00:05Z',
+    tags: {},
+  },
+]
+
+/** freshInstances is a private copy of the fixtures, so no test can mutate them. */
+function freshInstances(): Instance[] {
+  return INITIAL_INSTANCES.map((instance) => ({ ...instance, tags: { ...instance.tags } }))
+}
+
 /** freshImages and freshTasks are private copies, so no test can mutate the originals. */
 function freshImages(): MockImage[] {
   return INITIAL_IMAGES.map((image) => ({
@@ -336,6 +464,7 @@ function freshTasks(): Task[] {
 
 let images: MockImage[] = freshImages()
 let tasks: Task[] = freshTasks()
+let instances: Instance[] = freshInstances()
 
 /** mockImages is the current fixture table, for assertions. */
 export function mockImages(): MockImage[] {
@@ -360,11 +489,11 @@ export function addMockImageReference(id: string, instanceID: string): void {
 }
 
 /**
- * nextResourceID mints an id like the ones kumod generates (`img-`/`task-` plus
- * 17 hex characters), derived from the shared counter so two fixtures minted in
- * the same test cannot collide.
+ * nextResourceID mints an id like the ones kumod generates (`img-`/`task-`/`i-`
+ * plus 17 hex characters), derived from the shared counter so two fixtures minted
+ * in the same test cannot collide.
  */
-function nextResourceID(prefix: 'img' | 'task'): string {
+function nextResourceID(prefix: 'img' | 'task' | 'i'): string {
   return `${prefix}-0f1e2d3c4b5a6${String((counter += 1)).padStart(5, '0')}`
 }
 
@@ -389,6 +518,22 @@ export function resetMockState(): void {
   keyPairs = freshKeyPairs()
   images = freshImages()
   tasks = freshTasks()
+  instances = freshInstances()
+}
+
+/** mockInstances reads the instance fixtures, e.g. to assert a state change. */
+export function mockInstances(): Instance[] {
+  return instances
+}
+
+/** setMockInstances replaces the fixture table, e.g. to start from an empty list. */
+export function setMockInstances(next: Instance[]): void {
+  instances = next
+}
+
+/** findMockInstance is the one fixture row a test is acting on. */
+export function findMockInstance(id: string): Instance | undefined {
+  return instances.find((instance) => instance.id === id)
 }
 
 /** setMockNeedsSetup opens or closes the first-run setup path. */
@@ -775,6 +920,203 @@ export const handlers = [
     )
   }),
 
+  // ------------------------------------------------------------- instances ---
+
+  http.get('/api/v1/instance-types', ({ request }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    return HttpResponse.json({ items: MOCK_INSTANCE_TYPES })
+  }),
+
+  http.get('/api/v1/instances', ({ request }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    const params = new URL(request.url).searchParams
+    const query = params.get('q')
+    const state = params.get('state')
+    const items = instances
+      .filter(
+        (instance) => query === null || instance.name.toLowerCase().includes(query.toLowerCase()),
+      )
+      .filter((instance) => state === null || instance.state === state)
+      // Newest first, the API's default order.
+      .sort((a, b) => b.launched_at.localeCompare(a.launched_at))
+    return HttpResponse.json({ items, next_page_token: null })
+  }),
+
+  http.get('/api/v1/instances/:id', ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    const id = String(params.id)
+    const instance = instances.find((candidate) => candidate.id === id)
+    if (instance === undefined) {
+      return apiError(404, 'not_found', `no instance "${id}"`)
+    }
+    return HttpResponse.json(instance)
+  }),
+
+  // The launch answers 202 with the instance in `pending` and never waits for the
+  // boot, which is the whole point of the task (01-api.md §Instances).
+  http.post('/api/v1/instances', async ({ request }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const body = (await request.json()) as LaunchInstanceRequest
+    const fieldError = validateLaunch(body, images, MOCK_INSTANCE_TYPES)
+    if (fieldError !== null) {
+      return invalidArgument(fieldError.field, fieldError.reason)
+    }
+    const image = images.find((candidate) => candidate.id === body.image_id) as MockImage
+    const preset = MOCK_INSTANCE_TYPES.find((candidate) => candidate.id === body.instance_type)
+    const task: Task = {
+      id: nextResourceID('task'),
+      type: 'instance.launch',
+      state: 'pending',
+      created_at: '2026-01-06T04:00:00Z',
+      updated_at: '2026-01-06T04:00:00Z',
+    }
+    const pair =
+      body.key_pair_id === undefined
+        ? undefined
+        : keyPairs.find((candidate) => candidate.id === body.key_pair_id)
+    const instance: Instance = {
+      id: nextResourceID('i'),
+      name: body.name,
+      state: 'pending',
+      state_reason: null,
+      image_id: body.image_id,
+      image_name: image.name,
+      instance_type: body.instance_type,
+      vcpus: preset?.vcpus ?? 1,
+      memory_mib: preset?.memory_mib ?? 1024,
+      // `min_disk_gb` is optional on the schema, so an image that never declared
+      // one falls back to the API's 1 GiB floor.
+      root_disk_gb: body.root_disk_gb ?? image.min_disk_gb ?? 1,
+      key_pair_id: body.key_pair_id ?? null,
+      key_pair_name: pair?.name ?? null,
+      private_ip: null,
+      mac_address: null,
+      // `user_data` is echoed to admins only, and the list never carries it.
+      user_data: body.user_data ?? null,
+      task_id: task.id,
+      launched_at: task.created_at,
+      terminated_at: null,
+      updated_at: task.created_at,
+      tags: { ...(body.tags ?? {}) },
+    }
+    tasks = [task, ...tasks]
+    instances = [instance, ...instances]
+    // Launching from an image is what makes deleting it a 409, and attaching a
+    // key pair is what makes deleting that a 409 — the same linkage the Go
+    // service keeps.
+    images = images.map((candidate) =>
+      candidate.id === body.image_id
+        ? { ...candidate, referenced_by: [...candidate.referenced_by, instance.id] }
+        : candidate,
+    )
+    keyPairs = keyPairs.map((candidate) =>
+      body.key_pair_id !== undefined && candidate.id === body.key_pair_id
+        ? { ...candidate, used_by: [...candidate.used_by, instance.id] }
+        : candidate,
+    )
+    return HttpResponse.json(instance, {
+      status: 202,
+      headers: { Location: `/api/v1/tasks/${task.id}` },
+    })
+  }),
+
+  http.patch('/api/v1/instances/:id', async ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const body = (await request.json()) as components['schemas']['UpdateInstanceRequest']
+    const id = String(params.id)
+    const instance = instances.find((candidate) => candidate.id === id)
+    if (instance === undefined) {
+      return apiError(404, 'not_found', `no instance "${id}"`)
+    }
+    if (body.name !== undefined && body.name !== instance.name) {
+      // A terminated instance keeps its name as history, and that history is what
+      // frees the name for reuse — so a live instance must still not collide.
+      const taken = instances.some(
+        (candidate) =>
+          candidate.name === body.name && candidate.state !== 'terminated' && candidate.id !== id,
+      )
+      if (taken) {
+        return invalidArgument('name', `an instance named "${body.name}" already exists`)
+      }
+      if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(body.name)) {
+        return invalidArgument(
+          'name',
+          'must be 1-63 characters of lowercase letters, digits and dashes',
+        )
+      }
+    }
+    const updated: Instance = {
+      ...instance,
+      ...(body.name === undefined ? {} : { name: body.name }),
+      ...(body.tags === undefined ? {} : { tags: { ...body.tags } }),
+      updated_at: '2026-01-06T05:00:00Z',
+    }
+    instances = instances.map((candidate) => (candidate.id === id ? updated : candidate))
+    return HttpResponse.json(updated)
+  }),
+
+  // Every lifecycle action answers 202 and queues a task; the guard table and the
+  // state each one lands in live in `lifecycle` below.
+  http.post('/api/v1/instances/:id/start', ({ request, params }) => {
+    const result = lifecycle(request, String(params.id), 'start')
+    return 'response' in result ? result.response : accepted(result.instance)
+  }),
+
+  http.post('/api/v1/instances/:id/stop', ({ request, params }) => {
+    const result = lifecycle(request, String(params.id), 'stop')
+    return 'response' in result ? result.response : accepted(result.instance)
+  }),
+
+  http.post('/api/v1/instances/:id/reboot', ({ request, params }) => {
+    const result = lifecycle(request, String(params.id), 'reboot')
+    return 'response' in result ? result.response : accepted(result.instance)
+  }),
+
+  http.delete('/api/v1/instances/:id', ({ request, params }) => {
+    const result = lifecycle(request, String(params.id), 'terminate')
+    return 'response' in result ? result.response : accepted(result.instance)
+  }),
+
+  http.get('/api/v1/instances/:id/console-output', ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const id = String(params.id)
+    if (instances.some((candidate) => candidate.id === id)) {
+      return HttpResponse.json({
+        instance_id: id,
+        output:
+          '[    0.000000] Linux version 6.1.0\n[    1.204321] cloud-init: loading user-data\n',
+      })
+    }
+    return apiError(404, 'not_found', `no instance "${id}"`)
+  }),
+
   // ----------------------------------------------------------------- tasks ---
 
   http.get('/api/v1/tasks', ({ request }) => {
@@ -872,6 +1214,167 @@ function validateNewKeyPair(
   if (existing.some((pair) => pair.name === name)) {
     return { field: 'name', reason: `a key pair named "${name}" already exists` }
   }
+  return null
+}
+
+/**
+ * TRANSITIONS is the lifecycle guard table the Go service enforces in
+ * `internal/service/instance/lifecycle.go`. The mock answers the same `409` for the
+ * same states, because a console that only ever sees the happy path against mocks
+ * will render a dropdown the API refuses.
+ */
+const TRANSITIONS: Record<
+  'start' | 'stop' | 'reboot' | 'terminate',
+  ReadonlySet<Instance['state']>
+> = {
+  start: new Set(['stopped']),
+  stop: new Set(['running', 'stopping']),
+  reboot: new Set(['running']),
+  terminate: new Set(['pending', 'running', 'stopping', 'stopped', 'terminating', 'error']),
+}
+
+/**
+ * lifecycle queues one action, applying the guard table and the transition the
+ * backend would apply. It returns either an `HttpResponse` or the updated row, so
+ * each handler below stays a couple of lines.
+ */
+type LifecycleAction = keyof typeof TRANSITIONS
+
+/** The state each action moves the row to, for the 202 the console renders. */
+const NEXT_STATE: Record<LifecycleAction, Instance['state']> = {
+  start: 'pending',
+  stop: 'stopping',
+  reboot: 'running',
+  terminate: 'terminating',
+}
+
+/** PAST_TENSE is the action as a past participle, for the 409 message. */
+const PAST_TENSE: Record<LifecycleAction, string> = {
+  start: 'started',
+  stop: 'stopped',
+  reboot: 'rebooted',
+  terminate: 'terminated',
+}
+
+function lifecycle(
+  request: Request,
+  id: string,
+  action: LifecycleAction,
+): { response: ReturnType<typeof HttpResponse.json> } | { instance: Instance } {
+  const user = requireUser(request)
+  if (user === undefined) {
+    return { response: unauthenticated() }
+  }
+  if (user.role !== 'admin') {
+    return { response: forbidden() }
+  }
+  const instance = instances.find((candidate) => candidate.id === id)
+  if (instance === undefined) {
+    return { response: apiError(404, 'not_found', `no instance "${id}"`) }
+  }
+  if (!TRANSITIONS[action].has(instance.state)) {
+    return {
+      response: apiError(
+        409,
+        'conflict',
+        `the instance "${instance.name}" is ${instance.state} and cannot be ${PAST_TENSE[action]}`,
+      ),
+    }
+  }
+
+  const task: Task = {
+    id: nextResourceID('task'),
+    type: `instance.${action}`,
+    resource_id: id,
+    state: 'pending',
+    created_at: '2026-01-06T06:00:00Z',
+    updated_at: '2026-01-06T06:00:00Z',
+  }
+  tasks = [task, ...tasks]
+  // The state an action moves to: stop lands in `stopping` and terminate in
+  // `terminating`, both of which the reconciler later settles. Start, stop and
+  // reboot leave the instance alone in the mock — the work is a task's job, and a
+  // mock that pretended to boot a VM would be claiming something it cannot do.
+  const updated: Instance = {
+    ...instance,
+    state: NEXT_STATE[action],
+    state_reason: null,
+    task_id: task.id,
+    updated_at: task.created_at,
+  }
+  instances = instances.map((candidate) => (candidate.id === id ? updated : candidate))
+  return { instance: updated }
+}
+
+/** accepted answers the 202 every lifecycle action returns, with its task. */
+function accepted(instance: Instance) {
+  return HttpResponse.json(instance, {
+    status: 202,
+    headers: { Location: `/api/v1/tasks/${instance.task_id ?? ''}` },
+  })
+}
+
+/**
+ * validateLaunch mirrors the launch validation in
+ * `internal/service/instance/launch.go`: an RFC 1123 name free among live
+ * instances, an available image, a known preset, a root disk between the image's
+ * minimum and 2048, and a cloud-init payload within 16 KiB.
+ */
+function validateLaunch(
+  body: LaunchInstanceRequest,
+  availableImages: MockImage[],
+  presets: InstanceType[],
+): { field: string; reason: string } | null {
+  if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(body.name) || body.name.length > 63) {
+    return {
+      field: 'name',
+      reason:
+        'must be 1-63 characters of lowercase letters, digits and dashes, starting and ending with a letter or digit',
+    }
+  }
+  // A terminated row keeps its name as history, and that is what frees the name
+  // for reuse, so only a live instance blocks it.
+  if (
+    instances.some((candidate) => candidate.name === body.name && candidate.state !== 'terminated')
+  ) {
+    return { field: 'name', reason: `an instance named "${body.name}" already exists` }
+  }
+
+  const image = availableImages.find((candidate) => candidate.id === body.image_id)
+  if (image === undefined) {
+    return { field: 'image_id', reason: `no image "${body.image_id}"` }
+  }
+  if (image.state !== 'available') {
+    return { field: 'image_id', reason: `the image "${image.name}" is ${image.state}` }
+  }
+  const minDiskGb = image.min_disk_gb ?? 1
+
+  if (body.count !== 1) {
+    return {
+      field: 'count',
+      reason: 'must be 1; launching several instances from one image is not available yet',
+    }
+  }
+  if (!presets.some((preset) => preset.id === body.instance_type)) {
+    return { field: 'instance_type', reason: `no instance type "${body.instance_type}"` }
+  }
+
+  if (body.root_disk_gb !== undefined) {
+    if (body.root_disk_gb < minDiskGb) {
+      return {
+        field: 'root_disk_gb',
+        reason: `the image "${image.name}" needs at least ${minDiskGb} GiB`,
+      }
+    }
+    if (body.root_disk_gb > 2048) {
+      return { field: 'root_disk_gb', reason: 'must be at most 2048 GiB' }
+    }
+  }
+
+  if (body.user_data !== undefined && new TextEncoder().encode(body.user_data).length > 16 * 1024) {
+    return { field: 'user_data', reason: 'must be at most 16 KiB' }
+  }
+
   return null
 }
 
