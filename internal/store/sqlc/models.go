@@ -72,6 +72,16 @@ type KeyPair struct {
 	CreatedAt   string         `json:"created_at"`
 }
 
+type NetworkInterface struct {
+	ID          string `json:"id"`
+	InstanceID  string `json:"instance_id"`
+	SubnetID    string `json:"subnet_id"`
+	DeviceIndex int64  `json:"device_index"`
+	MacAddress  string `json:"mac_address"`
+	PrivateIp   string `json:"private_ip"`
+	CreatedAt   string `json:"created_at"`
+}
+
 type RefreshToken struct {
 	ID        string         `json:"id"`
 	UserID    string         `json:"user_id"`
@@ -86,6 +96,17 @@ type RefreshToken struct {
 type Setting struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
+}
+
+type Subnet struct {
+	ID        string         `json:"id"`
+	VpcID     string         `json:"vpc_id"`
+	Name      string         `json:"name"`
+	Cidr      string         `json:"cidr"`
+	IsDefault int64          `json:"is_default"`
+	CreatedBy sql.NullString `json:"created_by"`
+	CreatedAt string         `json:"created_at"`
+	UpdatedAt string         `json:"updated_at"`
 }
 
 type Tag struct {
@@ -114,4 +135,19 @@ type User struct {
 	Role         string `json:"role"`
 	CreatedAt    string `json:"created_at"`
 	UpdatedAt    string `json:"updated_at"`
+}
+
+type Vpc struct {
+	ID             string         `json:"id"`
+	Name           string         `json:"name"`
+	Cidr           string         `json:"cidr"`
+	Mode           string         `json:"mode"`
+	GatewayIp      string         `json:"gateway_ip"`
+	Netmask        string         `json:"netmask"`
+	BridgeName     string         `json:"bridge_name"`
+	LibvirtNetwork string         `json:"libvirt_network"`
+	IsDefault      int64          `json:"is_default"`
+	CreatedBy      sql.NullString `json:"created_by"`
+	CreatedAt      string         `json:"created_at"`
+	UpdatedAt      string         `json:"updated_at"`
 }

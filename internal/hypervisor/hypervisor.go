@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 )
 
 // Sentinel errors. Implementations return them (possibly wrapped) so services
@@ -66,6 +67,19 @@ type Hypervisor interface {
 	ListDomains(ctx context.Context) ([]DomainInfo, error)
 	ConsoleOutput(ctx context.Context, id string, maxBytes int) ([]byte, error)
 	Capacity(ctx context.Context) (Capacity, error)
+
+	// Networks. One VPC is one libvirt network (docs/design/04-libvirt-integration.md §6).
+	// DefineNetwork is a definition only; StartNetwork activates it, the way a
+	// VPC create task defines then starts.
+	DefineNetwork(ctx context.Context, spec NetworkSpec) error
+	StartNetwork(ctx context.Context, name string) error
+	DestroyNetwork(ctx context.Context, name string) error
+	UndefineNetwork(ctx context.Context, name string) error
+	GetNetwork(ctx context.Context, name string) (NetworkInfo, error)
+	// AddDHCPHost installs a static <host mac ip name> entry via virNetworkUpdate;
+	// DeleteDHCPHost removes it again, matching on the MAC.
+	AddDHCPHost(ctx context.Context, network string, host DHCPHost) error
+	DeleteDHCPHost(ctx context.Context, network string, mac string) error
 
 	// Events streams lifecycle changes until ctx is canceled.
 	Events(ctx context.Context) (<-chan DomainEvent, error)
@@ -156,6 +170,58 @@ type DomainSpec struct {
 	Network        string
 }
 
+// NetworkMode is the forwarding mode of a VPC's libvirt network: nat reaches
+// the LAN and the Internet through the host, isolated keeps guests on the
+// bridge talking only to each other and the gateway.
+type NetworkMode string
+
+const (
+	NetworkModeNAT      NetworkMode = "nat"
+	NetworkModeIsolated NetworkMode = "isolated"
+)
+
+// NetworkSpec is everything needed to define a VPC's libvirt network. The
+// service derives every field from the VPC row (docs/design/04 §6), so a
+// backend just writes what it is told.
+type NetworkSpec struct {
+	// Name is the libvirt network name, the VPC id itself (the way a domain is
+	// named after an instance id). "kumo-default" is the adopted default.
+	Name string
+	// Bridge is the bridge interface name the network lives on, kmb<8 hex> of
+	// the VPC id unless the default network was adopted with its own bridge.
+	Bridge string
+	// CIDR is the VPC's address block.
+	CIDR string
+	// Gateway is the address libvirt puts on the bridge and dnsmasq serves
+	// from: the first host address of the VPC CIDR.
+	Gateway string
+	// Mode is nat or isolated.
+	Mode NetworkMode
+	// Domain seeds the libvirt DNS domain, from the VPC name.
+	Domain string
+}
+
+// DHCPHost is one static lease of a network: dnsmasq serves exactly what Kumo
+// allocates, and nothing else (docs/design/04 §6.4).
+type DHCPHost struct {
+	MAC  string
+	IP   string
+	Name string
+}
+
+// NetworkInfo is the state of a libvirt network, read back for adoption and for
+// the delete path.
+type NetworkInfo struct {
+	Name      string
+	Bridge    string
+	CIDR      string
+	Gateway   string
+	Mode      NetworkMode
+	Domain    string
+	Active    bool
+	DHCPHosts []DHCPHost
+}
+
 // RootDiskName is the volume name of an instance's root disk. The service that
 // launches, the libvirt backend that creates it and the fake that holds it all
 // derive the name here, so a rollback cannot delete a volume under a different
@@ -165,6 +231,18 @@ func RootDiskName(instanceID string) string { return instanceID + "-root.qcow2" 
 // SeedISOName is the volume name of an instance's NoCloud seed, for the same
 // reason as RootDiskName.
 func SeedISOName(instanceID string) string { return instanceID + "-seed.iso" }
+
+// BridgeName derives the bridge interface of a VPC's libvirt network: "kmb"
+// plus the first 8 hex characters of the VPC id, e.g. kmb0a1b2c3d. That length
+// (11 characters) fits Linux's IFNAMSIZ limit of 15, and the VPC id's
+// randomness keeps bridges unique (docs/design/04-libvirt-integration.md §6.1).
+func BridgeName(vpcID string) string {
+	hexPart := strings.TrimPrefix(vpcID, "vpc-")
+	if len(hexPart) > 8 {
+		hexPart = hexPart[:8]
+	}
+	return "kmb" + hexPart
+}
 
 // DomainState is the backend state of a domain, mapped to instance states by
 // the reconciler.
@@ -222,23 +300,30 @@ type Capacity struct {
 type Op string
 
 const (
-	OpPing           Op = "ping"
-	OpEnsureInfra    Op = "ensure_infra"
-	OpImportImage    Op = "import_image"
-	OpImageInfo      Op = "image_info"
-	OpDeleteVolume   Op = "delete_volume"
-	OpCreateRootDisk Op = "create_root_disk"
-	OpCreateSeedISO  Op = "create_seed_iso"
-	OpDefineAndStart Op = "define_and_start"
-	OpStart          Op = "start"
-	OpShutdown       Op = "shutdown"
-	OpDestroy        Op = "destroy"
-	OpReboot         Op = "reboot"
-	OpReset          Op = "reset"
-	OpUndefine       Op = "undefine"
-	OpGetDomain      Op = "get_domain"
-	OpListDomains    Op = "list_domains"
-	OpConsoleOutput  Op = "console_output"
-	OpCapacity       Op = "capacity"
-	OpEvents         Op = "events"
+	OpPing            Op = "ping"
+	OpEnsureInfra     Op = "ensure_infra"
+	OpImportImage     Op = "import_image"
+	OpImageInfo       Op = "image_info"
+	OpDeleteVolume    Op = "delete_volume"
+	OpCreateRootDisk  Op = "create_root_disk"
+	OpCreateSeedISO   Op = "create_seed_iso"
+	OpDefineAndStart  Op = "define_and_start"
+	OpStart           Op = "start"
+	OpShutdown        Op = "shutdown"
+	OpDestroy         Op = "destroy"
+	OpReboot          Op = "reboot"
+	OpReset           Op = "reset"
+	OpUndefine        Op = "undefine"
+	OpGetDomain       Op = "get_domain"
+	OpListDomains     Op = "list_domains"
+	OpConsoleOutput   Op = "console_output"
+	OpCapacity        Op = "capacity"
+	OpEvents          Op = "events"
+	OpDefineNetwork   Op = "define_network"
+	OpStartNetwork    Op = "start_network"
+	OpDestroyNetwork  Op = "destroy_network"
+	OpUndefineNetwork Op = "undefine_network"
+	OpGetNetwork      Op = "get_network"
+	OpAddDHCPHost     Op = "add_dhcp_host"
+	OpDeleteDHCPHost  Op = "delete_dhcp_host"
 )

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <name>vpc-11111111111111111</name>
+  <domain name="lab"></domain>
+  <bridge name="kmb11111111" stp="on" delay="0"></bridge>
+  <ip address="192.168.0.1" netmask="255.255.0.0">
+    <dhcp></dhcp>
+  </ip>
+</network>

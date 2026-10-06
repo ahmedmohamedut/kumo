@@ -82,6 +82,7 @@ type Fake struct {
 	leaseDelay     int
 	volumes        map[string]volume
 	domains        map[string]*domain
+	networks       map[string]*fakeNetwork
 	infrastructure hypervisor.InfraConfig
 	failOnce       map[hypervisor.Op]error
 	failAlways     map[hypervisor.Op]error
@@ -108,6 +109,15 @@ type domain struct {
 	// lease is the address this domain gets once its polls run out, empty when
 	// the fake hands out addresses at definition time.
 	lease string
+}
+
+// fakeNetwork is one defined libvirt network, with the static dhcp hosts Kumo
+// has told dnsmasq to serve.
+type fakeNetwork struct {
+	info   hypervisor.NetworkInfo
+	active bool
+	// dhcpHosts is keyed by MAC, the way DeleteDHCPHost finds a host.
+	dhcpHosts map[string]hypervisor.DHCPHost
 }
 
 // subscriber is one Events() consumer.
@@ -141,6 +151,7 @@ func New(cfg Config) *Fake {
 		nextHost:       firstHostOffset,
 		volumes:        make(map[string]volume),
 		domains:        make(map[string]*domain),
+		networks:       make(map[string]*fakeNetwork),
 		failOnce:       make(map[hypervisor.Op]error),
 		failAlways:     make(map[hypervisor.Op]error),
 		subs:           make(map[*subscriber]struct{}),
@@ -155,6 +166,7 @@ func (f *Fake) Clear() {
 
 	f.volumes = make(map[string]volume)
 	f.domains = make(map[string]*domain)
+	f.networks = make(map[string]*fakeNetwork)
 	f.infrastructure = hypervisor.InfraConfig{}
 	f.nextHost = firstHostOffset
 	f.failOnce = make(map[hypervisor.Op]error)
@@ -686,6 +698,231 @@ func (f *Fake) Events(ctx context.Context) (<-chan hypervisor.DomainEvent, error
 	}()
 
 	return sub.ch, nil
+}
+
+// Networks: one VPC is one defined libvirt network with its static dhcp hosts,
+// mirroring docs/design/04-libvirt-integration.md §6.
+
+// DefineNetwork records a network definition. It reports
+// hypervisor.ErrAlreadyExists for a name that is already known, like libvirt.
+func (f *Fake) DefineNetwork(ctx context.Context, spec hypervisor.NetworkSpec) error {
+	if spec.Name == "" {
+		return fmt.Errorf("%w: a network name must not be empty", ErrInvalidSpec)
+	}
+	if spec.Bridge == "" {
+		return fmt.Errorf("%w: the network %s needs a bridge interface", ErrInvalidSpec, spec.Name)
+	}
+	if err := f.begin(ctx, hypervisor.OpDefineNetwork); err != nil {
+		return err
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if _, ok := f.networks[spec.Name]; ok {
+		return fmt.Errorf("fake: the network %q: %w", spec.Name, hypervisor.ErrAlreadyExists)
+	}
+	f.networks[spec.Name] = &fakeNetwork{
+		info: hypervisor.NetworkInfo{
+			Name:    spec.Name,
+			Bridge:  spec.Bridge,
+			CIDR:    spec.CIDR,
+			Gateway: spec.Gateway,
+			Mode:    networkMode(spec.Mode),
+			Domain:  spec.Domain,
+		},
+		dhcpHosts: make(map[string]hypervisor.DHCPHost),
+	}
+	return nil
+}
+
+// StartNetwork activates a defined network. Activating an active one is an
+// invalid state, the same answer virNetworkCreate gives for a running network.
+func (f *Fake) StartNetwork(ctx context.Context, name string) error {
+	if err := f.begin(ctx, hypervisor.OpStartNetwork); err != nil {
+		return err
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	net, ok := f.networks[name]
+	if !ok {
+		return fmt.Errorf("fake: the network %q: %w", name, hypervisor.ErrNotFound)
+	}
+	if net.active {
+		return fmt.Errorf("fake: the network %q is already active: %w", name, hypervisor.ErrInvalidState)
+	}
+	net.active = true
+	return nil
+}
+
+// DestroyNetwork stops an active network. Stopping one that is not active is an
+// invalid state.
+func (f *Fake) DestroyNetwork(ctx context.Context, name string) error {
+	if err := f.begin(ctx, hypervisor.OpDestroyNetwork); err != nil {
+		return err
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	net, ok := f.networks[name]
+	if !ok {
+		return fmt.Errorf("fake: the network %q: %w", name, hypervisor.ErrNotFound)
+	}
+	if !net.active {
+		return fmt.Errorf("fake: the network %q is not active: %w", name, hypervisor.ErrInvalidState)
+	}
+	net.active = false
+	return nil
+}
+
+// UndefineNetwork removes a network's definition. An active network cannot be
+// undefined, so the delete task destroys it first.
+func (f *Fake) UndefineNetwork(ctx context.Context, name string) error {
+	if err := f.begin(ctx, hypervisor.OpUndefineNetwork); err != nil {
+		return err
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	net, ok := f.networks[name]
+	if !ok {
+		return fmt.Errorf("fake: the network %q: %w", name, hypervisor.ErrNotFound)
+	}
+	if net.active {
+		return fmt.Errorf("fake: the network %q is still active: %w", name, hypervisor.ErrInvalidState)
+	}
+	delete(f.networks, name)
+	return nil
+}
+
+// GetNetwork returns the state of a network, static hosts included.
+func (f *Fake) GetNetwork(ctx context.Context, name string) (hypervisor.NetworkInfo, error) {
+	if err := f.begin(ctx, hypervisor.OpGetNetwork); err != nil {
+		return hypervisor.NetworkInfo{}, err
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	net, ok := f.networks[name]
+	if !ok {
+		return hypervisor.NetworkInfo{}, fmt.Errorf("fake: the network %q: %w", name, hypervisor.ErrNotFound)
+	}
+	return f.networkInfoLocked(net), nil
+}
+
+// AddDHCPHost installs a static host entry in an active network. A duplicate
+// MAC or a MAC-in-the-same-network whose address is already spoken for is
+// refused: dnsmasq would have to choose between two answers.
+func (f *Fake) AddDHCPHost(ctx context.Context, name string, host hypervisor.DHCPHost) error {
+	if host.MAC == "" {
+		return fmt.Errorf("%w: a dhcp host needs a mac", ErrInvalidSpec)
+	}
+	if err := f.begin(ctx, hypervisor.OpAddDHCPHost); err != nil {
+		return err
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	net, ok := f.networks[name]
+	if !ok {
+		return fmt.Errorf("fake: the network %q: %w", name, hypervisor.ErrNotFound)
+	}
+	if !net.active {
+		return fmt.Errorf("fake: the network %q is not active: %w", name, hypervisor.ErrInvalidState)
+	}
+	if _, taken := net.dhcpHosts[host.MAC]; taken {
+		return fmt.Errorf("fake: the dhcp host %s is already on the network %q: %w",
+			host.MAC, name, hypervisor.ErrAlreadyExists)
+	}
+	for _, existing := range net.dhcpHosts {
+		if existing.IP == host.IP {
+			return fmt.Errorf("fake: the address %s is already on the network %q: %w",
+				host.IP, name, hypervisor.ErrAlreadyExists)
+		}
+	}
+	net.dhcpHosts[host.MAC] = host
+	return nil
+}
+
+// DeleteDHCPHost removes a static host entry by MAC. An entry that is already
+// gone is a not-found error; the terminate workflow tolerates it.
+func (f *Fake) DeleteDHCPHost(ctx context.Context, name, mac string) error {
+	if err := f.begin(ctx, hypervisor.OpDeleteDHCPHost); err != nil {
+		return err
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	net, ok := f.networks[name]
+	if !ok {
+		return fmt.Errorf("fake: the network %q: %w", name, hypervisor.ErrNotFound)
+	}
+	if _, ok := net.dhcpHosts[mac]; !ok {
+		return fmt.Errorf("fake: the dhcp host %s of the network %q: %w", mac, name, hypervisor.ErrNotFound)
+	}
+	delete(net.dhcpHosts, mac)
+	return nil
+}
+
+// networkInfoLocked snapshots a network with its hosts in a stable order.
+// Callers must hold the lock.
+func (f *Fake) networkInfoLocked(net *fakeNetwork) hypervisor.NetworkInfo {
+	info := net.info
+	info.Active = net.active
+	info.DHCPHosts = make([]hypervisor.DHCPHost, 0, len(net.dhcpHosts))
+	for _, host := range net.dhcpHosts {
+		info.DHCPHosts = append(info.DHCPHosts, host)
+	}
+	sort.Slice(info.DHCPHosts, func(i, j int) bool {
+		if info.DHCPHosts[i].MAC != info.DHCPHosts[j].MAC {
+			return info.DHCPHosts[i].MAC < info.DHCPHosts[j].MAC
+		}
+		return info.DHCPHosts[i].IP < info.DHCPHosts[j].IP
+	})
+	return info
+}
+
+// Networks lists every defined network with its state, ordered by name, so a
+// test can assert the whole set at once.
+func (f *Fake) Networks() []hypervisor.NetworkInfo {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make([]hypervisor.NetworkInfo, 0, len(f.networks))
+	for _, net := range f.networks {
+		out = append(out, f.networkInfoLocked(net))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// DHCPHosts lists the static host entries of a network, ordered by MAC, the way
+// a launch test asserts what the service told dnsmasq.
+func (f *Fake) DHCPHosts(network string) []hypervisor.DHCPHost {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	net, ok := f.networks[network]
+	if !ok {
+		return nil
+	}
+	return f.networkInfoLocked(net).DHCPHosts
+}
+
+// networkMode normalizes an empty mode to the API default, nat, the same
+// default the real builder applies.
+func networkMode(mode hypervisor.NetworkMode) hypervisor.NetworkMode {
+	if mode == "" {
+		return hypervisor.NetworkModeNAT
+	}
+	return mode
 }
 
 // begin runs the preamble of every operation: simulated latency, context

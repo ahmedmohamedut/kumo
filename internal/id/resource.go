@@ -14,10 +14,13 @@ const ResourceIDSize = 17
 // Prefixes of the resource IDs. The instance ID doubles as the libvirt domain
 // name (docs/design/02-data-model.md).
 const (
-	PrefixInstance = "i"
-	PrefixImage    = "img"
-	PrefixKeyPair  = "key"
-	PrefixTask     = "task"
+	PrefixInstance         = "i"
+	PrefixImage            = "img"
+	PrefixKeyPair          = "key"
+	PrefixTask             = "task"
+	PrefixVPC              = "vpc"
+	PrefixSubnet           = "subnet"
+	PrefixNetworkInterface = "eni"
 )
 
 // Resource returns "<prefix>-<17 random hex chars>". It panics only if the
@@ -32,6 +35,16 @@ func Resource(prefix string) string {
 
 // KeyPair returns a key pair ID (key-…).
 func KeyPair() string { return Resource(PrefixKeyPair) }
+
+// VPC returns a VPC ID (vpc-…). The id doubles as the libvirt network name; its
+// first 8 hex characters seed the bridge interface name (hypervisor.BridgeName).
+func VPC() string { return Resource(PrefixVPC) }
+
+// Subnet returns a subnet ID (subnet-…).
+func Subnet() string { return Resource(PrefixSubnet) }
+
+// NetworkInterface returns a network interface ID (eni-…).
+func NetworkInterface() string { return Resource(PrefixNetworkInterface) }
 
 // HasResourceShape reports whether value looks like a resource ID with the
 // given prefix. It is a cheap guard for path parameters, not a check that the

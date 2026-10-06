@@ -36,6 +36,33 @@ func TestKeyPair(t *testing.T) {
 	}
 }
 
+func TestNetworkResourceIDs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		prefix string
+		got    string
+	}{
+		{name: "vpc", prefix: id.PrefixVPC, got: id.VPC()},
+		{name: "subnet", prefix: id.PrefixSubnet, got: id.Subnet()},
+		{name: "network interface", prefix: id.PrefixNetworkInterface, got: id.NetworkInterface()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if !strings.HasPrefix(tt.got, tt.prefix+"-") {
+				t.Errorf("%s() = %q, want the %q prefix", tt.name, tt.got, tt.prefix)
+			}
+			if !id.HasResourceShape(tt.prefix, tt.got) {
+				t.Errorf("%s() = %q fails its own shape check", tt.name, tt.got)
+			}
+		})
+	}
+}
+
 func TestHasResourceShape(t *testing.T) {
 	t.Parallel()
 
