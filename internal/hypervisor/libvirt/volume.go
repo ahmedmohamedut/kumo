@@ -31,7 +31,7 @@ type volumeXML struct {
 	Capacity   capacityXML    `xml:"capacity"`
 	Allocation allocationXML  `xml:"allocation"`
 	Target     *volumeTarget  `xml:"target,omitempty"`
-	Backing    *volumeBacking `xml:"backing,omitempty"`
+	Backing    *volumeBacking `xml:"backingStore,omitempty"`
 }
 
 // capacityXML is the virtual size of the volume.
@@ -66,7 +66,8 @@ type volumePermission struct {
 
 // volumeBacking is refused on import: a delta on top of another file would not
 // survive a reboot of the pool. It exists so the parser can read one back and
-// say why it is unsupported.
+// say why it is unsupported. The element is <backingStore>, the only form
+// libvirt's storage volume XML has had since 0.9.4.
 type volumeBacking struct {
 	Path string `xml:"path"`
 }
@@ -76,7 +77,7 @@ type volumeDesc struct {
 	XMLName xml.Name       `xml:"volume"`
 	Name    string         `xml:"name"`
 	Format  volumeFormat   `xml:"target>format"`
-	Backing *volumeBacking `xml:"backing,omitempty"`
+	Backing *volumeBacking `xml:"backingStore,omitempty"`
 }
 
 // ImportImage registers a downloaded image as a volume in the images pool.

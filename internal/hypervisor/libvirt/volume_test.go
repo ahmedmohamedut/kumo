@@ -93,7 +93,7 @@ func TestVolumeDescReadsFormatAndBacking(t *testing.T) {
 		},
 		{
 			name:    "delta chain",
-			xml:     `<volume><name>img-abc.qcow2</name><backing><path>/pools/images/base.qcow2</path></backing><target><format type='qcow2'/></target></volume>`,
+			xml:     `<volume><name>img-abc.qcow2</name><backingStore><path>/pools/images/base.qcow2</path></backingStore><target><format type='qcow2'/></target></volume>`,
 			format:  "qcow2",
 			backing: "/pools/images/base.qcow2",
 		},

@@ -44,17 +44,17 @@ type rootDiskXML struct {
 	Capacity   capacityXML      `xml:"capacity"`
 	Allocation allocationXML    `xml:"allocation"`
 	Target     *volumeTarget    `xml:"target,omitempty"`
-	Backing    *rootDiskBacking `xml:"backing,omitempty"`
+	Backing    *rootDiskBacking `xml:"backingStore,omitempty"`
 }
 
-// rootDiskBacking names the image volume the overlay reads from. Both a path and
-// a volume name are written: libvirt resolves the name inside the pool, and the
-// path keeps the delta correct if the pool is ever rebuilt.
+// rootDiskBacking names the image volume the overlay reads from. An absolute
+// path is written (docs/design/04-libvirt-integration.md §3); libvirt hands it
+// to qemu-img as the backing file. There is no <volume_name>: libvirt has no
+// such element, and a pool-local reference could not keep the delta correct if
+// the pool were ever rebuilt, so the path is the whole story.
 type rootDiskBacking struct {
-	Path        string            `xml:"path,omitempty"`
-	VolumeName  string            `xml:"volume_name,omitempty"`
-	Format      *volumeFormat     `xml:"format,omitempty"`
-	Permissions *volumePermission `xml:"permissions,omitempty"`
+	Path   string        `xml:"path"`
+	Format *volumeFormat `xml:"format,omitempty"`
 }
 
 // CreateRootDisk makes the copy-on-write overlay an instance boots from.
@@ -107,6 +107,13 @@ func (c *Client) CreateRootDisk(ctx context.Context, spec hypervisor.RootDiskSpe
 			return fmt.Errorf("describe the image volume %q: %w", spec.SourceVolume, err)
 		}
 		backingPath = volumeSourcePath(descriptor)
+		if backingPath == "" {
+			// A delta with no path would come out as a blank disk and the launch
+			// would look healthy until the guest read its own partition table.
+			return fmt.Errorf("%w: the image volume %q has no local path; a pool that is "+
+				"not on this filesystem has to be reached through the API",
+				hypervisor.ErrNotFound, spec.SourceVolume)
+		}
 
 		// A root disk cannot be smaller than the image it is a delta of: the
 		// guest would see a filesystem that ends before its own partition table.
@@ -114,7 +121,7 @@ func (c *Client) CreateRootDisk(ctx context.Context, spec hypervisor.RootDiskSpe
 		if err != nil {
 			return fmt.Errorf("read the info of the image volume %q: %w", spec.SourceVolume, err)
 		}
-		if capacity > 0 && capacity < size {
+		if !rootDiskHoldsImage(size, capacity) {
 			return fmt.Errorf("%w: a %d GiB root disk cannot hold the %d GiB image %q",
 				hypervisor.ErrInvalidSpec, spec.SizeGiB, capacity/gib, spec.SourceVolume)
 		}
@@ -134,12 +141,8 @@ func (c *Client) CreateRootDisk(ctx context.Context, spec hypervisor.RootDiskSpe
 			Permissions: &volumePermission{Mode: fmt.Sprintf("%03o", dirPoolVolumePerms)},
 		},
 		Backing: &rootDiskBacking{
-			Path:       backingPath,
-			VolumeName: spec.SourceVolume,
-			Format:     &volumeFormat{Type: string(hypervisor.FormatQCOW2)},
-			Permissions: &volumePermission{
-				Mode: fmt.Sprintf("%03o", dirPoolVolumePerms),
-			},
+			Path:   backingPath,
+			Format: &volumeFormat{Type: string(hypervisor.FormatQCOW2)},
 		},
 	})
 	if err != nil {
@@ -259,21 +262,46 @@ func (c *Client) refreshPool(ctx context.Context, pool string) error {
 	})
 }
 
-// volumeSourcePath pulls the <source file=…> path out of a volume description.
+// rootDiskHoldsImage reports whether a root disk of rootBytes can be the
+// copy-on-write overlay of an image whose virtual capacity is imageBytes. A delta
+// cannot be smaller than the image it reads: the guest would see a filesystem
+// that ends before its own partition table. A missing capacity (zero or less)
+// is not refusable by size.
+func rootDiskHoldsImage(rootBytes, imageBytes uint64) bool {
+	return imageBytes == 0 || rootBytes >= imageBytes
+}
+
+// volumeSourcePath pulls the local path of a volume out of its description.
+// The path lives in <target><path> in every libvirt since 0.4.1; <source file=…>
+// is not always emitted (04-libvirt-integration.md notes the pool may report no
+// <source> element at all), so the target path is the primary field and the
+// older <source> attributes are a fallback. A volume that is not local to this
+// filesystem has no <target><path> and returns "".
 func volumeSourcePath(descriptor string) string {
 	var desc struct {
 		Source *struct {
 			File   string `xml:"file,attr"`
 			Device string `xml:"dev,attr"`
 		} `xml:"source"`
+		Target *struct {
+			Path string `xml:"path"`
+		} `xml:"target"`
 	}
 	if err := xml.Unmarshal([]byte(descriptor), &desc); err != nil {
 		return ""
 	}
-	if desc.Source == nil {
-		return ""
+	if desc.Source != nil {
+		if desc.Source.File != "" {
+			return desc.Source.File
+		}
+		if desc.Source.Device != "" {
+			return desc.Source.Device
+		}
 	}
-	return desc.Source.File
+	if desc.Target != nil {
+		return desc.Target.Path
+	}
+	return ""
 }
 
 // VolumePath reports where a volume lives on the host.
