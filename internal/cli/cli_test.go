@@ -12,6 +12,8 @@ import (
 
 	"github.com/ahmedmohamedut/kumo/internal/auth"
 	"github.com/ahmedmohamedut/kumo/internal/cli"
+	"github.com/ahmedmohamedut/kumo/internal/config"
+	"github.com/ahmedmohamedut/kumo/internal/hypervisor/libvirt"
 	"github.com/ahmedmohamedut/kumo/internal/logging"
 	"github.com/ahmedmohamedut/kumo/internal/service"
 	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
@@ -34,6 +36,24 @@ func runCLI(t *testing.T, stdin string, args ...string) (int, string, string) {
 	})
 
 	return code, stdout.String(), stderr.String()
+}
+
+// libvirtReachable probes the daemon `kumod doctor` would check, and reports
+// whether one answers. The URI it tries is the default, which is what the
+// doctor test runs with: it never sets KUMO_LIBVIRT_URI.
+func libvirtReachable(t *testing.T) bool {
+	t.Helper()
+
+	client, err := libvirt.New(logging.Discard(), config.DefaultLibvirtURI)
+	if err != nil {
+		return false
+	}
+	defer client.Close() //nolint:errcheck // a read-only probe
+
+	if err := client.Connect(t.Context()); err != nil {
+		return false
+	}
+	return client.Ping(t.Context()) == nil
 }
 
 // testDir points KUMO_* at a scratch directory. It is not parallel-safe because
@@ -403,6 +423,15 @@ func TestDoctorReportsAnUnfinishedSetup(t *testing.T) {
 }
 
 func TestDoctorRunsTheRealLibvirtChecks(t *testing.T) {
+	// On a host with a daemon this test would be wrong twice over: doctor's
+	// libvirt lines would pass rather than fail, and EnsureInfra would define
+	// the production pools (kumo-images, kumo-instances) against the test's
+	// scratch data dir. That is a real install being repointed at a directory
+	// that vanishes when the test run ends, so the test must not run there.
+	if libvirtReachable(t) {
+		t.Skip("a real libvirt daemon is reachable; this test only covers the failure report")
+	}
+
 	testDir(t)
 	t.Setenv("KUMO_HYPERVISOR", "libvirt")
 
