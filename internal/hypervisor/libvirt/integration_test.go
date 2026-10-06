@@ -57,8 +57,9 @@ func dial(t *testing.T) *golibvirt.Libvirt {
 
 // TestEnsureInfraIsIdempotent is the M3.1 acceptance check: running the
 // bootstrap twice must leave exactly one pool per name, active and
-// autostarted, and one active network. A second kumod starting on an already
-// prepared host must not fail or duplicate anything.
+// autostarted. A second kumod starting on an already prepared host must not
+// fail or duplicate anything. Networks are a VPC's job (the vpc service
+// bootstraps the default one), so they are not part of this.
 func TestEnsureInfraIsIdempotent(t *testing.T) {
 	conn := dial(t)
 
@@ -75,12 +76,6 @@ func TestEnsureInfraIsIdempotent(t *testing.T) {
 	// Registered before the bootstrap so a failure cannot leave half an
 	// infrastructure behind (there was no unregister path for early failures).
 	t.Cleanup(func() { teardown(t, conn, cfg) })
-
-	// The bootstrap hands a new network the design's 192.168.100.0/24 subnet,
-	// which the host's real kumo-default network already owns, so bind the test
-	// network to a free range and let EnsureInfra adopt it. virbr-it-net is what
-	// network.go's bridgeName derives for kumo-it-net and fits IFNAMSIZ.
-	makeTestNetwork(t, conn, cfg.Network, "virbr-it-net", "192.168.88")
 
 	if err := client.EnsureInfra(ctx, cfg); err != nil {
 		t.Fatalf("EnsureInfra() first run: %v", err)
@@ -99,18 +94,6 @@ func TestEnsureInfraIsIdempotent(t *testing.T) {
 		}
 		_ = pool
 	}
-
-	net, err := conn.NetworkLookupByName(cfg.Network)
-	if err != nil {
-		t.Fatalf("NetworkLookupByName(%q): %v", cfg.Network, err)
-	}
-	active, err := conn.NetworkIsActive(net)
-	if err != nil {
-		t.Fatalf("NetworkIsActive(): %v", err)
-	}
-	if active != 1 {
-		t.Errorf("the network %q is defined but not active", cfg.Network)
-	}
 }
 
 // infraConfig names pools and a network that are unique to this run, so a test
@@ -124,15 +107,13 @@ func infraConfig(dataDir, images, instances, network string) hypervisor.InfraCon
 	}
 }
 
-// makeTestNetwork binds the network EnsureInfra adopts to a free subnet. The
-// bootstrap hands a new network the 192.168.100.0/24 range network.go hardcodes,
-// which a real install on the same host may already own (its kumo-default
-// network), so a test that needs EnsureInfra races with production unless the
-// network exists first: ensureNetwork adopts an existing network by name and
-// leaves its subnet untouched. The guests in these tests never ask for DHCP, so
-// any free range does. A stale definition from an earlier run, which would hold
-// the colliding subnet, is removed first. The bridge name also has to fit
-// IFNAMSIZ (see TestBridgeNameFitsIFNAMSIZ).
+// makeTestNetwork defines and starts the network a backend test attaches its
+// domain to, on a subnet of its own. The backend no longer creates networks —
+// that is the VPC service's job — so a test that needs one has to bring it up
+// first. The subnet must not collide with a real install's kumo-default
+// network on the same host, hence the free private ranges below; the guests in
+// these tests never ask for DHCP, so any range does. A stale definition from an
+// earlier run is removed first. The bridge name must fit IFNAMSIZ (15 chars).
 func makeTestNetwork(t *testing.T, conn *golibvirt.Libvirt, network, bridge, subnet string) {
 	t.Helper()
 
@@ -237,6 +218,12 @@ func TestLaunchBootsCirrOS(t *testing.T) {
 
 	ctx := t.Context()
 	cfg := infraConfig(dataDir, "kumo-it-launch-images", "kumo-it-launch-instances", "kumo-it-launch-net")
+
+	// The backend no longer creates networks (the vpc service does), so the
+	// launch network is brought up on its own subnet first. virbr-it-launch-net
+	// fits IFNAMSIZ.
+	makeTestNetwork(t, conn, cfg.Network, "virbr-it-launch-net", "192.168.86")
+
 	if err := client.EnsureInfra(ctx, cfg); err != nil {
 		t.Fatalf("EnsureInfra(): %v", err)
 	}
@@ -483,11 +470,10 @@ func TestDefineAndStartAdoptsAnInactiveDefinition(t *testing.T) {
 		}
 	}
 
-	// This host can run a real Kumo install whose kumo-default network owns the
-	// 192.168.100.0/24 NAT subnet EnsureInfra would hand to a new network, so the
-	// test brings its network up on its own subnet first; EnsureInfra adopts an
-	// existing network by name. The guest never asks for DHCP, so the subnet is
-	// irrelevant to what the test checks.
+	// The backend no longer creates networks, so the test brings its network up
+	// on its own subnet first — a free private range that cannot collide with a
+	// real install's kumo-default network on the same host. The guest never
+	// asks for DHCP, so the subnet is irrelevant to what the test checks.
 	makeTestNetwork(t, conn, cfg.Network, "virbr-adopt-net", "192.168.87")
 
 	if err := client.EnsureInfra(ctx, cfg); err != nil {

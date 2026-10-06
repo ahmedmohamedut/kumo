@@ -26,8 +26,10 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/service/instance"
 	"github.com/ahmedmohamedut/kumo/internal/service/instancetype"
 	"github.com/ahmedmohamedut/kumo/internal/service/keypair"
+	"github.com/ahmedmohamedut/kumo/internal/service/subnet"
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
 	"github.com/ahmedmohamedut/kumo/internal/service/task"
+	"github.com/ahmedmohamedut/kumo/internal/service/vpc"
 	"github.com/ahmedmohamedut/kumo/internal/store"
 	"github.com/ahmedmohamedut/kumo/internal/version"
 	"github.com/ahmedmohamedut/kumo/internal/webui"
@@ -119,6 +121,35 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		return fmt.Errorf("build the task service: %w", err)
 	}
 
+	subnets, err := subnet.New(subnet.Options{Logger: logger, Store: db})
+	if err != nil {
+		return fmt.Errorf("build the subnet service: %w", err)
+	}
+
+	// The vpc service owns the default VPC's bootstrap and the task handlers
+	// that define, start, destroy and undefine a VPC's libvirt network.
+	vpcs, err := vpc.New(vpc.Options{
+		Logger:     logger,
+		Store:      db,
+		Hypervisor: hv,
+		Tasks:      tasks,
+		Subnets:    subnets,
+	})
+	if err != nil {
+		return fmt.Errorf("build the VPC service: %w", err)
+	}
+
+	// Every workflow attaches a guest to some network, so the default VPC (and
+	// its default subnet) has to exist before the worker starts. Bootstrap is
+	// deliberately not a task: it runs in-band, because the worker that would
+	// run it is not started yet (docs/design/00-architecture.md §7, step 3).
+	defaultVPC, err := vpcs.Bootstrap(ctx, cfg.Network)
+	if err != nil {
+		return fmt.Errorf("bootstrap the default VPC: %w", err)
+	}
+	logger.InfoContext(ctx, "default VPC is ready",
+		"vpc_id", defaultVPC.ID, "network", defaultVPC.LibvirtNetwork, "bridge", defaultVPC.BridgeName)
+
 	// The staging directory holds a download until it becomes a volume, so it
 	// has to exist before the worker runs; putting it under the data directory
 	// keeps it on the same filesystem as the pool.
@@ -166,7 +197,7 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		InstancesPool: cfg.PoolInstances,
 		ImagesPool:    cfg.PoolImages,
 		ConsoleDir:    consoleDir(cfg.DataDir),
-		Network:       cfg.Network,
+		Network:       defaultVPC.LibvirtNetwork,
 		StopTimeout:   cfg.StopTimeout,
 		Limits: capacity.Limits{
 			MemoryReserveMiB: cfg.MemoryReserveMiB,
@@ -182,7 +213,7 @@ func serve(ctx context.Context, stdout io.Writer) error {
 	taskPool := worker.New(worker.Options{
 		Logger:   logger,
 		Store:    db,
-		Registry: mergeHandlers(images.Handler(), instances.Handler()),
+		Registry: mergeHandlers(images.Handler(), instances.Handler(), vpcs.Handler()),
 		Workers:  cfg.Workers,
 	})
 	if err := taskPool.Start(ctx); err != nil {
@@ -216,6 +247,8 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		Images:        images,
 		InstanceTypes: instanceTypes,
 		Instances:     instances,
+		VPCs:          vpcs,
+		Subnets:       subnets,
 		Tasks:         tasks,
 		Signer:        signer,
 		ReadyChecks: []api.Check{

@@ -16,8 +16,10 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/service/instance"
 	"github.com/ahmedmohamedut/kumo/internal/service/instancetype"
 	"github.com/ahmedmohamedut/kumo/internal/service/keypair"
+	"github.com/ahmedmohamedut/kumo/internal/service/subnet"
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
 	"github.com/ahmedmohamedut/kumo/internal/service/task"
+	"github.com/ahmedmohamedut/kumo/internal/service/vpc"
 )
 
 // Check is a single readiness probe.
@@ -45,6 +47,10 @@ type Options struct {
 	InstanceTypes *instancetype.Service
 	// Instances answers the /api/v1/instances endpoints.
 	Instances *instance.Service
+	// VPCs answers the /api/v1/vpcs endpoints.
+	VPCs *vpc.Service
+	// Subnets answers the /api/v1/subnets endpoints.
+	Subnets *subnet.Service
 	// Tasks answers the /api/v1/tasks endpoints, which is where the Location
 	// header of an asynchronous image operation points.
 	Tasks *task.Service
@@ -74,6 +80,8 @@ type Handler struct {
 	images         *image.Service
 	instanceTypes  *instancetype.Service
 	instances      *instance.Service
+	vpcs           *vpc.Service
+	subnets        *subnet.Service
 	tasks          *task.Service
 	signer         *auth.Signer
 	refreshTTL     time.Duration
@@ -94,6 +102,8 @@ func NewHandler(opts Options) *Handler {
 		images:         opts.Images,
 		instanceTypes:  opts.InstanceTypes,
 		instances:      opts.Instances,
+		vpcs:           opts.VPCs,
+		subnets:        opts.Subnets,
 		tasks:          opts.Tasks,
 		signer:         opts.Signer,
 		refreshTTL:     opts.RefreshTTL,
@@ -190,6 +200,29 @@ func (h *Handler) Router() *gin.Engine {
 		admin.POST("/instances/:id/reboot", h.rebootInstance)
 		admin.GET("/instances/:id/console-output", h.instanceConsoleOutput)
 		admin.GET("/instances/:id/console", h.openInstanceConsole)
+	}
+
+	// VPCs. Reads are open to both roles; creating and deleting change the
+	// network an operator's hosts live on, so the writes are admin only
+	// (docs/design/01-api.md §VPCs).
+	if h.vpcs != nil {
+		secured.GET("/vpcs", h.listVPCs)
+		secured.GET("/vpcs/:id", h.getVPC)
+		write := secured.Group("", middleware.RequireRole(auth.RoleAdmin))
+		write.POST("/vpcs", h.createVPC)
+		write.PATCH("/vpcs/:id", h.updateVPC)
+		write.DELETE("/vpcs/:id", h.deleteVPC)
+	}
+
+	// Subnets. Reads are open to both roles; the writes are admin only, like
+	// the VPCs they partition (docs/design/01-api.md §Subnets).
+	if h.subnets != nil {
+		secured.GET("/subnets", h.listSubnets)
+		secured.GET("/subnets/:id", h.getSubnet)
+		write := secured.Group("", middleware.RequireRole(auth.RoleAdmin))
+		write.POST("/subnets", h.createSubnet)
+		write.PATCH("/subnets/:id", h.updateSubnet)
+		write.DELETE("/subnets/:id", h.deleteSubnet)
 	}
 
 	// Host capacity. A launch form shows it next to the instance type, so both

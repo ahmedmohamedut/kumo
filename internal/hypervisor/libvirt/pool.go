@@ -16,9 +16,13 @@ const (
 	poolTypeDir = "dir"
 )
 
-// EnsureInfra creates storage pools and network idempotently. The names it used
-// are recorded on the client, because the volume calls need to know which pool
+// EnsureInfra creates the storage pools idempotently. The names it used are
+// recorded on the client, because the volume calls need to know which pool
 // holds images.
+//
+// Networks are deliberately not part of this: a VPC owns its libvirt network,
+// and the default one is bootstrapped by the vpc service
+// (docs/design/00-architecture.md §7).
 func (c *Client) EnsureInfra(ctx context.Context, cfg hypervisor.InfraConfig) error {
 	c.setInfra(cfg)
 
@@ -27,9 +31,6 @@ func (c *Client) EnsureInfra(ctx context.Context, cfg hypervisor.InfraConfig) er
 	}
 	if err := c.ensurePool(ctx, cfg.InstancesPool, filepath.Join(cfg.DataDir, "pools", "instances")); err != nil {
 		return fmt.Errorf("ensure instances pool: %w", err)
-	}
-	if err := c.ensureNetwork(ctx, cfg.Network); err != nil {
-		return fmt.Errorf("ensure network: %w", err)
 	}
 	return nil
 }

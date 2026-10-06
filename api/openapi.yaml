@@ -792,6 +792,248 @@ paths:
           $ref: '#/components/responses/NotFound'
         '501':
           $ref: '#/components/responses/NotImplemented'
+  /vpcs:
+    get:
+      tags: [VPCs]
+      operationId: listVPCs
+      summary: List VPCs
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+        - $ref: '#/components/parameters/Sort'
+        - $ref: '#/components/parameters/Query'
+      responses:
+        '200':
+          description: A page of VPCs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VPCList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [VPCs]
+      operationId: createVPC
+      summary: Create a VPC
+      description: |
+        Asynchronous: the response is `202` with the task that defines and
+        starts the VPC's libvirt network. The network becomes active after the
+        task succeeds.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateVPCRequest'
+      responses:
+        '202':
+          description: The VPC was recorded; the network task is queued.
+          headers:
+            Location:
+              description: The task that defines and starts the network.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VPCWithTask'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /vpcs/{id}:
+    parameters:
+      - $ref: '#/components/parameters/VPCID'
+    get:
+      tags: [VPCs]
+      operationId: getVPC
+      summary: VPC detail
+      responses:
+        '200':
+          description: The VPC with the counts of what lives inside it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VPCDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [VPCs]
+      operationId: updateVPC
+      summary: Update the tags of a VPC
+      description: '`name`, `cidr` and `mode` are immutable; only tags move.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTagsRequest'
+      responses:
+        '200':
+          description: The updated VPC.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VPC'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [VPCs]
+      operationId: deleteVPC
+      summary: Delete a VPC
+      description: |
+        Asynchronous: the `202` response carries the task that destroys and
+        undefines the network, then removes the row. Refused with `409` while
+        any subnet (or instance) still exists inside it.
+      responses:
+        '202':
+          description: The deletion was queued.
+          headers:
+            Location:
+              description: The task that removes the network and the row.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VPCWithTask'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /subnets:
+    get:
+      tags: [Subnets]
+      operationId: listSubnets
+      summary: List subnets
+      parameters:
+        - name: vpc_id
+          in: query
+          description: Restrict the page to one VPC.
+          schema:
+            type: string
+            pattern: '^vpc-[0-9a-f]{17}$'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+        - $ref: '#/components/parameters/Sort'
+        - $ref: '#/components/parameters/Query'
+      responses:
+        '200':
+          description: A page of subnets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubnetList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Subnets]
+      operationId: createSubnet
+      summary: Create a subnet
+      description: |
+        Synchronous: a subnet is a row, so the `201` response is the finished
+        resource. The CIDR must sit inside its VPC and not overlap a sibling.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSubnetRequest'
+      responses:
+        '201':
+          description: The subnet was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subnet'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /subnets/{id}:
+    parameters:
+      - $ref: '#/components/parameters/SubnetID'
+    get:
+      tags: [Subnets]
+      operationId: getSubnet
+      summary: Subnet detail
+      responses:
+        '200':
+          description: The subnet with the counts of its addresses.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subnet'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Subnets]
+      operationId: updateSubnet
+      summary: Update the tags of a subnet
+      description: '`name`, `cidr` and `vpc_id` are immutable; only tags move.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTagsRequest'
+      responses:
+        '200':
+          description: The updated subnet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subnet'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Subnets]
+      operationId: deleteSubnet
+      summary: Delete a subnet
+      description: |
+        Refused with `409` while a network interface is still allocated from
+        the subnet; terminate the instances first.
+      responses:
+        '204':
+          description: The subnet was deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /tasks:
     get:
       tags: [Tasks]
@@ -919,6 +1161,22 @@ components:
       schema:
         type: string
         pattern: '^task-[0-9a-f]{17}$'
+    VPCID:
+      name: id
+      in: path
+      description: VPC id.
+      required: true
+      schema:
+        type: string
+        pattern: '^vpc-[0-9a-f]{17}$'
+    SubnetID:
+      name: id
+      in: path
+      description: Subnet id.
+      required: true
+      schema:
+        type: string
+        pattern: '^subnet-[0-9a-f]{17}$'
   responses:
     InvalidArgument:
       description: The request was malformed or a field failed validation.
@@ -1595,3 +1853,170 @@ components:
       properties:
         tags:
           $ref: '#/components/schemas/TagMap'
+    VPC:
+      type: object
+      description: One VPC is one libvirt network and one Linux bridge.
+      required: [id, name, cidr, mode, gateway_ip, netmask, bridge_name, libvirt_network, is_default, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          example: vpc-0a1b2c3d4e5f60718
+        name:
+          type: string
+          pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+          maxLength: 63
+          description: Immutable; seeds the DNS domain of the network.
+        cidr:
+          type: string
+          example: 10.0.0.0/16
+          description: RFC 1918, /16 to /28. Immutable.
+        mode:
+          $ref: '#/components/schemas/VPCForwardMode'
+        gateway_ip:
+          type: string
+          description: The first host address of the VPC CIDR.
+        netmask:
+          type: string
+          description: Dotted quad, e.g. `255.255.0.0`.
+        bridge_name:
+          type: string
+          example: kmb0a1b2c3d
+          description: The Linux bridge interface, `kmb` plus the first 8 hex of the id.
+        libvirt_network:
+          type: string
+          description: The libvirt network name, usually the id itself.
+        is_default:
+          type: boolean
+          description: True for the one default VPC every launch lands in.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        tags:
+          $ref: '#/components/schemas/TagMap'
+    VPCForwardMode:
+      type: string
+      description: '`nat` reaches the LAN, `isolated` keeps guests on the bridge.'
+      enum: [nat, isolated]
+    VPCDetail:
+      allOf:
+        - $ref: '#/components/schemas/VPC'
+        - type: object
+          required: [subnet_count, instance_count]
+          properties:
+            subnet_count:
+              type: integer
+              format: int64
+            instance_count:
+              type: integer
+              format: int64
+              description: Instances allocated from this VPC's subnets.
+    VPCWithTask:
+      description: The `202` answer of a VPC create or delete.
+      allOf:
+        - $ref: '#/components/schemas/VPC'
+        - type: object
+          required: [task_id]
+          properties:
+            task_id:
+              type: string
+              example: task-0a1b2c3d4e5f60718
+    CreateVPCRequest:
+      type: object
+      required: [name, cidr]
+      properties:
+        name:
+          type: string
+          pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+          maxLength: 63
+          description: Unique label, seeds the DNS domain.
+        cidr:
+          type: string
+          description: RFC 1918, /16 to /28, no overlap with a VPC or host route.
+        mode:
+          allOf:
+            - $ref: '#/components/schemas/VPCForwardMode'
+          default: nat
+        tags:
+          $ref: '#/components/schemas/TagMap'
+    VPCList:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/VPC'
+    Subnet:
+      type: object
+      description: An allocation partition of its parent VPC's bridge.
+      required: [id, vpc_id, name, cidr, total_ips, usable_ips, allocated_ips, is_default, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          example: subnet-0a1b2c3d4e5f60718
+        vpc_id:
+          type: string
+          description: The parent VPC, which owns the gateway.
+        name:
+          type: string
+          pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+          maxLength: 63
+          description: Unique within the VPC. Immutable.
+        cidr:
+          type: string
+          example: 10.0.1.0/24
+          description: Fully contained in the VPC CIDR. Immutable.
+        total_ips:
+          type: integer
+          format: int64
+          description: Every address of the CIDR.
+        usable_ips:
+          type: integer
+          format: int64
+          description: Minus the network, broadcast and the VPC gateway.
+        allocated_ips:
+          type: integer
+          format: int64
+          description: Addresses handed to network interfaces.
+        is_default:
+          type: boolean
+          description: True for the default subnet of the default VPC.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        tags:
+          $ref: '#/components/schemas/TagMap'
+    CreateSubnetRequest:
+      type: object
+      required: [vpc_id, name, cidr]
+      properties:
+        vpc_id:
+          type: string
+          pattern: '^vpc-[0-9a-f]{17}$'
+        name:
+          type: string
+          pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+          maxLength: 63
+        cidr:
+          type: string
+          description: Contained in the VPC, no sibling overlap.
+        tags:
+          $ref: '#/components/schemas/TagMap'
+    SubnetList:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Subnet'

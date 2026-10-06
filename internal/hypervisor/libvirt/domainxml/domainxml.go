@@ -28,7 +28,11 @@ const (
 	DefaultArch    = "x86_64"
 )
 
-// DefaultNetwork is the NAT network EnsureInfra creates.
+// DefaultNetwork is the fallback network an instance attaches to when the VPC
+// service hands it no network name: an adopted operator network keeps its own
+// name, a legacy install used "kumo-default", and a freshly bootstrapped VPC is
+// named after its id. The instance service always passes the default VPC's
+// libvirt network, so this only ever appears in tests.
 const DefaultNetwork = "kumo-default"
 
 // MetadataNamespace is Kumo's own namespace inside the domain metadata. The

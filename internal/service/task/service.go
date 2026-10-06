@@ -41,6 +41,10 @@ const (
 	// TypeInstanceTerminate destroys the domain and deletes the volumes of an
 	// instance, which is the only operation that releases its allocation.
 	TypeInstanceTerminate = "instance.terminate"
+	// TypeVPCCreate defines and starts the libvirt network of a new VPC.
+	TypeVPCCreate = "vpc.create"
+	// TypeVPCDelete destroys, undefines and removes the row of a deleted VPC.
+	TypeVPCDelete = "vpc.delete"
 )
 
 // State is the lifecycle of a task. The values mirror the CHECK constraint on

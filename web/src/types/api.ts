@@ -513,6 +513,110 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/vpcs': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** List VPCs */
+    get: operations['listVPCs']
+    put?: never
+    /**
+     * Create a VPC
+     * @description Asynchronous: the response is `202` with the task that defines and
+     *     starts the VPC's libvirt network. The network becomes active after the
+     *     task succeeds.
+     */
+    post: operations['createVPC']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/vpcs/{id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description VPC id. */
+        id: components['parameters']['VPCID']
+      }
+      cookie?: never
+    }
+    /** VPC detail */
+    get: operations['getVPC']
+    put?: never
+    post?: never
+    /**
+     * Delete a VPC
+     * @description Asynchronous: the `202` response carries the task that destroys and
+     *     undefines the network, then removes the row. Refused with `409` while
+     *     any subnet (or instance) still exists inside it.
+     */
+    delete: operations['deleteVPC']
+    options?: never
+    head?: never
+    /**
+     * Update the tags of a VPC
+     * @description `name`, `cidr` and `mode` are immutable; only tags move.
+     */
+    patch: operations['updateVPC']
+    trace?: never
+  }
+  '/subnets': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** List subnets */
+    get: operations['listSubnets']
+    put?: never
+    /**
+     * Create a subnet
+     * @description Synchronous: a subnet is a row, so the `201` response is the finished
+     *     resource. The CIDR must sit inside its VPC and not overlap a sibling.
+     */
+    post: operations['createSubnet']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/subnets/{id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Subnet id. */
+        id: components['parameters']['SubnetID']
+      }
+      cookie?: never
+    }
+    /** Subnet detail */
+    get: operations['getSubnet']
+    put?: never
+    post?: never
+    /**
+     * Delete a subnet
+     * @description Refused with `409` while a network interface is still allocated from
+     *     the subnet; terminate the instances first.
+     */
+    delete: operations['deleteSubnet']
+    options?: never
+    head?: never
+    /**
+     * Update the tags of a subnet
+     * @description `name`, `cidr` and `vpc_id` are immutable; only tags move.
+     */
+    patch: operations['updateSubnet']
+    trace?: never
+  }
   '/tasks': {
     parameters: {
       query?: never
@@ -904,6 +1008,114 @@ export interface components {
     UpdateTagsRequest: {
       tags?: components['schemas']['TagMap']
     }
+    /** @description One VPC is one libvirt network and one Linux bridge. */
+    VPC: {
+      /** @example vpc-0a1b2c3d4e5f60718 */
+      id: string
+      /** @description Immutable; seeds the DNS domain of the network. */
+      name: string
+      /**
+       * @description RFC 1918, /16 to /28. Immutable.
+       * @example 10.0.0.0/16
+       */
+      cidr: string
+      mode: components['schemas']['VPCForwardMode']
+      /** @description The first host address of the VPC CIDR. */
+      gateway_ip: string
+      /** @description Dotted quad, e.g. `255.255.0.0`. */
+      netmask: string
+      /**
+       * @description The Linux bridge interface, `kmb` plus the first 8 hex of the id.
+       * @example kmb0a1b2c3d
+       */
+      bridge_name: string
+      /** @description The libvirt network name, usually the id itself. */
+      libvirt_network: string
+      /** @description True for the one default VPC every launch lands in. */
+      is_default: boolean
+      /** Format: date-time */
+      created_at: string
+      /** Format: date-time */
+      updated_at: string
+      tags?: components['schemas']['TagMap']
+    }
+    /**
+     * @description `nat` reaches the LAN, `isolated` keeps guests on the bridge.
+     * @enum {string}
+     */
+    VPCForwardMode: 'nat' | 'isolated'
+    VPCDetail: components['schemas']['VPC'] & {
+      /** Format: int64 */
+      subnet_count: number
+      /**
+       * Format: int64
+       * @description Instances allocated from this VPC's subnets.
+       */
+      instance_count: number
+    }
+    /** @description The `202` answer of a VPC create or delete. */
+    VPCWithTask: components['schemas']['VPC'] & {
+      /** @example task-0a1b2c3d4e5f60718 */
+      task_id: string
+    }
+    CreateVPCRequest: {
+      /** @description Unique label, seeds the DNS domain. */
+      name: string
+      /** @description RFC 1918, /16 to /28, no overlap with a VPC or host route. */
+      cidr: string
+      /** @default nat */
+      mode: components['schemas']['VPCForwardMode']
+      tags?: components['schemas']['TagMap']
+    }
+    VPCList: components['schemas']['Page'] & {
+      items: components['schemas']['VPC'][]
+    }
+    /** @description An allocation partition of its parent VPC's bridge. */
+    Subnet: {
+      /** @example subnet-0a1b2c3d4e5f60718 */
+      id: string
+      /** @description The parent VPC, which owns the gateway. */
+      vpc_id: string
+      /** @description Unique within the VPC. Immutable. */
+      name: string
+      /**
+       * @description Fully contained in the VPC CIDR. Immutable.
+       * @example 10.0.1.0/24
+       */
+      cidr: string
+      /**
+       * Format: int64
+       * @description Every address of the CIDR.
+       */
+      total_ips: number
+      /**
+       * Format: int64
+       * @description Minus the network, broadcast and the VPC gateway.
+       */
+      usable_ips: number
+      /**
+       * Format: int64
+       * @description Addresses handed to network interfaces.
+       */
+      allocated_ips: number
+      /** @description True for the default subnet of the default VPC. */
+      is_default: boolean
+      /** Format: date-time */
+      created_at: string
+      /** Format: date-time */
+      updated_at: string
+      tags?: components['schemas']['TagMap']
+    }
+    CreateSubnetRequest: {
+      vpc_id: string
+      name: string
+      /** @description Contained in the VPC, no sibling overlap. */
+      cidr: string
+      tags?: components['schemas']['TagMap']
+    }
+    SubnetList: components['schemas']['Page'] & {
+      items: components['schemas']['Subnet'][]
+    }
   }
   responses: {
     /** @description The request was malformed or a field failed validation. */
@@ -1009,6 +1221,10 @@ export interface components {
     InstanceID: string
     /** @description Task id. */
     TaskID: string
+    /** @description VPC id. */
+    VPCID: string
+    /** @description Subnet id. */
+    SubnetID: string
   }
   requestBodies: never
   headers: never
@@ -1867,6 +2083,293 @@ export interface operations {
       403: components['responses']['PermissionDenied']
       404: components['responses']['NotFound']
       501: components['responses']['NotImplemented']
+    }
+  }
+  listVPCs: {
+    parameters: {
+      query?: {
+        /** @description Items per page. */
+        page_size?: components['parameters']['PageSize']
+        /** @description Continuation token from a previous page; absent on the first page. */
+        page_token?: components['parameters']['PageToken']
+        /** @description Sort order as `field:direction`, e.g. `created_at:desc`. */
+        sort?: components['parameters']['Sort']
+        /** @description Case-insensitive substring of the resource name. */
+        q?: components['parameters']['Query']
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description A page of VPCs. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['VPCList']
+        }
+      }
+      401: components['responses']['Unauthorized']
+    }
+  }
+  createVPC: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CreateVPCRequest']
+      }
+    }
+    responses: {
+      /** @description The VPC was recorded; the network task is queued. */
+      202: {
+        headers: {
+          /** @description The task that defines and starts the network. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['VPCWithTask']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      409: components['responses']['Conflict']
+    }
+  }
+  getVPC: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description VPC id. */
+        id: components['parameters']['VPCID']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The VPC with the counts of what lives inside it. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['VPCDetail']
+        }
+      }
+      401: components['responses']['Unauthorized']
+      404: components['responses']['NotFound']
+    }
+  }
+  deleteVPC: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description VPC id. */
+        id: components['parameters']['VPCID']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The deletion was queued. */
+      202: {
+        headers: {
+          /** @description The task that removes the network and the row. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['VPCWithTask']
+        }
+      }
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+    }
+  }
+  updateVPC: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description VPC id. */
+        id: components['parameters']['VPCID']
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['UpdateTagsRequest']
+      }
+    }
+    responses: {
+      /** @description The updated VPC. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['VPC']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+    }
+  }
+  listSubnets: {
+    parameters: {
+      query?: {
+        /** @description Restrict the page to one VPC. */
+        vpc_id?: string
+        /** @description Items per page. */
+        page_size?: components['parameters']['PageSize']
+        /** @description Continuation token from a previous page; absent on the first page. */
+        page_token?: components['parameters']['PageToken']
+        /** @description Sort order as `field:direction`, e.g. `created_at:desc`. */
+        sort?: components['parameters']['Sort']
+        /** @description Case-insensitive substring of the resource name. */
+        q?: components['parameters']['Query']
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description A page of subnets. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SubnetList']
+        }
+      }
+      401: components['responses']['Unauthorized']
+    }
+  }
+  createSubnet: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CreateSubnetRequest']
+      }
+    }
+    responses: {
+      /** @description The subnet was created. */
+      201: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Subnet']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+    }
+  }
+  getSubnet: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Subnet id. */
+        id: components['parameters']['SubnetID']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The subnet with the counts of its addresses. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Subnet']
+        }
+      }
+      401: components['responses']['Unauthorized']
+      404: components['responses']['NotFound']
+    }
+  }
+  deleteSubnet: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Subnet id. */
+        id: components['parameters']['SubnetID']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The subnet was deleted. */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+    }
+  }
+  updateSubnet: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Subnet id. */
+        id: components['parameters']['SubnetID']
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['UpdateTagsRequest']
+      }
+    }
+    responses: {
+      /** @description The updated subnet. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Subnet']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
     }
   }
   listTasks: {
