@@ -21,8 +21,15 @@ var (
 	ErrLibvirtUnavailable = errors.New("libvirt: unavailable")
 )
 
+const (
+	defaultSocketURI = "unix:///var/run/libvirt/libvirt-sock"
+	defaultDriverURI = "qemu:///system"
+)
+
 // Client wraps the reconnecting libvirt connection.
 type Client struct {
+	// uri is the socket address from config (e.g. unix:///var/run/libvirt/
+	// libvirt-sock), not a libvirt driver URI.
 	uri         string
 	reconnector *Reconnector
 	logger      *slog.Logger
@@ -51,7 +58,7 @@ func (c *Client) setInfra(cfg hypervisor.InfraConfig) {
 // New creates a new libvirt client.
 func New(logger *slog.Logger, uri string) (*Client, error) {
 	if uri == "" {
-		uri = "unix:///var/run/libvirt/libvirt-sock"
+		uri = defaultSocketURI
 	}
 
 	socketPath := strings.TrimPrefix(uri, "unix://")
@@ -59,7 +66,7 @@ func New(logger *slog.Logger, uri string) (*Client, error) {
 	c := &Client{
 		uri:         uri,
 		logger:      logger,
-		reconnector: NewReconnector(uri, socketPath),
+		reconnector: NewReconnector(defaultDriverURI, socketPath),
 	}
 
 	if logger == nil {
@@ -117,7 +124,9 @@ func (c *Client) withConnection(ctx context.Context, fn func(*golibvirt.Libvirt)
 
 	err = fn(conn)
 	if err != nil && shouldReconnect(err) {
-		c.reconnector.Close()
+		if cerr := c.reconnector.Close(); cerr != nil {
+			c.logger.Debug("closing stale libvirt connection", "error", cerr)
+		}
 		conn, err = c.reconnector.ensureConnected(ctx)
 		if err != nil {
 			return err

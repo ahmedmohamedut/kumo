@@ -13,7 +13,9 @@ import (
 type Reconnector struct {
 	mu sync.RWMutex
 
-	uri        string
+	// driverURI is a libvirt connection URI such as qemu:///system; socketPath
+	// is the unix socket to dial.
+	driverURI  string
 	socketPath string
 	conn       *golibvirt.Libvirt
 	alive      bool
@@ -22,9 +24,9 @@ type Reconnector struct {
 }
 
 // NewReconnector creates a new reconnecting wrapper.
-func NewReconnector(uri, socketPath string) *Reconnector {
+func NewReconnector(driverURI, socketPath string) *Reconnector {
 	return &Reconnector{
-		uri:        uri,
+		driverURI:  driverURI,
 		socketPath: socketPath,
 	}
 }
@@ -39,7 +41,7 @@ func (r *Reconnector) Connect(ctx context.Context) error {
 	}
 
 	conn := golibvirt.NewWithDialer(dialers.NewLocal(dialers.WithSocket(r.socketPath)))
-	if err := conn.ConnectToURI(golibvirt.ConnectURI(r.uri)); err != nil {
+	if err := conn.ConnectToURI(golibvirt.ConnectURI(r.driverURI)); err != nil {
 		return err
 	}
 
@@ -96,7 +98,7 @@ func (r *Reconnector) ensureConnected(ctx context.Context) (*golibvirt.Libvirt, 
 	}
 
 	conn := golibvirt.NewWithDialer(dialers.NewLocal(dialers.WithSocket(r.socketPath)))
-	if err := conn.ConnectToURI(golibvirt.ConnectURI(r.uri)); err != nil {
+	if err := conn.ConnectToURI(golibvirt.ConnectURI(r.driverURI)); err != nil {
 		r.alive = false
 		r.lastErr = err
 		return nil, err
