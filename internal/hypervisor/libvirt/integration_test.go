@@ -5,11 +5,14 @@ package libvirt_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,11 +67,20 @@ func TestEnsureInfraIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("libvirt.New(): %v", err)
 	}
-	t.Cleanup(func() { client.Close() })
+	defer client.Close()
 
 	ctx := t.Context()
 
 	cfg := infraConfig(dataDir, "kumo-it-images", "kumo-it-instances", "kumo-it-net")
+	// Registered before the bootstrap so a failure cannot leave half an
+	// infrastructure behind (there was no unregister path for early failures).
+	t.Cleanup(func() { teardown(t, conn, cfg) })
+
+	// The bootstrap hands a new network the design's 192.168.100.0/24 subnet,
+	// which the host's real kumo-default network already owns, so bind the test
+	// network to a free range and let EnsureInfra adopt it. virbr-it-net is what
+	// network.go's bridgeName derives for kumo-it-net and fits IFNAMSIZ.
+	makeTestNetwork(t, conn, cfg.Network, "virbr-it-net", "192.168.88")
 
 	if err := client.EnsureInfra(ctx, cfg); err != nil {
 		t.Fatalf("EnsureInfra() first run: %v", err)
@@ -99,8 +111,6 @@ func TestEnsureInfraIsIdempotent(t *testing.T) {
 	if active != 1 {
 		t.Errorf("the network %q is defined but not active", cfg.Network)
 	}
-
-	t.Cleanup(func() { teardown(t, conn, cfg) })
 }
 
 // infraConfig names pools and a network that are unique to this run, so a test
@@ -111,6 +121,43 @@ func infraConfig(dataDir, images, instances, network string) hypervisor.InfraCon
 		InstancesPool: instances,
 		Network:       network,
 		DataDir:       dataDir,
+	}
+}
+
+// makeTestNetwork binds the network EnsureInfra adopts to a free subnet. The
+// bootstrap hands a new network the 192.168.100.0/24 range network.go hardcodes,
+// which a real install on the same host may already own (its kumo-default
+// network), so a test that needs EnsureInfra races with production unless the
+// network exists first: ensureNetwork adopts an existing network by name and
+// leaves its subnet untouched. The guests in these tests never ask for DHCP, so
+// any free range does. A stale definition from an earlier run, which would hold
+// the colliding subnet, is removed first. The bridge name also has to fit
+// IFNAMSIZ (see TestBridgeNameFitsIFNAMSIZ).
+func makeTestNetwork(t *testing.T, conn *golibvirt.Libvirt, network, bridge, subnet string) {
+	t.Helper()
+
+	if stale, err := conn.NetworkLookupByName(network); err == nil {
+		if active, err := conn.NetworkIsActive(stale); err == nil && active == 1 {
+			if err := conn.NetworkDestroy(stale); err != nil {
+				t.Fatalf("NetworkDestroy(%q): %v", network, err)
+			}
+		}
+		if err := conn.NetworkUndefine(stale); err != nil {
+			t.Fatalf("NetworkUndefine(%q): %v", network, err)
+		}
+	}
+	netXML := fmt.Sprintf(`<network><name>%s</name>`+
+		`<forward mode='nat'><nat><port start='1024' end='65535'/></nat></forward>`+
+		`<bridge name='%s' stp='on' delay='0'/>`+
+		`<ip address='%s.1' netmask='255.255.255.0'>`+
+		`<dhcp><range start='%s.10' end='%s.250'/></dhcp></ip></network>`,
+		network, bridge, subnet, subnet, subnet)
+	net, err := conn.NetworkDefineXML(netXML)
+	if err != nil {
+		t.Fatalf("NetworkDefineXML(%q): %v", network, err)
+	}
+	if err := conn.NetworkCreate(net); err != nil && !strings.Contains(err.Error(), "already active") {
+		t.Fatalf("NetworkCreate(%q): %v", network, err)
 	}
 }
 
@@ -402,6 +449,122 @@ func TestLaunchBootsCirrOS(t *testing.T) {
 	}
 	if err := client.Destroy(ctx, instanceID); err != nil && !errors.Is(err, hypervisor.ErrNotFound) {
 		t.Errorf("Destroy() at the end: %v", err)
+	}
+}
+
+// TestDefineAndStartAdoptsAnInactiveDefinition is the regression test for the
+// "domain already exists with uuid" launch failure: an interrupted run can leave
+// a defined-but-inactive domain behind, and virDomainCreateXML refuses to start
+// a name that is already defined even when it is shut off. A second launch of
+// the same instance has to adopt and start that definition instead of failing.
+//
+// The guest never boots an OS here: the test only needs QEMU to reach the
+// running state, which a blank overlay does on its way to "no bootable device".
+func TestDefineAndStartAdoptsAnInactiveDefinition(t *testing.T) {
+	conn := dial(t)
+
+	dataDir := t.TempDir()
+	client, err := kumolibvirt.New(slog.New(slog.DiscardHandler), "unix://"+socketPath())
+	if err != nil {
+		t.Fatalf("libvirt.New(): %v", err)
+	}
+	t.Cleanup(func() { client.Close() })
+
+	ctx := t.Context()
+	cfg := infraConfig(dataDir, "kumo-it-adopt-images", "kumo-it-adopt-instances", "kumo-adopt-net")
+
+	// Production volumes live under /var/lib/kumo, whose 0755 mode the QEMU user
+	// can traverse; a Go test temp dir is 0700 by default (the per-test parent and
+	// the t.TempDir() child both are), which would make the launched guest fail
+	// to open its own disks. Let the chain through.
+	for _, dir := range []string{filepath.Dir(dataDir), dataDir} {
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Fatalf("chmod %s: %v", dir, err)
+		}
+	}
+
+	// This host can run a real Kumo install whose kumo-default network owns the
+	// 192.168.100.0/24 NAT subnet EnsureInfra would hand to a new network, so the
+	// test brings its network up on its own subnet first; EnsureInfra adopts an
+	// existing network by name. The guest never asks for DHCP, so the subnet is
+	// irrelevant to what the test checks.
+	makeTestNetwork(t, conn, cfg.Network, "virbr-adopt-net", "192.168.87")
+
+	if err := client.EnsureInfra(ctx, cfg); err != nil {
+		t.Fatalf("EnsureInfra(): %v", err)
+	}
+	t.Cleanup(func() { teardown(t, conn, cfg) })
+
+	// A root disk and a seed the QEMU of a test can open: the guest never boots,
+	// it only has to reach the running state. The files are put in the instances
+	// pool directory directly, because this test is about DefineAndStart adopting
+	// an inactive definition — the volume workflow behind those files is
+	// TestLaunchBootsCirrOS's job. The root has to be a real qcow2 (the domain
+	// XML declares its format), so it is a blank one made with qemu-img.
+	const instanceID = "i-it-adopt"
+	rootPath := filepath.Join(dataDir, "pools", "instances", hypervisor.RootDiskName(instanceID))
+	seedPath := filepath.Join(dataDir, "pools", "instances", hypervisor.SeedISOName(instanceID))
+	if err := os.MkdirAll(filepath.Dir(rootPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(): %v", err)
+	}
+	if out, err := exec.Command("qemu-img", "create", "-f", "qcow2", "-o", "compat=1.1",
+		rootPath, "512M").CombinedOutput(); err != nil {
+		t.Fatalf("qemu-img create the root disk: %v: %s", err, out)
+	}
+	if err := os.WriteFile(seedPath, []byte("no-cloud init"), 0o644); err != nil {
+		t.Fatalf("write the seed: %v", err)
+	}
+
+	consoleLog := filepath.Join(dataDir, "console", instanceID+".log")
+	if err := os.MkdirAll(filepath.Dir(consoleLog), 0o750); err != nil {
+		t.Fatalf("MkdirAll(): %v", err)
+	}
+
+	spec := hypervisor.DomainSpec{
+		ID:             instanceID,
+		Name:           instanceID,
+		Arch:           "x86_64",
+		VCPUs:          1,
+		MemoryMiB:      1024,
+		RootDiskPool:   cfg.InstancesPool,
+		RootDiskPath:   rootPath,
+		SeedISOPath:    seedPath,
+		ConsoleLogPath: consoleLog,
+		Network:        cfg.Network,
+	}
+	t.Cleanup(func() {
+		if err := client.Undefine(context.WithoutCancel(t.Context()), instanceID); err != nil {
+			t.Logf("Undefine(%q): %v", instanceID, err)
+		}
+	})
+
+	if _, err := client.DefineAndStart(ctx, spec); err != nil {
+		t.Fatalf("DefineAndStart() first launch: %v", err)
+	}
+
+	// A forced stop leaves the definition behind, which is the shape an
+	// interrupted launch leaves: defined, not running.
+	if err := client.Destroy(ctx, instanceID); err != nil {
+		t.Fatalf("Destroy(): %v", err)
+	}
+
+	// The second launch has to adopt that definition. Before the fix this was the
+	// "operation failed: domain ... already exists with uuid" the test exists for.
+	info, err := client.DefineAndStart(ctx, spec)
+	if err != nil {
+		t.Fatalf("DefineAndStart() on an inactive definition: %v", err)
+	}
+	if info.State != hypervisor.DomainStateRunning {
+		t.Errorf("state after the adopted launch = %q, want running", info.State)
+	}
+	if info.UUID == "" {
+		t.Error("the adopted launch reported no uuid")
+	}
+
+	// The launch is done with it: a re-adoption of a running domain is refused as
+	// already existing, and the caller (the service) reads the running one back.
+	if _, err := client.DefineAndStart(ctx, spec); !errors.Is(err, hypervisor.ErrAlreadyExists) {
+		t.Errorf("DefineAndStart() on a running domain = %v, want ErrAlreadyExists", err)
 	}
 }
 
