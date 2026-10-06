@@ -3,6 +3,7 @@ package libvirt
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"net/netip"
 	"strconv"
@@ -21,6 +22,14 @@ import (
 // reconciler would otherwise report forever. The service treats DefineAndStart
 // as one step and calls Undefine on failure, which is why the domain name is the
 // instance id (docs/design/04-libvirt-integration.md §3).
+//
+// Because the name is the instance id, a domain that already resolves to it
+// belongs to an earlier attempt that was not rolled back (a crashed launch, or
+// an attempt whose ephemeral volumes were already cleaned up). libvirt refuses
+// to redefine a domain that is already defined, even when it is inactive, so
+// such a definition is adopted instead of replaced: an inactive one is started
+// right here, and a running one is reported as hypervisor.ErrAlreadyExists,
+// which the service adopts by reading it back.
 func (c *Client) DefineAndStart(ctx context.Context, spec hypervisor.DomainSpec) (hypervisor.DomainInfo, error) {
 	document, err := domainxml.Build(spec)
 	if err != nil {
@@ -29,18 +38,38 @@ func (c *Client) DefineAndStart(ctx context.Context, spec hypervisor.DomainSpec)
 
 	var info hypervisor.DomainInfo
 	err = c.withConnection(ctx, func(conn *golibvirt.Libvirt) error {
-		_, err := conn.DomainDefineXML(string(document))
-		if err != nil {
-			if isAlreadyExists(err) {
+		dom, err := lookupDomain(conn, spec.ID)
+		switch {
+		case errors.Is(err, hypervisor.ErrNotFound):
+			dom, err = conn.DomainDefineXML(string(document))
+			if err != nil {
+				return fmt.Errorf("define the domain %q: %w", spec.ID, err)
+			}
+			// The definition succeeded, so from here a failure leaves a domain
+			// behind and has to be undone by the caller.
+		case err != nil:
+			return err
+		default:
+			state, _, err := conn.DomainGetState(dom, 0)
+			if err != nil {
+				return fmt.Errorf("read the state of the domain %q: %w", spec.ID, err)
+			}
+			if state == int32(golibvirt.DomainRunning) {
+				// A launch is genuinely already under way; let the service adopt
+				// the running domain instead of starting a second one.
 				return fmt.Errorf("the domain %q: %w", spec.ID, hypervisor.ErrAlreadyExists)
 			}
-			return fmt.Errorf("define the domain %q: %w", spec.ID, err)
+			if state != int32(golibvirt.DomainShutoff) {
+				// Paused, crashed or finishing domains mesh badly with the
+				// launch workflow; failing here lets the service's rollback
+				// probe pick the domain up and clean it up.
+				return fmt.Errorf("the domain %q is in state %d and cannot be adopted", spec.ID, state)
+			}
+			c.logger.InfoContext(ctx, "libvirt: adopting the definition of an earlier attempt",
+				"domain", spec.ID)
 		}
 
-		// The definition succeeded, so from here a failure leaves a domain
-		// behind and has to be undone by the caller.
-		dom, err := conn.DomainCreateXML(string(document), 0)
-		if err != nil {
+		if err := conn.DomainCreate(dom); err != nil {
 			return fmt.Errorf("start the domain %q: %w", spec.ID, err)
 		}
 		if err := checkDomainExists(conn, spec.ID); err != nil {
@@ -237,7 +266,7 @@ func lookupDomain(conn *golibvirt.Libvirt, id string) (golibvirt.Domain, error) 
 	return dom, nil
 }
 
-// checkDomainExists confirms a handle from DomainCreateXML still resolves. It
+// checkDomainExists confirms a handle from DomainCreate still resolves. It
 // catches a guest that exited while its definition was being written.
 func checkDomainExists(conn *golibvirt.Libvirt, id string) error {
 	_, err := conn.DomainLookupByName(id)

@@ -316,6 +316,14 @@ func (s *Service) startDomain(
 		}
 		return existing, nil
 	default:
+		// DefineAndStart defines the domain before it starts it, so a failure in
+		// between leaves a definition behind that the rollback must know about:
+		// without this, the orphan would face the next attempt as an "already
+		// exists" start. GetDomain is the probe — the domain name is the instance
+		// id, so this finds exactly what the launch created.
+		if _, getErr := s.hv.GetDomain(ctx, row.ID); getErr == nil {
+			created.domain = true
+		}
 		return hypervisor.DomainInfo{}, fmt.Errorf("define the domain of instance %q: %w", row.ID, err)
 	}
 }
