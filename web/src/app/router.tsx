@@ -14,6 +14,12 @@ import { InstanceDetailPage } from '@/features/instances/InstanceDetailPage'
 import { KeyPairsListPage } from '@/features/keypairs/KeyPairsListPage'
 import { CreateKeyPairPage } from '@/features/keypairs/CreateKeyPairPage'
 import { ImportKeyPairPage } from '@/features/keypairs/ImportKeyPairPage'
+import { VpcsListPage } from '@/features/vpcs/VpcsListPage'
+import { VpcDetailPage } from '@/features/vpcs/VpcDetailPage'
+import { CreateVpcPage } from '@/features/vpcs/CreateVpcPage'
+import { SubnetsListPage } from '@/features/subnets/SubnetsListPage'
+import { SubnetDetailPage } from '@/features/subnets/SubnetDetailPage'
+import { CreateSubnetPage } from '@/features/subnets/CreateSubnetPage'
 import { NotFoundPage } from '@/features/system/NotFoundPage'
 
 /**
@@ -42,6 +48,12 @@ export const router = createBrowserRouter([
       { path: 'key-pairs', element: <KeyPairsListPage /> },
       { path: 'key-pairs/create', element: <CreateKeyPairPage /> },
       { path: 'key-pairs/import', element: <ImportKeyPairPage /> },
+      { path: 'vpcs', element: <VpcsListPage /> },
+      { path: 'vpcs/create', element: <CreateVpcPage /> },
+      { path: 'vpcs/:vpcId', element: <VpcDetailPage /> },
+      { path: 'subnets', element: <SubnetsListPage /> },
+      { path: 'subnets/create', element: <CreateSubnetPage /> },
+      { path: 'subnets/:subnetId', element: <SubnetDetailPage /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

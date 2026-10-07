@@ -18,6 +18,15 @@ export const navigationItems: ReadonlyArray<NavItem> = [
       { type: 'link', text: 'Key pairs', href: '/key-pairs' },
     ],
   },
+  {
+    type: 'section',
+    text: 'Networking',
+    defaultExpanded: true,
+    items: [
+      { type: 'link', text: 'VPCs', href: '/vpcs' },
+      { type: 'link', text: 'Subnets', href: '/subnets' },
+    ],
+  },
 ]
 
 /** activeHref is the navigation entry matching the current route, if any. */

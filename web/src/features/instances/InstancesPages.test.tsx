@@ -404,6 +404,60 @@ describe('LaunchInstancePage', () => {
     expect(store.getState().notifications.items[0]?.content).toContain(launched?.id)
   })
 
+  it('places the launch in the default subnet when the operator does not choose one', async () => {
+    await signInAs()
+    renderWithProviders(<Pages />, { route: '/instances/launch' })
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Choose an image/ })).toBeInTheDocument(),
+    )
+    await userEvent.type(screen.getByRole('textbox', { name: 'Name' }), 'web-9')
+    await pickImage(/alpine-3\.20/)
+    await pickPreset(/kumo\.small/)
+    await userEvent.click(screen.getByTestId('submit-launch'))
+
+    await screen.findByRole('heading', { level: 1, name: 'web-9' })
+    const launched = mockInstances().find((instance) => instance.name === 'web-9')
+    // The pickers default to the bootstrapped default VPC/subnet, which is what
+    // an omitted `subnet_id` would attach the launch to anyway (M4b.3).
+    expect(launched?.vpc_id).toBe('vpc-0a1b2c3d4e5f60718')
+    expect(launched?.subnet_id).toBe('subnet-0a1b2c3d4e5f60718')
+    expect(launched?.network_interfaces).toHaveLength(1)
+    // The mock hands out network + gateway + one address per launch so far:
+    // web-1 and web-2 take .11 and .12, and this third launch takes the .04
+    // slot next after the gateway, never colliding with the others.
+    expect(launched?.private_ip).toBe('10.0.0.4')
+    expect(launched?.mac_address).toBe('52:54:00:00:00:04')
+  })
+
+  it('places the launch in the subnet the operator picks', async () => {
+    await signInAs()
+    renderWithProviders(<Pages />, { route: '/instances/launch' })
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Choose an image/ })).toBeInTheDocument(),
+    )
+    // The VPC picker defaults to the default VPC; switch to `prod`. Its subnet
+    // `app` is not the default, so it has to be picked by hand.
+    await userEvent.click(screen.getByRole('button', { name: /^VPC / }))
+    await userEvent.click(await screen.findByRole('option', { name: /prod/ }))
+    await userEvent.click(screen.getByRole('button', { name: /^Subnet / }))
+    await userEvent.click(await screen.findByRole('option', { name: /app/ }))
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'Name' }), 'web-9')
+    await pickImage(/alpine-3\.20/)
+    await pickPreset(/kumo\.small/)
+    await userEvent.click(screen.getByTestId('submit-launch'))
+
+    await screen.findByRole('heading', { level: 1, name: 'web-9' })
+    const launched = mockInstances().find((instance) => instance.name === 'web-9')
+    expect(launched?.vpc_id).toBe('vpc-0b2c3d4e5f6071890')
+    expect(launched?.subnet_id).toBe('subnet-0c2d3e4f5a6071819')
+    expect(launched?.network_interfaces?.[0]?.vpc_id).toBe('vpc-0b2c3d4e5f6071890')
+    // Nothing is allocated from `app` yet, so the first host address is taken.
+    expect(launched?.private_ip).toBe('172.16.0.2')
+  })
+
   it('shows the API 409 on the field that caused it', async () => {
     await signInAs()
     renderWithProviders(<Pages />, { route: '/instances/launch' })
@@ -515,6 +569,19 @@ describe('InstanceDetailPage', () => {
       'href',
       '/images/img-0d3e4f5a6071829',
     )
+  })
+
+  it('links the VPC and subnet from the network details', async () => {
+    await signInAs()
+    detailOf(WEB_1)
+
+    await screen.findByRole('heading', { level: 1, name: 'web-1' })
+    // The details tab is the default one, and the network rows round-trip to
+    // the new pages.
+    const vpcLink = screen.getByRole('link', { name: 'vpc-0a1b2c3d4e5f60718' })
+    expect(vpcLink).toHaveAttribute('href', '/vpcs/vpc-0a1b2c3d4e5f60718')
+    const subnetLink = screen.getByRole('link', { name: 'subnet-0a1b2c3d4e5f60718' })
+    expect(subnetLink).toHaveAttribute('href', '/subnets/subnet-0a1b2c3d4e5f60718')
   })
 
   it('puts the failure reason in an alert, not just in the state', async () => {

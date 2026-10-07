@@ -9,6 +9,11 @@ describe('activeHref', () => {
     ['/instances/i-1', '/instances'],
     ['/images', '/images'],
     ['/key-pairs', '/key-pairs'],
+    ['/vpcs', '/vpcs'],
+    ['/vpcs/vpc-1', '/vpcs'],
+    ['/vpcs/create', '/vpcs'],
+    ['/subnets', '/subnets'],
+    ['/subnets/subnet-1', '/subnets'],
     ['/unknown', undefined],
     ['/instancesx', undefined],
   ])('maps %s to %s', (pathname, want) => {
@@ -30,7 +35,7 @@ describe('activeHref', () => {
       }
     }
 
-    for (const route of ['/', '/instances', '/images', '/key-pairs']) {
+    for (const route of ['/', '/instances', '/images', '/key-pairs', '/vpcs', '/subnets']) {
       expect(hrefs).toContain(route)
     }
   })

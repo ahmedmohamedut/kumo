@@ -22,6 +22,8 @@ import { useAppDispatch } from '@/app/store'
 import { useLaunchInstanceMutation, useListInstanceTypesQuery } from '@/features/instances/api'
 import { useListImagesQuery } from '@/features/images/api'
 import { useListKeyPairsQuery } from '@/features/keypairs/api'
+import { useListSubnetsQuery } from '@/features/subnets/api'
+import { useListVPCsQuery } from '@/features/vpcs/api'
 import { notify } from '@/features/notifications/notificationsSlice'
 import { formatGiB } from '@/lib/format'
 import { errorMessage, fieldErrors, type ApiError } from '@/lib/apiError'
@@ -60,6 +62,8 @@ export function LaunchInstancePage() {
   const [rootDiskGb, setRootDiskGb] = useState('')
   const [userData, setUserData] = useState('')
   const [tags, setTags] = useState<ReadonlyArray<TagEditorProps.Tag>>([])
+  const [vpcId, setVpcId] = useState('')
+  const [subnetId, setSubnetId] = useState('')
   const [error, setError] = useState<ApiError>(undefined)
   const [localErrors, setLocalErrors] = useState<Record<string, string>>({})
 
@@ -68,7 +72,29 @@ export function LaunchInstancePage() {
   const { data: images, isLoading: isLoadingImages } = useListImagesQuery({ state: 'available' })
   const { data: types, isLoading: isLoadingTypes } = useListInstanceTypesQuery()
   const { data: keyPairs } = useListKeyPairsQuery()
+  const { data: vpcsData, isLoading: isLoadingVpcs } = useListVPCsQuery()
   const [launchInstance, { isLoading: isLaunching }] = useLaunchInstanceMutation()
+
+  const vpcs = vpcsData?.items ?? []
+  const defaultVPC = vpcs.find((vpc) => vpc.is_default)
+
+  // The pickers start on the defaults the node bootstrapped, when those are
+  // unique — an operator who mostly launches into the default VPC should not
+  // have to click through two dropdowns every time. The defaults are derived,
+  // not stored: state keeps only the operator's explicit choices, so picking a
+  // VPC automatically re-picks its default subnet without syncing state in an
+  // effect, and an operator who changes their mind gets the defaults back
+  // without anything to clear.
+  const effectiveVpcId = vpcId === '' ? (defaultVPC?.id ?? '') : vpcId
+  const selectedVPC = vpcs.find((vpc) => vpc.id === effectiveVpcId)
+  const { data: subnetsData } = useListSubnetsQuery(
+    { vpcId: effectiveVpcId },
+    { skip: effectiveVpcId === '' },
+  )
+  const subnetOptions = subnetsData?.items ?? []
+  const defaultSubnet = subnetOptions.find((subnet) => subnet.is_default)
+  const effectiveSubnetId = subnetId === '' ? (defaultSubnet?.id ?? '') : subnetId
+  const selectedSubnet = subnetOptions.find((subnet) => subnet.id === effectiveSubnetId)
 
   usePageMeta({
     breadcrumbs: [
@@ -122,6 +148,13 @@ export function LaunchInstancePage() {
       invalid['instance_type'] = 'Choose an instance type.'
     }
 
+    // A VPC without a subnet would be a lie to submit: the API has no `vpc_id`
+    // field, so leaving the subnet empty inside a chosen VPC would silently
+    // attach the instance to the default subnet of the default VPC instead.
+    if (effectiveVpcId !== '' && effectiveSubnetId === '') {
+      invalid['subnet_id'] = 'Choose a subnet in the selected VPC.'
+    }
+
     const disk = rootDiskGb.trim()
     if (disk === '') {
       invalid['root_disk_gb'] = 'Enter a root disk size in GiB.'
@@ -163,6 +196,9 @@ export function LaunchInstancePage() {
         image_id: imageId,
         instance_type: instanceType,
         ...(keyPairId === NO_KEY_PAIR ? {} : { key_pair_id: keyPairId }),
+        // Left out entirely when no subnet was resolved, which makes the API
+        // attach the launch to the default subnet of the default VPC.
+        ...(effectiveSubnetId === '' ? {} : { subnet_id: effectiveSubnetId }),
         root_disk_gb: Number(rootDiskGb.trim()),
         ...(userData.trim() === '' ? {} : { user_data: userData }),
         // The contract carries `count` for a release that can launch several
@@ -187,7 +223,7 @@ export function LaunchInstancePage() {
     }
   }
 
-  const isLoadingLookups = isLoadingImages || isLoadingTypes
+  const isLoadingLookups = isLoadingImages || isLoadingTypes || isLoadingVpcs
 
   return (
     <form onSubmit={submit}>
@@ -341,6 +377,78 @@ export function LaunchInstancePage() {
                   </FormField>
                 </Container>
 
+                <Container header={<Header variant="h2">Network settings</Header>}>
+                  <SpaceBetween size="m">
+                    <FormField
+                      label="VPC"
+                      description="The private address block the instance joins."
+                      errorText={errors['vpc_id']}
+                    >
+                      <Select
+                        selectedOption={
+                          selectedVPC === undefined
+                            ? null
+                            : {
+                                value: selectedVPC.id,
+                                label: selectedVPC.name,
+                                description: selectedVPC.cidr,
+                              }
+                        }
+                        onChange={({ detail }) => {
+                          // A new VPC invalidates the subnet choice: the old one
+                          // belongs to the old VPC and would be refused anyway.
+                          setVpcId(detail.selectedOption?.value ?? '')
+                          setSubnetId('')
+                        }}
+                        options={vpcs.map((vpc) => ({
+                          value: vpc.id,
+                          label: vpc.name,
+                          description: vpc.cidr,
+                        }))}
+                        placeholder="Choose a VPC"
+                        ariaLabel="VPC"
+                      />
+                    </FormField>
+
+                    <FormField
+                      label="Subnet"
+                      description={
+                        selectedVPC === undefined
+                          ? 'Choose a VPC first; the subnets partitioned out of it appear here.'
+                          : `The address slice of ${selectedVPC.name}. Omitted, the launch goes to the default subnet.`
+                      }
+                      errorText={errors['subnet_id']}
+                    >
+                      <Select
+                        selectedOption={
+                          selectedSubnet === undefined
+                            ? null
+                            : {
+                                value: selectedSubnet.id,
+                                label: selectedSubnet.name,
+                                description: `${selectedSubnet.cidr} · ${
+                                  selectedSubnet.usable_ips - selectedSubnet.allocated_ips
+                                } IPs available`,
+                              }
+                        }
+                        onChange={({ detail }) => setSubnetId(detail.selectedOption?.value ?? '')}
+                        options={subnetOptions.map((subnet) => ({
+                          value: subnet.id,
+                          label: subnet.name,
+                          description: `${subnet.cidr} · ${
+                            subnet.usable_ips - subnet.allocated_ips
+                          } IPs available`,
+                        }))}
+                        placeholder={
+                          selectedVPC === undefined ? 'Choose a VPC first' : 'Choose a subnet'
+                        }
+                        disabled={effectiveVpcId === ''}
+                        ariaLabel="Subnet"
+                      />
+                    </FormField>
+                  </SpaceBetween>
+                </Container>
+
                 <Container header={<Header variant="h2">Key pair</Header>}>
                   <FormField
                     label="Key pair"
@@ -432,6 +540,14 @@ export function LaunchInstancePage() {
                   { label: 'Name', value: name.trim() === '' ? '—' : name.trim() },
                   { label: 'Image', value: selectedImage?.name ?? '—' },
                   { label: 'Instance type', value: selectedType?.id ?? '—' },
+                  {
+                    label: 'VPC',
+                    value: selectedVPC?.name ?? '—',
+                  },
+                  {
+                    label: 'Subnet',
+                    value: selectedSubnet?.name ?? '—',
+                  },
                   {
                     label: 'Key pair',
                     value: keyPairId === NO_KEY_PAIR ? 'None' : (selectedKeyPair?.name ?? '—'),

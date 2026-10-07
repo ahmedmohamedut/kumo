@@ -316,6 +316,20 @@ export function InstanceDetailPage() {
                           <Box variant="code">{instance.mac_address}</Box>
                         )}
                       </Row>
+                      <Row label="VPC">
+                        {instance.vpc_id === null ? (
+                          '—'
+                        ) : (
+                          <Link href={`/vpcs/${instance.vpc_id}`}>{instance.vpc_id}</Link>
+                        )}
+                      </Row>
+                      <Row label="Subnet">
+                        {instance.subnet_id === null ? (
+                          '—'
+                        ) : (
+                          <Link href={`/subnets/${instance.subnet_id}`}>{instance.subnet_id}</Link>
+                        )}
+                      </Row>
                       <Row label="Launched">
                         <Time value={instance.launched_at} />
                       </Row>

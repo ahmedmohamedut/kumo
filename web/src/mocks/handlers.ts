@@ -11,6 +11,8 @@ type CatalogImage = components['schemas']['CatalogImage']
 type Instance = components['schemas']['Instance']
 type InstanceType = components['schemas']['InstanceType']
 type LaunchInstanceRequest = components['schemas']['LaunchInstanceRequest']
+type VPC = components['schemas']['VPC']
+type Subnet = components['schemas']['Subnet']
 
 /**
  * MSW handlers for the auth and system endpoints (03-frontend.md §8). The auth
@@ -363,6 +365,18 @@ const INITIAL_INSTANCES: Instance[] = [
     key_pair_name: 'legacy-rsa',
     private_ip: '10.0.0.11',
     mac_address: '52:54:00:11:22:33',
+    vpc_id: 'vpc-0a1b2c3d4e5f60718',
+    subnet_id: 'subnet-0a1b2c3d4e5f60718',
+    network_interfaces: [
+      {
+        id: 'eni-0a1b2c3d4e5f60718',
+        device_index: 0,
+        mac_address: '52:54:00:11:22:33',
+        private_ip: '10.0.0.11',
+        subnet_id: 'subnet-0a1b2c3d4e5f60718',
+        vpc_id: 'vpc-0a1b2c3d4e5f60718',
+      },
+    ],
     user_data: null,
     task_id: null,
     launched_at: '2026-01-03T09:00:00Z',
@@ -374,7 +388,8 @@ const INITIAL_INSTANCES: Instance[] = [
     id: 'i-0b2c3d4e5f6071890',
     name: 'web-2',
     // Launched but not yet running: the launch task is still working, which is
-    // what makes the list poll at 5 s.
+    // what makes the list poll at 5 s. The address was reserved in the launch
+    // transaction, so the row already carries it.
     state: 'pending',
     state_reason: null,
     image_id: 'img-0b2c3d4e5f6071829',
@@ -385,8 +400,20 @@ const INITIAL_INSTANCES: Instance[] = [
     root_disk_gb: 20,
     key_pair_id: null,
     key_pair_name: null,
-    private_ip: null,
-    mac_address: null,
+    private_ip: '10.0.0.12',
+    mac_address: '52:54:00:12:34:56',
+    vpc_id: 'vpc-0a1b2c3d4e5f60718',
+    subnet_id: 'subnet-0a1b2c3d4e5f60718',
+    network_interfaces: [
+      {
+        id: 'eni-0b2c3d4e5f6071890',
+        device_index: 0,
+        mac_address: '52:54:00:12:34:56',
+        private_ip: '10.0.0.12',
+        subnet_id: 'subnet-0a1b2c3d4e5f60718',
+        vpc_id: 'vpc-0a1b2c3d4e5f60718',
+      },
+    ],
     user_data: null,
     task_id: 'task-0a1b2c3d4e5f60710',
     launched_at: '2026-01-05T11:00:00Z',
@@ -409,8 +436,22 @@ const INITIAL_INSTANCES: Instance[] = [
     root_disk_gb: 2,
     key_pair_id: null,
     key_pair_name: null,
-    private_ip: null,
+    // A failed launch keeps the address it reserved (M4b.3), so db-1 still
+    // holds one from the `db` subnet.
+    private_ip: '10.0.1.11',
     mac_address: '52:54:00:44:55:66',
+    vpc_id: 'vpc-0a1b2c3d4e5f60718',
+    subnet_id: 'subnet-0b2c3d4e5f6071890',
+    network_interfaces: [
+      {
+        id: 'eni-0c2d3e4f5a6071819',
+        device_index: 0,
+        mac_address: '52:54:00:44:55:66',
+        private_ip: '10.0.1.11',
+        subnet_id: 'subnet-0b2c3d4e5f6071890',
+        vpc_id: 'vpc-0a1b2c3d4e5f60718',
+      },
+    ],
     user_data: null,
     task_id: 'task-0a1b2c3d4e5f60711',
     launched_at: '2026-01-04T14:00:00Z',
@@ -422,7 +463,8 @@ const INITIAL_INSTANCES: Instance[] = [
     id: 'i-0d2e3f4a5b6071829',
     name: 'old-1',
     // Terminated: the row is kept as history so the name can be reused, which is
-    // why the list still shows it.
+    // why the list still shows it. Terminating dropped the interface (M4b.3), so
+    // no network fields survive.
     state: 'terminated',
     state_reason: null,
     image_id: 'img-0d3e4f5a6071829',
@@ -435,6 +477,9 @@ const INITIAL_INSTANCES: Instance[] = [
     key_pair_name: null,
     private_ip: null,
     mac_address: null,
+    vpc_id: null,
+    subnet_id: null,
+    network_interfaces: [],
     user_data: null,
     task_id: null,
     launched_at: '2026-01-02T08:00:00Z',
@@ -446,7 +491,99 @@ const INITIAL_INSTANCES: Instance[] = [
 
 /** freshInstances is a private copy of the fixtures, so no test can mutate them. */
 function freshInstances(): Instance[] {
-  return INITIAL_INSTANCES.map((instance) => ({ ...instance, tags: { ...instance.tags } }))
+  return INITIAL_INSTANCES.map((instance) => ({
+    ...instance,
+    tags: { ...instance.tags },
+    network_interfaces: instance.network_interfaces?.map((nic) => ({ ...nic })) ?? undefined,
+  }))
+}
+
+/**
+ * VPC and subnet fixtures. The default VPC and its default subnet are what the
+ * backend bootstraps on first start, and web-1/web-2 hold addresses from the
+ * default subnet while db-1 holds one from the `db` subnet — so the "in use"
+ * 409s the pages guard against line up with the instance fixtures. `prod`
+ * carries no instances, so its subnet can be deleted and its VPC with it.
+ */
+const INITIAL_VPCS: VPC[] = [
+  {
+    id: 'vpc-0a1b2c3d4e5f60718',
+    name: 'default',
+    cidr: '10.0.0.0/16',
+    mode: 'nat',
+    gateway_ip: '10.0.0.1',
+    netmask: '255.255.0.0',
+    bridge_name: 'kmb0a1b2c3d',
+    libvirt_network: 'vpc-0a1b2c3d4e5f60718',
+    is_default: true,
+    created_at: '2026-01-02T10:00:00Z',
+    updated_at: '2026-01-02T10:00:00Z',
+    tags: { team: 'platform' },
+  },
+  {
+    id: 'vpc-0b2c3d4e5f6071890',
+    name: 'prod',
+    cidr: '172.16.0.0/16',
+    mode: 'nat',
+    gateway_ip: '172.16.0.1',
+    netmask: '255.255.0.0',
+    bridge_name: 'kmb0b2c3d4e',
+    libvirt_network: 'vpc-0b2c3d4e5f6071890',
+    is_default: false,
+    created_at: '2026-01-02T11:00:00Z',
+    updated_at: '2026-01-02T11:00:00Z',
+    tags: {},
+  },
+]
+
+const INITIAL_SUBNETS: Subnet[] = [
+  {
+    id: 'subnet-0a1b2c3d4e5f60718',
+    vpc_id: 'vpc-0a1b2c3d4e5f60718',
+    name: 'default',
+    cidr: '10.0.0.0/24',
+    total_ips: 256,
+    usable_ips: 253,
+    allocated_ips: 2,
+    is_default: true,
+    created_at: '2026-01-02T10:00:00Z',
+    updated_at: '2026-01-02T10:00:00Z',
+    tags: { team: 'platform' },
+  },
+  {
+    id: 'subnet-0b2c3d4e5f6071890',
+    vpc_id: 'vpc-0a1b2c3d4e5f60718',
+    name: 'db',
+    cidr: '10.0.1.0/24',
+    total_ips: 256,
+    usable_ips: 253,
+    allocated_ips: 1,
+    is_default: false,
+    created_at: '2026-01-02T10:20:00Z',
+    updated_at: '2026-01-02T10:20:00Z',
+    tags: {},
+  },
+  {
+    id: 'subnet-0c2d3e4f5a6071819',
+    vpc_id: 'vpc-0b2c3d4e5f6071890',
+    name: 'app',
+    cidr: '172.16.0.0/24',
+    total_ips: 256,
+    usable_ips: 253,
+    allocated_ips: 0,
+    is_default: false,
+    created_at: '2026-01-02T11:10:00Z',
+    updated_at: '2026-01-02T11:10:00Z',
+    tags: {},
+  },
+]
+
+function freshVPCs(): VPC[] {
+  return INITIAL_VPCS.map((vpc) => ({ ...vpc, tags: { ...vpc.tags } }))
+}
+
+function freshSubnets(): Subnet[] {
+  return INITIAL_SUBNETS.map((subnet) => ({ ...subnet, tags: { ...subnet.tags } }))
 }
 
 /** freshImages and freshTasks are private copies, so no test can mutate the originals. */
@@ -465,6 +602,8 @@ function freshTasks(): Task[] {
 let images: MockImage[] = freshImages()
 let tasks: Task[] = freshTasks()
 let instances: Instance[] = freshInstances()
+let vpcs: VPC[] = freshVPCs()
+let subnets: Subnet[] = freshSubnets()
 
 /** mockImages is the current fixture table, for assertions. */
 export function mockImages(): MockImage[] {
@@ -493,7 +632,7 @@ export function addMockImageReference(id: string, instanceID: string): void {
  * plus 17 hex characters), derived from the shared counter so two fixtures minted
  * in the same test cannot collide.
  */
-function nextResourceID(prefix: 'img' | 'task' | 'i'): string {
+function nextResourceID(prefix: 'img' | 'task' | 'i' | 'eni' | 'vpc' | 'subnet'): string {
   return `${prefix}-0f1e2d3c4b5a6${String((counter += 1)).padStart(5, '0')}`
 }
 
@@ -519,6 +658,8 @@ export function resetMockState(): void {
   images = freshImages()
   tasks = freshTasks()
   instances = freshInstances()
+  vpcs = freshVPCs()
+  subnets = freshSubnets()
 }
 
 /** mockInstances reads the instance fixtures, e.g. to assert a state change. */
@@ -534,6 +675,31 @@ export function setMockInstances(next: Instance[]): void {
 /** findMockInstance is the one fixture row a test is acting on. */
 export function findMockInstance(id: string): Instance | undefined {
   return instances.find((instance) => instance.id === id)
+}
+
+/** mockVPCs reads the VPC fixtures, e.g. to assert a delete. */
+export function mockVPCs(): VPC[] {
+  return vpcs
+}
+
+/** setMockVPCs replaces the fixture table, e.g. to start from an empty list. */
+export function setMockVPCs(next: VPC[]): void {
+  vpcs = next
+}
+
+/** mockSubnets reads the subnet fixtures, e.g. to assert a delete. */
+export function mockSubnets(): Subnet[] {
+  return subnets
+}
+
+/** setMockSubnets replaces the fixture table, e.g. to start from an empty list. */
+export function setMockSubnets(next: Subnet[]): void {
+  subnets = next
+}
+
+/** findMockSubnet is the one subnet fixture row a test is acting on. */
+export function findMockSubnet(id: string): Subnet | undefined {
+  return subnets.find((subnet) => subnet.id === id)
 }
 
 /** setMockNeedsSetup opens or closes the first-run setup path. */
@@ -571,6 +737,206 @@ function issueTokens(user: AuthUser) {
     expires_in: 900,
     cookie: `${REFRESH_COOKIE}=${refreshToken}; Path=/api/v1/auth; HttpOnly; SameSite=Strict`,
   }
+}
+
+// ------------------------------------------------------ vpc/subnet helpers ---
+
+/** Cidr is an IPv4 block as its network address and prefix length. */
+interface Cidr {
+  base: number
+  prefix: number
+}
+
+/** ipToInt parses a dotted quad into its uint32 value, or null. */
+function ipToInt(ip: string): number | null {
+  const parts = ip.split('.')
+  if (parts.length !== 4) {
+    return null
+  }
+  let value = 0
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) {
+      return null
+    }
+    const octet = Number(part)
+    if (octet < 0 || octet > 255) {
+      return null
+    }
+    value = (value << 8) | octet
+  }
+  return value >>> 0
+}
+
+/** intToIp renders a uint32 as a dotted quad. */
+function intToIp(value: number): string {
+  return `${(value >>> 24) & 0xff}.${(value >>> 16) & 0xff}.${(value >>> 8) & 0xff}.${value & 0xff}`
+}
+
+/** prefixNetmask is a prefix length expanded to a dotted-quad netmask. */
+function prefixNetmask(prefix: number): string {
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0
+  return intToIp(mask)
+}
+
+/** parseCIDR parses "a.b.c.d/prefix" into its network base and prefix, or null. */
+function parseCIDR(cidr: string): Cidr | null {
+  const match = /^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\/(\d{1,2})$/.exec(cidr)
+  if (match === null) {
+    return null
+  }
+  const host = ipToInt(match[1] as string)
+  const prefix = Number(match[2])
+  if (host === null || prefix < 0 || prefix > 32) {
+    return null
+  }
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0
+  return { base: (host & mask) >>> 0, prefix }
+}
+
+/** privateRanges is the RFC 1918 address space the API allows for VPCs. */
+const privateRanges: ReadonlyArray<Cidr> = [
+  { base: 0x0a000000, prefix: 8 }, // 10.0.0.0/8
+  { base: 0xac100000, prefix: 12 }, // 172.16.0.0/12
+  { base: 0xc0a80000, prefix: 16 }, // 192.168.0.0/16
+]
+
+/** isPrivateRange asks whether a block sits entirely inside RFC 1918 space. */
+function isPrivateRange(cidr: Cidr): boolean {
+  return privateRanges.some((range) => contains(range, cidr))
+}
+
+/** contains reports whether `outer` covers every address of `inner`. */
+function contains(outer: Cidr, inner: Cidr): boolean {
+  if (outer.prefix > inner.prefix) {
+    return false
+  }
+  const mask = outer.prefix === 0 ? 0 : (0xffffffff << (32 - outer.prefix)) >>> 0
+  return outer.base === (inner.base & mask) >>> 0
+}
+
+/** overlaps reports whether two blocks share at least one address. */
+function overlaps(a: Cidr, b: Cidr): boolean {
+  const size = (prefix: number): number => (prefix === 0 ? 0x100000000 : 1 << (32 - prefix))
+  return a.base < b.base + size(b.prefix) && b.base < a.base + size(a.prefix)
+}
+
+/**
+ * validateNewVPC mirrors the VPC create rules in
+ * `internal/service/vpc/service.go`: an RFC 1123 name free among VPCs, a
+ * private /16 to /28 block that nothing else owns. An overlap is a `409`
+ * conflict (the caller turns it into one), everything else a field error.
+ */
+interface VPCValidationResult {
+  field: string
+  reason: string
+}
+
+function validateNewVPC(
+  body: components['schemas']['CreateVPCRequest'],
+  existing: ReadonlyArray<VPC>,
+): VPCValidationResult | null {
+  if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(body.name) || body.name.length > 63) {
+    return {
+      field: 'name',
+      reason:
+        'must be 1-63 characters of lowercase letters, digits and dashes, starting and ending with a letter or digit',
+    }
+  }
+  if (existing.some((vpc) => vpc.name === body.name)) {
+    return { field: 'name', reason: `a VPC named "${body.name}" already exists` }
+  }
+  if (body.mode !== 'nat' && body.mode !== 'isolated') {
+    return { field: 'mode', reason: 'must be "nat" or "isolated"' }
+  }
+  const parsed = parseCIDR(body.cidr)
+  if (parsed === null) {
+    return { field: 'cidr', reason: 'must be an IPv4 CIDR block like 10.0.0.0/16' }
+  }
+  if (!isPrivateRange(parsed)) {
+    return { field: 'cidr', reason: 'must be a private RFC 1918 block' }
+  }
+  if (parsed.prefix < 16 || parsed.prefix > 28) {
+    return { field: 'cidr', reason: 'must be a /16 to /28 block' }
+  }
+  const clash = existing.find((vpc) => overlaps(parsed, parseCIDR(vpc.cidr) as Cidr))
+  if (clash !== undefined) {
+    // An overlap answers 409 rather than landing on the field: it is a conflict
+    // with another resource, not a malformed value.
+    return { field: 'cidr', reason: `the CIDR overlaps the VPC "${clash.name}" (${clash.cidr})` }
+  }
+  return null
+}
+
+/**
+ * validateNewSubnet mirrors the subnet create rules in
+ * `internal/service/subnet/service.go`: the VPC must exist, the name must be
+ * unique within it, and the CIDR must sit entirely inside the VPC without
+ * overlapping a sibling. An overlap is a `409`, everything else a field error.
+ */
+function validateNewSubnet(
+  body: components['schemas']['CreateSubnetRequest'],
+  existing: ReadonlyArray<Subnet>,
+  parent: VPC | undefined,
+): VPCValidationResult | null {
+  if (parent === undefined) {
+    return { field: 'vpc_id', reason: `no VPC "${body.vpc_id}"` }
+  }
+  if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(body.name) || body.name.length > 63) {
+    return {
+      field: 'name',
+      reason:
+        'must be 1-63 characters of lowercase letters, digits and dashes, starting and ending with a letter or digit',
+    }
+  }
+  if (existing.some((subnet) => subnet.name === body.name)) {
+    return { field: 'name', reason: `a subnet named "${body.name}" already exists in the VPC` }
+  }
+  const parsed = parseCIDR(body.cidr)
+  if (parsed === null) {
+    return { field: 'cidr', reason: 'must be an IPv4 CIDR block like 10.0.1.0/24' }
+  }
+  const parentCidr = parseCIDR(parent.cidr)
+  if (parentCidr === null || !contains(parentCidr, parsed)) {
+    return {
+      field: 'cidr',
+      reason: `must sit entirely inside the VPC "${parent.name}" (${parent.cidr})`,
+    }
+  }
+  const clash = existing.find((subnet) => overlaps(parsed, parseCIDR(subnet.cidr) as Cidr))
+  if (clash !== undefined) {
+    return {
+      field: 'cidr',
+      reason: `the CIDR overlaps the subnet "${clash.name}" (${clash.cidr})`,
+    }
+  }
+  return null
+}
+
+/** subnetAddresses fills in the counts a subnet row carries. */
+function subnetAddresses(cidr: string): { total: number; usable: number } {
+  const parsed = parseCIDR(cidr)
+  const total = parsed === null ? 0 : 2 ** (32 - parsed.prefix)
+  // Minus the network address, the broadcast address and the VPC gateway.
+  return { total, usable: Math.max(0, total - 3) }
+}
+
+/**
+ * nextSubnetIP hands out the first free host address of a subnet, past the VPC
+ * gateway. It is the mock's answer to the launch allocation transaction: the
+ * same subnet always yields the same address for the same rows.
+ */
+function nextSubnetIP(subnetId: string, cidr: string): string {
+  const parsed = parseCIDR(cidr)
+  const taken = instances.filter((instance) => instance.subnet_id === subnetId).length
+  // Network + gateway + every already-allocated address.
+  return intToIp(((parsed?.base ?? 0) + 2 + taken) >>> 0)
+}
+
+/** macFromIP derives the guest's fixed MAC from its allocated address. */
+function macFromIP(ip: string): string {
+  const value = ipToInt(ip) ?? 0
+  const hex = (octet: number): string => octet.toString(16).padStart(2, '0')
+  return `52:54:00:${hex((value >>> 16) & 0xff)}:${hex((value >>> 8) & 0xff)}:${hex(value & 0xff)}`
 }
 
 export const handlers = [
@@ -976,6 +1342,13 @@ export const handlers = [
     if (fieldError !== null) {
       return invalidArgument(fieldError.field, fieldError.reason)
     }
+    // The default subnet of the default VPC is what the backend attaches a
+    // launch that names no subnet to (M4b.3). A launch that does name one was
+    // vetted by validateLaunch, so the row is guaranteed to exist.
+    const targetSubnet =
+      body.subnet_id === undefined
+        ? subnets.find((subnet) => subnet.is_default)
+        : subnets.find((subnet) => subnet.id === body.subnet_id)
     const image = images.find((candidate) => candidate.id === body.image_id) as MockImage
     const preset = MOCK_INSTANCE_TYPES.find((candidate) => candidate.id === body.instance_type)
     const task: Task = {
@@ -989,6 +1362,9 @@ export const handlers = [
       body.key_pair_id === undefined
         ? undefined
         : keyPairs.find((candidate) => candidate.id === body.key_pair_id)
+    const privateIp =
+      targetSubnet === undefined ? null : nextSubnetIP(targetSubnet.id, targetSubnet.cidr)
+    const mac = privateIp === null ? null : macFromIP(privateIp)
     const instance: Instance = {
       id: nextResourceID('i'),
       name: body.name,
@@ -1004,8 +1380,23 @@ export const handlers = [
       root_disk_gb: body.root_disk_gb ?? image.min_disk_gb ?? 1,
       key_pair_id: body.key_pair_id ?? null,
       key_pair_name: pair?.name ?? null,
-      private_ip: null,
-      mac_address: null,
+      private_ip: privateIp,
+      mac_address: mac,
+      vpc_id: targetSubnet?.vpc_id ?? null,
+      subnet_id: targetSubnet?.id ?? null,
+      network_interfaces:
+        targetSubnet === undefined || privateIp === null || mac === null
+          ? []
+          : [
+              {
+                id: nextResourceID('eni'),
+                device_index: 0,
+                mac_address: mac,
+                private_ip: privateIp,
+                subnet_id: targetSubnet.id,
+                vpc_id: targetSubnet.vpc_id,
+              },
+            ],
       // `user_data` is echoed to admins only, and the list never carries it.
       user_data: body.user_data ?? null,
       task_id: task.id,
@@ -1016,6 +1407,13 @@ export const handlers = [
     }
     tasks = [task, ...tasks]
     instances = [instance, ...instances]
+    if (targetSubnet !== undefined) {
+      subnets = subnets.map((subnet) =>
+        subnet.id === targetSubnet.id
+          ? { ...subnet, allocated_ips: subnet.allocated_ips + 1 }
+          : subnet,
+      )
+    }
     // Launching from an image is what makes deleting it a 409, and attaching a
     // key pair is what makes deleting that a 409 — the same linkage the Go
     // service keeps.
@@ -1115,6 +1513,281 @@ export const handlers = [
       })
     }
     return apiError(404, 'not_found', `no instance "${id}"`)
+  }),
+
+  // ------------------------------------------------------------------ vpcs ---
+
+  http.get('/api/v1/vpcs', ({ request }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    const params = new URL(request.url).searchParams
+    const query = params.get('q')
+    const items = vpcs
+      .filter((vpc) => query === null || vpc.name.toLowerCase().includes(query.toLowerCase()))
+      // Newest first, the API's default order.
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    return HttpResponse.json({ items, next_page_token: null })
+  }),
+
+  // Creating a VPC answers 202 with the row and the task that brings the
+  // network up; the mock never pretends the network exists, exactly like a
+  // healthy backend that has not run the task yet.
+  http.post('/api/v1/vpcs', async ({ request }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const body = (await request.json()) as components['schemas']['CreateVPCRequest']
+    const fieldError = validateNewVPC(body, vpcs)
+    if (fieldError !== null) {
+      if (fieldError.field === 'cidr' && fieldError.reason.includes('overlaps')) {
+        return apiError(409, 'conflict', fieldError.reason)
+      }
+      return invalidArgument(fieldError.field, fieldError.reason)
+    }
+    const id = nextResourceID('vpc')
+    const parsed = parseCIDR(body.cidr)
+    const task: Task = {
+      id: nextResourceID('task'),
+      type: 'vpc.create',
+      resource_id: id,
+      state: 'pending',
+      created_at: '2026-01-06T07:00:00Z',
+      updated_at: '2026-01-06T07:00:00Z',
+    }
+    const vpc: VPC = {
+      id,
+      name: body.name,
+      cidr: body.cidr,
+      mode: body.mode,
+      gateway_ip: intToIp(((parsed?.base ?? 0) + 1) >>> 0),
+      netmask: prefixNetmask(parsed?.prefix ?? 16),
+      // `kmb` plus the first 8 hex of the id, like the real bridge names.
+      bridge_name: `kmb${id.slice(4, 12)}`,
+      libvirt_network: id,
+      is_default: false,
+      created_at: task.created_at,
+      updated_at: task.created_at,
+      tags: { ...body.tags },
+    }
+    tasks = [task, ...tasks]
+    vpcs = [vpc, ...vpcs]
+    return HttpResponse.json({ ...vpc, task_id: task.id }, { status: 202 })
+  }),
+
+  http.get('/api/v1/vpcs/:id', ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    const id = String(params.id)
+    const vpc = vpcs.find((candidate) => candidate.id === id)
+    if (vpc === undefined) {
+      return apiError(404, 'not_found', `no VPC "${id}"`)
+    }
+    const subnetCount = subnets.filter((subnet) => subnet.vpc_id === id).length
+    const instanceCount = instances.filter(
+      (instance) => instance.vpc_id === id && instance.state !== 'terminated',
+    ).length
+    return HttpResponse.json({ ...vpc, subnet_count: subnetCount, instance_count: instanceCount })
+  }),
+
+  http.patch('/api/v1/vpcs/:id', async ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const body = (await request.json()) as components['schemas']['UpdateTagsRequest']
+    const id = String(params.id)
+    const vpc = vpcs.find((candidate) => candidate.id === id)
+    if (vpc === undefined) {
+      return apiError(404, 'not_found', `no VPC "${id}"`)
+    }
+    const updated: VPC = { ...vpc, tags: { ...body.tags }, updated_at: '2026-01-06T08:00:00Z' }
+    vpcs = vpcs.map((candidate) => (candidate.id === id ? updated : candidate))
+    return HttpResponse.json(updated)
+  }),
+
+  // Deleting a VPC answers 202 as a task and refuses with a 409 while any
+  // subnet — or any instance inside one — still lives in it. The mock removes
+  // the row at once, because a VPC has no state the console would render while
+  // the task ran.
+  http.delete('/api/v1/vpcs/:id', ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const id = String(params.id)
+    const vpc = vpcs.find((candidate) => candidate.id === id)
+    if (vpc === undefined) {
+      return apiError(404, 'not_found', `no VPC "${id}"`)
+    }
+    const inside = subnets.filter((subnet) => subnet.vpc_id === id)
+    if (inside.length > 0) {
+      return apiError(
+        409,
+        'conflict',
+        `the VPC "${vpc.name}" still contains the subnet${inside.length === 1 ? '' : 's'} ${inside
+          .map((subnet) => `"${subnet.name}"`)
+          .join(', ')}; delete them first`,
+      )
+    }
+    const hosted = instances.filter(
+      (instance) => instance.vpc_id === id && instance.state !== 'terminated',
+    )
+    if (hosted.length > 0) {
+      return apiError(
+        409,
+        'conflict',
+        `the VPC "${vpc.name}" still hosts the instance${hosted.length === 1 ? '' : 's'} ${hosted
+          .map((instance) => `"${instance.name}"`)
+          .join(', ')}; terminate them first`,
+      )
+    }
+    const task: Task = {
+      id: nextResourceID('task'),
+      type: 'vpc.delete',
+      resource_id: id,
+      state: 'pending',
+      created_at: '2026-01-06T09:00:00Z',
+      updated_at: '2026-01-06T09:00:00Z',
+    }
+    tasks = [task, ...tasks]
+    vpcs = vpcs.filter((candidate) => candidate.id !== id)
+    return HttpResponse.json({ ...vpc, task_id: task.id }, { status: 202 })
+  }),
+
+  // ---------------------------------------------------------------- subnets ---
+
+  http.get('/api/v1/subnets', ({ request }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    const params = new URL(request.url).searchParams
+    const vpcFilter = params.get('vpc_id')
+    const query = params.get('q')
+    const items = subnets
+      .filter((subnet) => vpcFilter === null || subnet.vpc_id === vpcFilter)
+      .filter((subnet) => query === null || subnet.name.toLowerCase().includes(query.toLowerCase()))
+      // Newest first, the API's default order.
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    return HttpResponse.json({ items, next_page_token: null })
+  }),
+
+  // A subnet is a row, so creating one answers 201 with the finished resource.
+  http.post('/api/v1/subnets', async ({ request }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const body = (await request.json()) as components['schemas']['CreateSubnetRequest']
+    const parent = vpcs.find((vpc) => vpc.id === body.vpc_id)
+    const siblings = subnets.filter((subnet) => subnet.vpc_id === body.vpc_id)
+    const fieldError = validateNewSubnet(body, siblings, parent)
+    if (fieldError !== null) {
+      if (fieldError.field === 'vpc_id') {
+        return apiError(404, 'not_found', fieldError.reason)
+      }
+      if (fieldError.field === 'cidr' && fieldError.reason.includes('overlaps')) {
+        return apiError(409, 'conflict', fieldError.reason)
+      }
+      return invalidArgument(fieldError.field, fieldError.reason)
+    }
+    const { total, usable } = subnetAddresses(body.cidr)
+    const subnet: Subnet = {
+      id: nextResourceID('subnet'),
+      vpc_id: body.vpc_id,
+      name: body.name,
+      cidr: body.cidr,
+      total_ips: total,
+      usable_ips: usable,
+      allocated_ips: 0,
+      is_default: false,
+      created_at: '2026-01-06T07:30:00Z',
+      updated_at: '2026-01-06T07:30:00Z',
+      tags: { ...body.tags },
+    }
+    subnets = [subnet, ...subnets]
+    return HttpResponse.json(subnet, { status: 201 })
+  }),
+
+  http.get('/api/v1/subnets/:id', ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    const id = String(params.id)
+    const subnet = subnets.find((candidate) => candidate.id === id)
+    if (subnet === undefined) {
+      return apiError(404, 'not_found', `no subnet "${id}"`)
+    }
+    return HttpResponse.json(subnet)
+  }),
+
+  http.patch('/api/v1/subnets/:id', async ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const body = (await request.json()) as components['schemas']['UpdateTagsRequest']
+    const id = String(params.id)
+    const subnet = subnets.find((candidate) => candidate.id === id)
+    if (subnet === undefined) {
+      return apiError(404, 'not_found', `no subnet "${id}"`)
+    }
+    const updated: Subnet = {
+      ...subnet,
+      tags: { ...body.tags },
+      updated_at: '2026-01-06T08:00:00Z',
+    }
+    subnets = subnets.map((candidate) => (candidate.id === id ? updated : candidate))
+    return HttpResponse.json(updated)
+  }),
+
+  // A subnet an interface still holds an address from is a 409; otherwise the
+  // row disappears with a 204.
+  http.delete('/api/v1/subnets/:id', ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const id = String(params.id)
+    const subnet = subnets.find((candidate) => candidate.id === id)
+    if (subnet === undefined) {
+      return apiError(404, 'not_found', `no subnet "${id}"`)
+    }
+    if (subnet.allocated_ips > 0) {
+      return apiError(
+        409,
+        'conflict',
+        `the subnet "${subnet.name}" still has ${subnet.allocated_ips} allocated address${
+          subnet.allocated_ips === 1 ? '' : 'es'
+        }; terminate the instances first`,
+      )
+    }
+    subnets = subnets.filter((candidate) => candidate.id !== id)
+    return new HttpResponse(null, { status: 204 })
   }),
 
   // ----------------------------------------------------------------- tasks ---
@@ -1357,6 +2030,12 @@ function validateLaunch(
   }
   if (!presets.some((preset) => preset.id === body.instance_type)) {
     return { field: 'instance_type', reason: `no instance type "${body.instance_type}"` }
+  }
+
+  // The subnet is optional and defaults to the default subnet of the default
+  // VPC, but a name that names one must be a real one (M4b.3).
+  if (body.subnet_id !== undefined && !subnets.some((subnet) => subnet.id === body.subnet_id)) {
+    return { field: 'subnet_id', reason: `no subnet "${body.subnet_id}"` }
   }
 
   if (body.root_disk_gb !== undefined) {
