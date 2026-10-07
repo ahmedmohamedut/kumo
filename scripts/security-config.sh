@@ -198,6 +198,24 @@ configure_selinux() {
 	fi
 }
 
+# Plain Unix permissions are checked independently of the MAC layer: libvirt
+# probes disk images as the qemu user (uid 107 on Fedora/RHEL, libvirt-qemu on
+# Debian/Ubuntu) before launching a guest, so that user must be able to
+# traverse every directory down to the images. Add search (o+x) only; this
+# does not make the directories listable or readable by others.
+ensure_traversal() {
+	local d
+	mkdir -p "$DATA_DIR/pools/images" "$DATA_DIR/pools/instances" "$DATA_DIR/console"
+	for d in "$DATA_DIR" "$DATA_DIR/pools" "$DATA_DIR/pools/images" "$DATA_DIR/pools/instances"; do
+		if [[ "$(stat -c %a -- "$d")" != *[1357] ]]; then
+			chmod o+x -- "$d"
+			log "permissions: added search (o+x) on $d"
+		fi
+	done
+}
+
+ensure_traversal
+
 case "${MAC:-auto}" in
 apparmor)
 	configure_apparmor
