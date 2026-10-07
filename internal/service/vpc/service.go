@@ -141,6 +141,11 @@ type Options struct {
 	Store      *store.Store
 	Hypervisor hypervisor.Hypervisor
 	Tasks      *task.Service
+	// DefaultVPCCIDR is the range a fresh default VPC gets when Bootstrap finds
+	// no row and no network to adopt. Empty means the documented guest range
+	// (192.168.100.0/24), the same default the config package resolves
+	// KUMO_DEFAULT_VPC_CIDR to.
+	DefaultVPCCIDR string
 	// Subnets creates the default subnet of the default VPC during Bootstrap.
 	Subnets *subnet.Service
 	// Locks serializes the operations of one VPC. A nil value gets a set of its
@@ -161,17 +166,22 @@ var (
 	// this codebase cannot produce; it marks a bug rather than a runtime
 	// condition.
 	ErrBadTaskPayload = errors.New("vpc: bad task payload")
+	// ErrInvalidDefaultCIDR means Options.DefaultVPCCIDR cannot back a network,
+	// which fails the constructor instead of the first boot after a fresh
+	// database.
+	ErrInvalidDefaultCIDR = errors.New("vpc: invalid default VPC CIDR")
 )
 
 // Service owns VPCs.
 type Service struct {
-	logger  *slog.Logger
-	store   *store.Store
-	hv      hypervisor.Hypervisor
-	tasks   *task.Service
-	subnets *subnet.Service
-	locks   *locks.Set
-	now     func() time.Time
+	logger         *slog.Logger
+	store          *store.Store
+	hv             hypervisor.Hypervisor
+	tasks          *task.Service
+	subnets        *subnet.Service
+	locks          *locks.Set
+	now            func() time.Time
+	defaultVPCCIDR string
 }
 
 // New builds the service.
@@ -192,15 +202,25 @@ func New(opts Options) (*Service, error) {
 	if opts.Locks == nil {
 		opts.Locks = locks.New()
 	}
+	if opts.DefaultVPCCIDR == "" {
+		opts.DefaultVPCCIDR = defaultVPCCIDR
+	}
+	// The range has to back a real network; refusing it here keeps a bad
+	// KUMO_DEFAULT_VPC_CIDR from failing the first boot after a fresh database
+	// instead of at config load.
+	if _, err := network.ValidateVPCCIDR(opts.DefaultVPCCIDR); err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidDefaultCIDR, opts.DefaultVPCCIDR)
+	}
 
 	return &Service{
-		logger:  opts.Logger,
-		store:   opts.Store,
-		hv:      opts.Hypervisor,
-		tasks:   opts.Tasks,
-		subnets: opts.Subnets,
-		locks:   opts.Locks,
-		now:     opts.Now,
+		logger:         opts.Logger,
+		store:          opts.Store,
+		hv:             opts.Hypervisor,
+		tasks:          opts.Tasks,
+		subnets:        opts.Subnets,
+		locks:          opts.Locks,
+		now:            opts.Now,
+		defaultVPCCIDR: opts.DefaultVPCCIDR,
 	}, nil
 }
 

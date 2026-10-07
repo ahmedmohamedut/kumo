@@ -176,6 +176,20 @@ func TestNewValidatesItsDependencies(t *testing.T) {
 	}); !errors.Is(err, ErrNoTasks) {
 		t.Errorf("New() error = %v, want ErrNoTasks", err)
 	}
+
+	tasks, err := task.New(task.Options{Store: storetest.New(t)})
+	if err != nil {
+		t.Fatalf("task.New(): %v", err)
+	}
+	// A default CIDR that could not back a network fails the constructor, so a
+	// bad KUMO_DEFAULT_VPC_CIDR surfaces at boot before the first launch, not
+	// when a fresh database reaches Bootstrap.
+	if _, err := New(Options{
+		Logger: logging.Discard(), Store: storetest.New(t), Hypervisor: fake.New(fake.Config{}),
+		Tasks: tasks, DefaultVPCCIDR: "8.8.8.0/24",
+	}); !errors.Is(err, ErrInvalidDefaultCIDR) {
+		t.Errorf("New() error = %v, want ErrInvalidDefaultCIDR", err)
+	}
 }
 
 func TestCreateQueuesTheNetworkTask(t *testing.T) {

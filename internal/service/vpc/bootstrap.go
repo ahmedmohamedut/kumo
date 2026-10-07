@@ -130,9 +130,9 @@ func (s *Service) adoptDefault(ctx context.Context, name string, info hypervisor
 // CIDR, the mode and the bridge follow docs/design/04 §6: the documented guest
 // range, NAT, and kmb plus the first 8 hex characters of the VPC id.
 func (s *Service) createDefault(ctx context.Context) (VPC, error) {
-	prefix, err := netip.ParsePrefix(defaultVPCCIDR)
+	prefix, err := netip.ParsePrefix(s.defaultVPCCIDR)
 	if err != nil {
-		return VPC{}, fmt.Errorf("the default VPC CIDR %q does not parse: %w", defaultVPCCIDR, err)
+		return VPC{}, fmt.Errorf("the default VPC CIDR %q does not parse: %w", s.defaultVPCCIDR, err)
 	}
 
 	collision, err := hostCollision(prefix)
@@ -140,7 +140,10 @@ func (s *Service) createDefault(ctx context.Context) (VPC, error) {
 		return VPC{}, fmt.Errorf("scan the host routes for overlapping networks: %w", err)
 	}
 	if collision != "" {
-		return VPC{}, fmt.Errorf("%w: the default VPC CIDR %s overlaps %s",
+		// The operator's LAN owns this block. The message spells the way out,
+		// because a block that cannot be reclaimed is not something the row
+		// should half-create and roll back: it hints at KUMO_DEFAULT_VPC_CIDR.
+		return VPC{}, fmt.Errorf("%w: the default VPC CIDR %s overlaps %s; set KUMO_DEFAULT_VPC_CIDR to a free RFC 1918 range (e.g. 172.31.0.0/16)",
 			service.ErrConflict, prefix, collision)
 	}
 

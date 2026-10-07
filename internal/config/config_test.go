@@ -35,6 +35,7 @@ func TestLoadDefaults(t *testing.T) {
 		PoolImages:       "kumo-images",
 		PoolInstances:    "kumo-instances",
 		Network:          "kumo-default",
+		DefaultVPCCIDR:   config.DefaultVPCCIDR,
 		JWTSecretFile:    "/var/lib/kumo/jwt.key",
 		AccessTTL:        15 * time.Minute,
 		RefreshTTL:       168 * time.Hour,
@@ -115,6 +116,19 @@ func TestLoadFromEnv(t *testing.T) {
 				}
 				if cfg.Network != "virbr0" {
 					t.Errorf("Network = %q", cfg.Network)
+				}
+				if cfg.DefaultVPCCIDR != config.DefaultVPCCIDR {
+					t.Errorf("DefaultVPCCIDR = %q, want the default %q", cfg.DefaultVPCCIDR, config.DefaultVPCCIDR)
+				}
+			},
+		},
+		{
+			name: "default vpc cidr override",
+			env:  map[string]string{"KUMO_DEFAULT_VPC_CIDR": "172.31.0.0/16"},
+			check: func(t *testing.T, cfg *config.Config) {
+				t.Helper()
+				if cfg.DefaultVPCCIDR != "172.31.0.0/16" {
+					t.Errorf("DefaultVPCCIDR = %q, want 172.31.0.0/16", cfg.DefaultVPCCIDR)
 				}
 			},
 		},
@@ -311,6 +325,10 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		{name: "zero vcpu overcommit", env: map[string]string{"KUMO_VCPU_OVERCOMMIT": "0"}},
 		{name: "negative vcpu overcommit", env: map[string]string{"KUMO_VCPU_OVERCOMMIT": "-2"}},
 		{name: "vcpu overcommit not a number", env: map[string]string{"KUMO_VCPU_OVERCOMMIT": "many"}},
+		{name: "default vpc cidr not a cidr", env: map[string]string{"KUMO_DEFAULT_VPC_CIDR": "172.31.0.0"}},
+		{name: "default vpc cidr not rfc1918", env: map[string]string{"KUMO_DEFAULT_VPC_CIDR": "8.8.8.0/24"}},
+		{name: "default vpc cidr too large", env: map[string]string{"KUMO_DEFAULT_VPC_CIDR": "172.31.0.0/15"}},
+		{name: "default vpc cidr has host bits", env: map[string]string{"KUMO_DEFAULT_VPC_CIDR": "172.31.0.5/16"}},
 		{name: "unknown log level", env: map[string]string{"KUMO_LOG_LEVEL": "trace"}},
 	}
 

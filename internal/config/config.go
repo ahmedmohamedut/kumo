@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ahmedmohamedut/kumo/internal/network"
 )
 
 // Sentinel errors so callers (and tests) can classify configuration problems
@@ -55,11 +57,12 @@ type Config struct {
 	ImageAllowPrivateURLs bool
 
 	// Hypervisor
-	Hypervisor    string
-	LibvirtURI    string
-	PoolImages    string
-	PoolInstances string
-	Network       string
+	Hypervisor     string
+	LibvirtURI     string
+	PoolImages     string
+	PoolInstances  string
+	Network        string
+	DefaultVPCCIDR string
 
 	// Auth
 	JWTSecretFile string
@@ -92,6 +95,11 @@ const (
 	DefaultPoolImages    = "kumo-images"
 	DefaultPoolInstances = "kumo-instances"
 	DefaultNetwork       = "kumo-default"
+	// DefaultVPCCIDR is the range of the default VPC a fresh boot creates. It is
+	// the guest range of docs/design/04-libvirt-integration.md §3; an operator
+	// whose LAN already owns that block overrides it with KUMO_DEFAULT_VPC_CIDR,
+	// because a NAT guest network must never shadow a host route.
+	DefaultVPCCIDR       = "192.168.100.0/24"
 	DefaultAccessTTL     = 15 * time.Minute
 	DefaultRefreshTTL    = 168 * time.Hour
 	DefaultCookieSecure  = true
@@ -123,6 +131,7 @@ func Load() (*Config, error) {
 		PoolImages:       DefaultPoolImages,
 		PoolInstances:    DefaultPoolInstances,
 		Network:          DefaultNetwork,
+		DefaultVPCCIDR:   DefaultVPCCIDR,
 		AccessTTL:        DefaultAccessTTL,
 		RefreshTTL:       DefaultRefreshTTL,
 		StopTimeout:      DefaultStopTimeout,
@@ -155,6 +164,9 @@ func Load() (*Config, error) {
 	}
 	if v, ok := os.LookupEnv("KUMO_NETWORK"); ok {
 		cfg.Network = v
+	}
+	if v, ok := os.LookupEnv("KUMO_DEFAULT_VPC_CIDR"); ok {
+		cfg.DefaultVPCCIDR = v
 	}
 	if v, ok := os.LookupEnv("KUMO_COOKIE_SECURE"); ok {
 		b, err := strconv.ParseBool(v)
@@ -314,6 +326,9 @@ func (c *Config) Validate() error {
 	}
 	if c.VCPUOvercommit < 1 {
 		return fmt.Errorf("%w: KUMO_VCPU_OVERCOMMIT must be >= 1, got %d", ErrInvalidValue, c.VCPUOvercommit)
+	}
+	if _, err := network.ValidateVPCCIDR(c.DefaultVPCCIDR); err != nil {
+		return fmt.Errorf("%w: KUMO_DEFAULT_VPC_CIDR: %w", ErrInvalidValue, err)
 	}
 	return nil
 }

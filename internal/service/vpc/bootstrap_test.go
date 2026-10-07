@@ -32,8 +32,10 @@ func newBootstrapHarness(t *testing.T, subnets *subnet.Service) harness {
 }
 
 // newBootstrapHarnessOn builds the stack over an explicit store, so a test can
-// point the subnet service at a different database on purpose.
-func newBootstrapHarnessOn(t *testing.T, db *store.Store, subnets *subnet.Service) harness {
+// point the subnet service at a different database on purpose. Overrides apply
+// to the Options after the defaults, so a test can hand the service an
+// operator's KUMO_DEFAULT_VPC_CIDR for example.
+func newBootstrapHarnessOn(t *testing.T, db *store.Store, subnets *subnet.Service, overrides ...func(*Options)) harness {
 	t.Helper()
 
 	// A fixed, collision-free answer keeps the fresh default from depending on
@@ -46,14 +48,18 @@ func newBootstrapHarnessOn(t *testing.T, db *store.Store, subnets *subnet.Servic
 	if err != nil {
 		t.Fatalf("task.New(): %v", err)
 	}
-	svc, err := New(Options{
+	opts := Options{
 		Logger:     logging.Discard(),
 		Store:      db,
 		Hypervisor: hv,
 		Tasks:      tasks,
 		Subnets:    subnets,
 		Now:        func() time.Time { return now },
-	})
+	}
+	for _, apply := range overrides {
+		apply(&opts)
+	}
+	svc, err := New(opts)
 	if err != nil {
 		t.Fatalf("vpc.New(): %v", err)
 	}
@@ -303,8 +309,58 @@ func TestBootstrapFreshCreateRejectsAHostCollision(t *testing.T) {
 	if !strings.Contains(err.Error(), "192.168.100.0/24") {
 		t.Errorf("the collision message does not name the default CIDR: %v", err)
 	}
+	if !strings.Contains(err.Error(), "KUMO_DEFAULT_VPC_CIDR") {
+		t.Errorf("the collision message does not hint at KUMO_DEFAULT_VPC_CIDR: %v", err)
+	}
 	if countVPCs(t, h) != 0 {
 		t.Error("the refused boot wrote a row")
+	}
+}
+
+// TestBootstrapFreshCreateUsesTheConfiguredCIDR covers the operator override: a
+// host whose LAN already owns the documented guest range boots with
+// KUMO_DEFAULT_VPC_CIDR set, and everything that derives from the range — the
+// gateway, the netmask, the default subnet half-split — follows it instead of
+// the default.
+func TestBootstrapFreshCreateUsesTheConfiguredCIDR(t *testing.T) {
+	db := storetest.New(t)
+	h := newBootstrapHarnessOn(t, db, wiredSubnets(t, db), func(opts *Options) {
+		opts.DefaultVPCCIDR = "172.31.0.0/16"
+	})
+
+	got, err := h.svc.Bootstrap(context.Background(), "kumo-default")
+	if err != nil {
+		t.Fatalf("Bootstrap() error = %v", err)
+	}
+
+	if got.CIDR != "172.31.0.0/16" {
+		t.Errorf("CIDR = %q, want the configured 172.31.0.0/16", got.CIDR)
+	}
+	if got.GatewayIP != "172.31.0.1" || got.Netmask != "255.255.0.0" {
+		t.Errorf("gateway/netmask = %q/%q, want 172.31.0.1/255.255.0.0", got.GatewayIP, got.Netmask)
+	}
+
+	networks := h.hv.Networks()
+	if len(networks) != 1 || networks[0].CIDR != "172.31.0.0/16" {
+		t.Fatalf("networks = %+v, want the configured range on the libvirt network", networks)
+	}
+
+	// The default subnet halves the configured VPC: 172.31.0.0/17, 32765
+	// usable addresses.
+	page, err := h.sub.List(context.Background(), subnet.ListInput{PageSize: 10, VpcID: got.ID})
+	if err != nil {
+		t.Fatalf("subnet.List() error = %v", err)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("default subnets = %+v, want exactly one", page.Items)
+	}
+	sub := page.Items[0]
+	if sub.CIDR != "172.31.0.0/17" {
+		t.Errorf("default subnet CIDR = %q, want the half-split 172.31.0.0/17", sub.CIDR)
+	}
+	if sub.TotalIPs != 32768 || sub.UsableIPs != 32765 || sub.AllocatedIPs != 0 {
+		t.Errorf("subnet counts = %d/%d/%d, want 32768/32765/0",
+			sub.TotalIPs, sub.UsableIPs, sub.AllocatedIPs)
 	}
 }
 

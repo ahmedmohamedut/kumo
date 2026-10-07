@@ -135,11 +135,12 @@ func serve(ctx context.Context, stdout io.Writer) error {
 	// The vpc service owns the default VPC's bootstrap and the task handlers
 	// that define, start, destroy and undefine a VPC's libvirt network.
 	vpcs, err := vpc.New(vpc.Options{
-		Logger:     logger,
-		Store:      db,
-		Hypervisor: hv,
-		Tasks:      tasks,
-		Subnets:    subnets,
+		Logger:         logger,
+		Store:          db,
+		Hypervisor:     hv,
+		Tasks:          tasks,
+		Subnets:        subnets,
+		DefaultVPCCIDR: cfg.DefaultVPCCIDR,
 	})
 	if err != nil {
 		return fmt.Errorf("build the VPC service: %w", err)
