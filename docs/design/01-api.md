@@ -5,7 +5,7 @@ Source of truth for schemas is `api/openapi.yaml` (to be written in M0 from this
 
 ## Conventions
 
-- Resource IDs: `i-…`, `img-…`, `key-…`, `task-…`.
+- Resource IDs: `i-…`, `img-…`, `key-…`, `vpc-…`, `subnet-…`, `task-…`.
 - Timestamps: RFC3339 UTC.
 - List endpoints: `?page_size=50&page_token=…&sort=created_at:desc&q=<name substring>`; response `{ "items": [...], "next_page_token": "..." }`.
 - Async operations return `202 Accepted` with the resource (transitional state) and `Location: /api/v1/tasks/<id>`.
@@ -115,11 +115,12 @@ should show the state until a percentage exists (M3.3).
 Launch request:
 ```json
 { "name": "web-1", "image_id": "img-…", "instance_type": "kumo.small",
+  "subnet_id": "subnet-…",
   "key_pair_id": "key-…", "root_disk_gb": 20,
   "user_data": "#cloud-config\npackages: [nginx]\n",
   "count": 1, "tags": {"env":"dev"} }
 ```
-Validation: `name` 1–63 chars RFC-1123 label-ish; `root_disk_gb` ≥ image `min_disk_gb` (default: the image's virtual size rounded up), ≤ 2048; `user_data` ≤ 16 KiB; `count` must be 1 (a count above 1 is a `400` naming `count`: the field is in the contract for a release that launches several instances from one image, and naming them — `i-2-web`? `web-2`? — is a convention this document does not define, so the launch is refused rather than invented); image must be `available`; the instance type must exist; the host capacity check (`429` `quota_exceeded`).
+Validation: `name` 1–63 chars RFC-1123 label-ish; `subnet_id` optional (defaults to the default VPC's default subnet if omitted); if provided, subnet must exist; `root_disk_gb` ≥ image `min_disk_gb` (default: the image's virtual size rounded up), ≤ 2048; `user_data` ≤ 16 KiB; `count` must be 1 (a count above 1 is a `400` naming `count`: the field is in the contract for a release that launches several instances from one image, and naming them — `i-2-web`? `web-2`? — is a convention this document does not define, so the launch is refused rather than invented); image must be `available`; the instance type must exist; the host capacity check (`429` `quota_exceeded`).
 
 `POST /instances` answers `202` with the instance in `pending` and a `Location` header pointing at
 the task that tracks the launch. The boot itself (root disk, seed ISO, domain, address) happens in
@@ -184,13 +185,95 @@ Instance resource:
 { "id": "i-…", "name": "web-1", "state": "running", "state_reason": null,
   "image_id": "img-…", "image_name": "ubuntu-2404", "instance_type": "kumo.small",
   "vcpus": 1, "memory_mib": 2048, "root_disk_gb": 20, "key_pair_id": "key-…",
-  "key_pair_name": "laptop", "private_ip": "192.168.100.23",
-  "mac_address": "52:54:00:…", "user_data": null, "launched_at": "…",
+  "key_pair_name": "laptop", "vpc_id": "vpc-…", "subnet_id": "subnet-…",
+  "private_ip": "10.0.1.10", "mac_address": "52:54:00:…",
+  "network_interfaces": [
+    { "id": "eni-…", "device_index": 0, "mac_address": "52:54:00:…",
+      "private_ip": "10.0.1.10", "subnet_id": "subnet-…", "vpc_id": "vpc-…" }
+  ],
+  "user_data": null, "launched_at": "…",
   "terminated_at": null, "updated_at": "…", "tags": {}, "task_id": "task-…" }
 ```
 `user_data` is never returned by list; detail returns it only to admins. The libvirt uuid is on the
 row, not in the response: it is a backend detail the reconciler matches domains with, not something a
-user acts on.
+user acts on. `network_interfaces` returns the instance's interfaces (currently 1, modelled for more).
+On termination, the interface row is deleted while `private_ip` and `mac_address` remain on the
+instance for history.
+
+## VPCs
+
+One VPC corresponds to one libvirt network and one Linux bridge.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/vpcs` | List (`?page_size=`, `?page_token=`, `?sort=`, `?q=`) |
+| POST | `/vpcs` | Create (async, `202`, defines and starts libvirt network) |
+| GET | `/vpcs/{id}` | Detail (includes subnet count, instance count) |
+| PATCH | `/vpcs/{id}` | Update tags only (`name`, `cidr`, `mode` are immutable) |
+| DELETE | `/vpcs/{id}` | Delete (async, `202`). `409` if any subnets or instances exist |
+
+Create VPC request:
+```json
+{ "name": "production", "cidr": "10.0.0.0/16", "mode": "nat", "tags": {"env": "prod"} }
+```
+- `cidr`: required, RFC 1918 IPv4 between `/16` and `/28`. Must not overlap another VPC or any host interface address or route (excluding Kumo's own bridges).
+- `mode`: `nat` (libvirt forward mode `nat`) or `isolated` (no forward element). Default `nat`.
+- `name`: 1–63 chars, RFC-1123 label-ish, unique (`409` otherwise). The name seeds the DNS domain. Immutable once created.
+- `cidr`, `mode`, and `name` are immutable. Only `tags` are patchable.
+
+Create VPC response (`201` or `202` with `Location: /api/v1/tasks/<id>`):
+```json
+{ "id": "vpc-0a1b2c3d4e5f60718", "name": "production", "cidr": "10.0.0.0/16",
+  "mode": "nat", "gateway_ip": "10.0.0.1", "netmask": "255.255.0.0",
+  "bridge_name": "kmb0a1b2c3d", "libvirt_network": "vpc-0a1b2c3d4e5f60718",
+  "is_default": false, "created_at": "…", "updated_at": "…", "tags": {"env": "prod"} }
+```
+
+Validation rules:
+- VPC CIDR must be valid RFC 1918 (`10.0.0.0/8`, `172.16.0.0/12`, or `192.168.0.0/16`) and prefix length between `/16` and `/28`.
+- Must not overlap any other active VPC's CIDR.
+- Must not overlap any host interface address or route from the host's routing table (excluding Kumo's own bridges `kmb*` / `virbr-*`).
+- `gateway_ip` is automatically the first host address in the VPC CIDR (e.g. `10.0.0.1` for `10.0.0.0/16`).
+- Bridge name is `kmb` + first 8 hex characters of the VPC ID (fits Linux `IFNAMSIZ` 15 chars).
+- Deletion requires all subnets to be deleted first. If any subnets or live interfaces exist, delete is rejected with `409 conflict`.
+
+## Subnets
+
+Subnets are logical allocation partitions of their parent VPC's bridge. No L2 separation, no inter-subnet routing or filtering. Guests receive the VPC's netmask, so the gateway (`gateway_ip`) belongs to the VPC.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/subnets` | List (`?vpc_id=…`, `?page_size=`, `?page_token=`, `?sort=`, `?q=`) |
+| POST | `/subnets` | Create (synchronous, `201`) |
+| GET | `/subnets/{id}` | Detail (includes allocated IP count, available IP count) |
+| PATCH | `/subnets/{id}` | Update tags only (`name`, `cidr`, `vpc_id` are immutable) |
+| DELETE | `/subnets/{id}` | Delete. `409` if any active network interfaces reference it |
+
+Create Subnet request:
+```json
+{ "vpc_id": "vpc-0a1b2c3d4e5f60718", "name": "public-1", "cidr": "10.0.1.0/24", "tags": {} }
+```
+
+Create Subnet response (`201`):
+```json
+{ "id": "subnet-0a1b2c3d4e5f60718", "vpc_id": "vpc-0a1b2c3d4e5f60718",
+  "name": "public-1", "cidr": "10.0.1.0/24", "total_ips": 256,
+  "usable_ips": 253, "allocated_ips": 0, "is_default": false,
+  "created_at": "…", "updated_at": "…", "tags": {} }
+```
+
+Validation rules:
+- `vpc_id` must reference an existing VPC.
+- `cidr` must be fully contained within the parent VPC's CIDR, between `/16` and `/28`.
+- `cidr` must not overlap any sibling subnet in the same VPC (`409 already_exists` / `conflict`).
+- `name` 1–63 chars, unique within the VPC. Immutable.
+- Usable addresses: total IPs minus 2 (network address and broadcast address) minus 1 if the VPC's `gateway_ip` falls within this subnet. IPv4 only.
+- Delete is rejected (`409`) if any active instance/network interface is allocated from this subnet.
+
+Consistency:
+- State check and write share a single SQLite transaction (single writer), so a launch cannot slip into a subnet that a delete has just checked.
+- Kumo selects the lowest free usable IP in the subnet during the launch transaction.
+- dnsmasq only serves what Kumo allocates: a static `<host mac ip name>` entry is written to libvirt network before guest boot. No dynamic DHCP range is configured.
 
 `state_reason` carries why an instance is in `error` — a failed launch writes the reason it failed
 with (the step, and the error from the backend). `task_id` is the task of the most recent state

@@ -1,23 +1,26 @@
 #!/usr/bin/env bash
-# security-config.sh -- grant libvirt/qemu access to Kumo's storage pools under
+# security_config.sh -- grant libvirt/qemu access to Kumo's storage pools under
 # the host's mandatory access control (AppArmor or SELinux).
 #
 # Kumo's state lives under $KUMO_DATA_DIR (default /var/lib/kumo):
 #   pools/images/     base images, read on every boot
-#   pools/instances/  root disks and seed images, written by qemu-img
-#   console/          serial console logs, written by qemu
+#   pools/instances/  root disks and seed images, written by qemu-img / qemu
+#   console/          serial console logs, written by virtlogd on qemu's behalf
 #
-# On a fresh install nothing under /var/lib carries a type a confined qemu is
-# allowed to touch, so a first launch trips the MAC layer:
+# On a fresh install nothing under /var/lib carries a type a confined qemu or
+# virtlogd is allowed to touch, so a first launch trips the MAC layer:
 #   - AppArmor (Debian/Ubuntu): qemu-img is denied writing pools/instances;
-#   - SELinux (RHEL/Fedora/SUSE): same denial, as an AVC.
+#   - SELinux (RHEL/Fedora/SUSE): the same denial as an AVC, and virtlogd
+#     (virtlogd_t) is denied writing console/.
 #
 # This script is the idempotent fix. On AppArmor hosts it writes the two local
 # rule files under $AA_DIR/local/ (the mechanism the distro's libvirt
 # profiles already include) and reloads the profiles. On SELinux hosts it
-# records fcontext rules and relabels the trees virt_image_t, the type a qemu
-# domain (svirt_t) may read and write. Run it as root on every upgrade; it is
-# part of the release package.
+# records fcontext rules and relabels the trees:
+#   pools/images, pools/instances -> virt_image_t  (qemu / svirt_t read+write)
+#   console                       -> virt_log_t    (virtlogd_t creates logs)
+# Existing rules carrying a different type are corrected, not skipped.
+# Run it as root on every upgrade; it is part of the release package.
 #
 # Overrides:
 #   KUMO_DATA_DIR  where Kumo keeps its state (default /var/lib/kumo)
@@ -37,18 +40,17 @@ die()  { printf 'security-config: error: %s\n' "$*" >&2; exit 1; }
 
 [[ "$(id -u)" -eq 0 ]] || die "must run as root (sudo $0)"
 
-# Write a heredoc to a file only when its content changed, so repeated runs are
+# Write stdin to a file only when its content changed, so repeated runs are
 # quiet and never clobber an identical rule set.
 write_if_changed() {
 	local path="$1" tmp
 	tmp="$(mktemp)"
+	trap 'rm -f -- "$tmp"' RETURN
 	cat > "$tmp"
 	if [[ -f "$path" ]] && cmp -s -- "$path" "$tmp"; then
-		rm -f -- "$tmp"
 		log "unchanged: $path"
 	else
-		mv -- "$tmp" "$path"
-		chmod 644 -- "$path"
+		install -m 644 -- "$tmp" "$path"
 		log "wrote $path"
 	fi
 }
@@ -140,14 +142,21 @@ selinux_mode() {
 	fi
 }
 
+# Ensure an fcontext rule exists for $1 with type $2. Adds a missing rule,
+# modifies one carrying a different type, and leaves a correct one alone.
 add_fcontext() {
-	local target="$1" label="$2"
-	if semanage fcontext -l -C 2>/dev/null | grep -Fq -- " $target "; then
-		log "SELinux: fcontext rule already present for $target"
-	else
+	local target="$1" label="$2" line
+	line="$(semanage fcontext -l -C 2>/dev/null | grep -F -- " $target " || true)"
+	if [[ -z "$line" ]]; then
 		semanage fcontext -a -t "$label" -- "$target" \
 			&& log "SELinux: added fcontext rule $target -> $label" \
 			|| die "could not add fcontext rule for $target"
+	elif [[ "$line" != *":$label:"* ]]; then
+		semanage fcontext -m -t "$label" -- "$target" \
+			&& log "SELinux: updated fcontext rule $target -> $label" \
+			|| die "could not modify fcontext rule for $target"
+	else
+		log "SELinux: fcontext rule already present for $target ($label)"
 	fi
 }
 
@@ -172,12 +181,15 @@ configure_selinux() {
 		return 0
 	fi
 
-	log "SELinux: $mode; labeling Kumo's trees as virt_image_t"
+	log "SELinux: $mode; labeling Kumo's trees (pools: virt_image_t, console: virt_log_t)"
 	mkdir -p "$DATA_DIR/pools/images" "$DATA_DIR/pools/instances" "$DATA_DIR/console"
 
-	add_fcontext "$DATA_DIR/pools/images(/.*)?" virt_image_t
+	# Disk images: read/written by qemu (svirt_t).
+	add_fcontext "$DATA_DIR/pools/images(/.*)?"    virt_image_t
 	add_fcontext "$DATA_DIR/pools/instances(/.*)?" virt_image_t
-	add_fcontext "$DATA_DIR/console(/.*)?" virt_image_t
+	# Serial console logs: created by virtlogd (virtlogd_t), which may write
+	# virt_log_t but not virt_image_t.
+	add_fcontext "$DATA_DIR/console(/.*)?"         virt_log_t
 
 	if restorecon -Rv "$DATA_DIR"; then
 		log "SELinux: relabeled $DATA_DIR"

@@ -71,6 +71,34 @@ CREATE TABLE instance_types (
   description TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE vpcs (
+  id              TEXT PRIMARY KEY,              -- vpc-<17 hex>; also libvirt_network by default
+  name            TEXT NOT NULL UNIQUE,          -- immutable; seeds DNS domain
+  cidr            TEXT NOT NULL,                 -- RFC 1918, /16 to /28, immutable
+  mode            TEXT NOT NULL DEFAULT 'nat' CHECK (mode IN ('nat','isolated')), -- immutable
+  gateway_ip      TEXT NOT NULL,                 -- first host IP of VPC CIDR (e.g. 10.0.0.1)
+  netmask         TEXT NOT NULL,                 -- e.g. 255.255.0.0
+  bridge_name     TEXT NOT NULL UNIQUE,          -- kmb<8 hex> (or virbr-default for adopted)
+  libvirt_network TEXT NOT NULL UNIQUE,          -- vpc-<17 hex> (or kumo-default for adopted)
+  is_default      INTEGER NOT NULL DEFAULT 0,
+  created_by      TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+
+CREATE TABLE subnets (
+  id          TEXT PRIMARY KEY,                  -- subnet-<17 hex>
+  vpc_id      TEXT NOT NULL REFERENCES vpcs(id), -- parent VPC
+  name        TEXT NOT NULL,                     -- unique per VPC, immutable
+  cidr        TEXT NOT NULL,                     -- contained within VPC CIDR, /16 to /28, immutable
+  is_default  INTEGER NOT NULL DEFAULT 0,
+  created_by  TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL,
+  UNIQUE (vpc_id, name)
+);
+CREATE INDEX idx_subnets_vpc ON subnets(vpc_id);
+
 CREATE TABLE instances (
   id             TEXT PRIMARY KEY,               -- i-<17 hex>; also the libvirt domain name
   name           TEXT NOT NULL,
@@ -86,8 +114,8 @@ CREATE TABLE instances (
   key_pair_name  TEXT,                           -- kept for display after key deletion
   user_data      TEXT,
   libvirt_uuid   TEXT,
-  mac_address    TEXT,
-  private_ip     TEXT,
+  mac_address    TEXT,                           -- history snapshot; kept after termination
+  private_ip     TEXT,                           -- history snapshot; kept after termination
   created_by     TEXT REFERENCES users(id) ON DELETE SET NULL,
   launched_at    TEXT NOT NULL,
   terminated_at  TEXT,
@@ -96,6 +124,19 @@ CREATE TABLE instances (
 CREATE INDEX idx_instances_state ON instances(state);
 CREATE INDEX idx_instances_image ON instances(image_id);
 CREATE UNIQUE INDEX idx_instances_name_live ON instances(name) WHERE state <> 'terminated';
+
+CREATE TABLE network_interfaces (
+  id           TEXT PRIMARY KEY,                 -- eni-<17 hex>
+  instance_id  TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+  subnet_id    TEXT NOT NULL REFERENCES subnets(id),
+  device_index INTEGER NOT NULL DEFAULT 0,       -- 0 for eth0, modelled for multi-NIC later
+  mac_address  TEXT NOT NULL UNIQUE,             -- 52:54:00:xx:xx:xx
+  private_ip   TEXT NOT NULL,                    -- allocated static IP in subnet
+  created_at   TEXT NOT NULL,
+  UNIQUE (instance_id, device_index)
+);
+CREATE INDEX idx_network_interfaces_subnet ON network_interfaces(subnet_id);
+CREATE UNIQUE INDEX idx_network_interfaces_ip_live ON network_interfaces(subnet_id, private_ip);
 
 CREATE TABLE tags (
   resource_id TEXT NOT NULL,
@@ -131,7 +172,10 @@ CREATE TABLE settings (
 ## Notes
 
 - `instances` keeps terminated rows for history (shown for a while in the UI, like AWS); the partial unique index lets names be reused after termination.
+- `network_interfaces` exists exactly as long as its instance is not terminated: it is deleted in the same transaction that sets `terminated_at`, while `instances.private_ip` and `instances.mac_address` preserve the allocation history.
 - `key_pair_name`/`vcpus`/`memory_mib` are denormalized snapshots so history survives deletions and preset changes.
+- `vpcs` and `subnets`: immutable attributes (`cidr`, `mode`, `name`, `vpc_id`) prevent accidental disruption of active routing and DNS domains. Only `tags` are editable.
+- Consistency from transactions: IP allocation, interface creation, and capacity reservation execute within a single SQLite transaction (single writer in WAL mode). A launch cannot slip into a subnet or VPC that a delete has just checked.
 - Tags: max 50/resource, key ≤ 128, value ≤ 256 chars. Orphan tags are cleaned when a resource is hard-deleted.
 - Deleting an image is refused (`409`) while **any** `instances` row references it, terminated ones included: a running instance still boots from the volume, and `instances.image_id` is `NOT NULL REFERENCES images(id)` with no `ON DELETE` clause, so removing a referenced image would fail on the foreign key *after* its volume was already gone. There is no `deleted` tombstone state in v1; if one is ever wanted, add it to the `state` CHECK enum in a new migration and keep the row with `volume_name = NULL`.
 - Never store private keys. `user_data` is stored plaintext (document that users shouldn't put long-lived secrets in it; same caveat as AWS).

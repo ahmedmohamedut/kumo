@@ -71,18 +71,20 @@ Setting `capacity` to the file size truncates a sparse qcow2 to its compressed l
 ## 3. Instance launch flow (task `instance.launch`)
 
 ```
-validate → reserve capacity → INSERT instance(state=pending) + task
-  1. CreateRootDisk: qcow2 volume in kumo-instances with
+validate (capacity + subnet IP allocation in 1 txn) → INSERT instance(state=pending) + eni + task
+  1. Allocate IP: lowest free usable IP in subnet; generate 52:54:00:… MAC
+  2. CreateRootDisk: qcow2 volume in kumo-instances with
        <backingStore><path>…/img-xxx.qcow2</path><format type='qcow2'/></backingStore>
        capacity = root_disk_gb GiB   (virtual size must be ≥ image virtual size)
-  2. CreateSeedISO (NoCloud): volume label "cidata", files:
+  3. CreateSeedISO (NoCloud): volume label "cidata", files:
        meta-data:  instance-id: <i-id>\nlocal-hostname: <name>
        user-data:  user's cloud-config, or generated default (see §4)
        (optional network-config v2: dhcp4 on all NICs)
-  3. Build domain XML (see §5) → DomainDefineXML → DomainCreate
-  4. Poll up to 120 s for state=running and a DHCP lease → store IP/MAC
-  5. UPDATE instance state=running; task succeeded
-on failure at step N: Undefine domain (if defined), delete root disk + seed ISO, state=error + reason
+  4. Write static DHCP host entry <host mac='…' ip='…' name='…'/> to libvirt network
+  5. Build domain XML (see §5) → DomainDefineXML → DomainCreate
+  6. Poll up to 120 s for state=running and domain responsiveness
+  7. UPDATE instance state=running; task succeeded
+on failure at step N: Undefine domain (if defined), remove static DHCP host, delete root disk + seed ISO, state=error + reason
 ```
 
 Seed ISO: build in pure Go (`github.com/kdomanski/iso9660`) → write into the instances pool dir → refresh pool. Fallback: shell out to `xorriso`/`genisoimage` only if the pure-Go path proves unreliable (ask first).
@@ -110,10 +112,10 @@ Behavior the steps above do not make obvious:
   failed to be recorded is the normal case, not an exceptional one.
 
 ### Terminate
-`Destroy` (ignore "not running") → `DomainUndefineFlags` (include NVRAM flag if UEFI) → delete `-root.qcow2` and `-seed.iso` → state `terminated`, `terminated_at` set. Idempotent: every step tolerates "already gone".
+`Destroy` (ignore "not running") → `DomainUndefineFlags` (include NVRAM flag if UEFI) → remove static DHCP host from libvirt network → delete `-root.qcow2` and `-seed.iso` → in 1 txn: delete `network_interfaces` row(s), set instance state `terminated` and `terminated_at`. Idempotent: every step tolerates "already gone".
 
-The row stays behind with `terminated_at` set (see `02-data-model.md`): it keeps the launch inputs
-for history and, through the partial unique index on the name, releases the name for reuse. So
+The row stays behind with `terminated_at` set (see `02-data-model.md`): it keeps the launch inputs,
+`private_ip` and `mac_address` for history and, through the partial unique index on the name, releases the name for reuse. So
 `DeleteInstance` has no caller — the row *is* the history, and only a purge would delete it.
 
 Every terminate step treats "no such domain" as done, which is what makes the workflow safe to run
@@ -249,11 +251,58 @@ Implementation notes:
 - UEFI/aarch64 support is out of scope for M4; leave `Firmware` field in `DomainSpec` for later (`<os firmware='efi'>`).
 - Honor `/dev/kvm` absence: `EnsureInfra`/`Ping` should report `kvm: false` in `/system/info`, and launches fail with `unavailable`.
 
-## 6. Networking (MVP)
+## 6. Networking: VPCs & Subnets
 
-- NAT network `kumo-default`, `192.168.100.0/24`, bridge `virbr-kumo`, DHCP range `.10–.250`, defined and autostarted in `EnsureInfra`.
-- Instances get private IPs only; reachable from the host. Document how to add routes / DNAT for LAN access. Bridged networking option is a post-MVP item (`KUMO_NETWORK` can point at an existing libvirt bridge network).
-- IP discovery: `DomainInterfaceAddresses(dom, DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE)`; fallback to `…_SRC_AGENT` if qemu-guest-agent runs.
+### 6.1 VPC to libvirt network mapping
+
+- **One VPC = one libvirt network = one Linux bridge.**
+- Bridge naming: `kmb` + the first 8 hex characters of the VPC ID (e.g. `kmb0a1b2c3d`). This guarantees bridge interface names fit Linux's 15-character `IFNAMSIZ` limit (`len("kmb") + 8 = 11 <= 15`).
+- Libvirt network naming: named after the VPC ID (e.g. `vpc-0a1b2c3d4e5f60718`), exactly as a domain is named after its instance ID.
+- Default network adoption: an existing default network (e.g. `kumo-default` with bridge `virbr-default`) is adopted on first run if found; its existing names are kept and persisted on the VPC row (`libvirt_network`, `bridge_name`).
+- Isolation: VPCs are isolated from each other by libvirt's forwarding rules and distinct bridges.
+
+### 6.2 Forwarding modes
+
+- `mode: "nat"`: libvirt `<forward mode='nat'><nat><port start='1024' end='65535'/></nat></forward>`. Outbound Internet/LAN access via host NAT.
+- `mode: "isolated"`: no `<forward>` element in the libvirt network XML. Guests communicate only with other guests on the same VPC and with the host gateway.
+- `cidr`, `mode`, and `name` are immutable once the VPC is created. The VPC `name` seeds the libvirt network DNS domain (`<domain name='...'/>`). Only `tags` are patchable.
+
+### 6.3 Subnets: logical partitions
+
+- **Subnets are logical.** A subnet is a DB-only allocation partition of its VPC's bridge.
+- No L2 separation, no inter-subnet routing or filtering.
+- Guests receive the parent VPC's netmask, so the gateway (`gateway_ip`, the first host address of the VPC CIDR) belongs to the VPC, not to the subnet.
+
+### 6.4 IP & MAC allocation: Kumo allocates, dnsmasq only serves
+
+- **Kumo is the sole allocator.** Libvirt's `<dhcp>` block contains **no dynamic `<range>` element**.
+- When an instance is launched, Kumo chooses:
+  1. The lowest free usable IPv4 address in the chosen subnet (excluding subnet network, broadcast, and VPC gateway addresses).
+  2. A locally administered unicast MAC address (`52:54:00:xx:xx:xx`).
+- Both are recorded in `network_interfaces` inside the launch transaction.
+- Before the domain boots, Kumo writes a static DHCP host entry to the libvirt network via `virNetworkUpdate` (`VIR_NETWORK_UPDATE_COMMAND_ADD_LAST`, section `VIR_NETWORK_SECTION_IP_DHCP_HOST`):
+  ```xml
+  <host mac='52:54:00:12:34:56' name='web-1' ip='10.0.1.10'/>
+  ```
+- dnsmasq serves exactly what Kumo configured. This guarantees IP and MAC stability across instance stop/start cycles.
+- On instance termination, the static DHCP host entry is removed via `VIR_NETWORK_UPDATE_COMMAND_DELETE`, and the `network_interfaces` row is removed.
+
+### 6.5 Network interfaces
+
+- One interface per instance initially (`device_index = 0`), modelled for multi-NIC later.
+- An interface exists exactly as long as its instance is not terminated.
+- Deletion of the `network_interfaces` row occurs in the same transaction that sets `terminated_at`, while `instances.private_ip` and `instances.mac_address` preserve the history.
+
+### 6.6 Validation & collision prevention
+
+- VPC CIDR must be RFC 1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) and prefix length between `/16` and `/28`.
+- Subnet CIDR must sit strictly inside the parent VPC CIDR, between `/16` and `/28`, and not overlap any sibling subnet.
+- **Host route collision check:** Before defining a new VPC network in libvirt, Kumo inspects all host interface addresses and routing table entries. If the proposed VPC CIDR overlaps with any host route/interface, creation is rejected with `409 conflict` explaining the collision. Kumo's own bridges (`kmb*` and `virbr-*`) are excluded from this host scan, as existing VPC records already track them.
+
+### 6.7 Concurrency & consistency
+
+- State checks and writes share a single SQLite transaction (single writer in WAL mode). A launch cannot slip into a VPC or subnet that a delete has just checked.
+- Async tasks serialize on `vpc.LockKey(id)`.
 
 ## 7. Events & reconciliation
 

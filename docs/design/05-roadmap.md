@@ -68,6 +68,17 @@ Work through tasks **in order**, one per PR. Each task lists acceptance criteria
   Verified: 34 component tests (Vitest + Testing Library + MSW) over the list, the launch form and the detail page — the state cell carrying `state_reason`, a terminated row kept as history, the empty state, the URL filter, each action gated by state, `202` worded as accepted rather than finished, the terminate modal refusing a wrong name and the force-stop modal not asking for one, the launch form refusing a bad name, a too-small root disk and a duplicate name before any request, and the detail page's alert for an `error` instance, its tags, its console tail and its `404`. `npm run typecheck`, `oxlint` and `prettier --check` are clean, and the whole frontend suite (157 tests) passes.
   Not yet run here: the manual E2E is written up in `docs/testing.md` §3 — import, launch, confirm the guest has a DHCP address and a boot log, stop/start/reboot, terminate, and the image-delete `409` — but it has never been executed against a real libvirtd, and `TestLaunchBootsCirrOS` (`make test-libvirt`) is still unexercised on hardware. The component-test half of the AC is done; the manual-KVM half is documented and open.
 
+## M4b — VPCs & Subnets (networking)
+
+- [ ] **M4b.1 VPC & Subnet data model and libvirt infra**: migration for `vpcs`, `subnets`, `network_interfaces` tables; `Hypervisor` interface methods for VPC network define/start/destroy/undefine and static DHCP host add/delete; bridge naming (`kmb<8-hex>`); default network adoption; host route collision detection.
+  AC: unit tests for CIDR validation (RFC 1918, /16–/28, no overlap), host route collision scanner, bridge name generator; fake hypervisor implements network operations.
+- [ ] **M4b.2 VPC & Subnet service and API**: `internal/service/vpc` and `internal/service/subnet` with full CRUD; immutability checks (`cidr`, `mode`, `name`); transaction-level consistency for delete vs launch; openapi.yaml schemas.
+  AC: handler tests for VPC/Subnet endpoints; `409` on overlap and non-empty delete; viewer/admin role enforcement.
+- [ ] **M4b.3 Instance integration (static DHCP & ENI)**: wire instance launch to allocate IP/MAC from subnet in launch transaction, write static DHCP host entry before domain boot, clean up ENI and DHCP host on terminate; instance launch accepts optional `subnet_id`.
+  AC: fake hypervisor verifies static DHCP host entry created before start and deleted on terminate; address and MAC stable across stop/start; instance list/detail includes IP and interface info.
+- [ ] **M4b.4 VPC & Subnet UI**: VPC list/detail/create/delete; Subnet list/detail/create/delete; launch instance form updated with VPC/subnet selector.
+  AC: component tests for VPC and Subnet pages; subnet selector in launch form; delete modals with resource-in-use guards.
+
 ## M5 — Polish for first release (v0.1)
 
 - [ ] VNC web console (WebSocket proxy to `127.0.0.1:<vnc>`, noVNC in UI)

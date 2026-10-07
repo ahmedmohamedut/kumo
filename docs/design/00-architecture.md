@@ -4,14 +4,14 @@
 
 **Goals**
 - Run a private cloud on one or more KVM hosts with a 15-minute install.
-- AWS-like vocabulary and console UX (instances, images, key pairs, tags, instance types).
+- AWS-like vocabulary and console UX (instances, images, key pairs, VPCs, subnets, tags, instance types).
 - Single static binary + SQLite. Operationally boring.
 
 **Non-goals (this phase)**
 - Multi-node scheduling / clustering (design so it's possible later; ship single-node first)
 - EC2 API compatibility
 - Multi-tenancy / IAM-style policies (just `admin` and `viewer` roles)
-- Software-defined networking, security groups, load balancers, volumes (EBS-like) as separate resources
+- Advanced software-defined networking, security groups (nwfilter), load balancers, volumes (EBS-like) as separate resources
 - Live migration, snapshots, GPU passthrough
 
 ## 2. System overview
@@ -37,7 +37,7 @@
                                           ▼
                                 libvirtd → QEMU/KVM guests
                                 Storage pools: kumo-images, kumo-instances
-                                Network: libvirt NAT network "kumo-default"
+                                Networks: VPC libvirt networks (one per VPC, bridge kmb<8-hex>)
 ```
 
 ## 3. Key design decisions
@@ -54,6 +54,8 @@
 | D8 | REST + polling first; SSE later | Simplest thing that works |
 | D9 | sqlc + goose | Type-safe SQL, explicit migrations, agent-friendly |
 | D10 | Access JWT in memory + refresh cookie | Limits XSS impact of token theft |
+| D11 | One VPC = one libvirt network = one Linux bridge (`kmb` + 8 hex of VPC ID) | VPCs isolated by libvirt forwarding rules; subnets are logical DB partitions |
+| D12 | Static DHCP host entries; Kumo is sole IP allocator | dnsmasq only serves what Kumo assigns; IP/MAC stable across stop/start |
 
 ## 4. Concurrency & state model
 
@@ -61,7 +63,8 @@
   `pending → running ⇄ stopping → stopped → running`, `* → terminating → terminated`, `* → error`.
   Transitional states (`pending`, `stopping`, `terminating`) are owned by a task. Steady states are observed from libvirt.
 - **Tasks:** table `tasks` (`pending|running|succeeded|failed`). Worker pool (default 4) claims tasks with an atomic `UPDATE ... WHERE state='pending'`. On startup, tasks left `running` are marked `failed` (or retried if the type is idempotent) and the owning resource moves to `error` or is reconciled.
-- **Per-resource lock:** an in-process keyed mutex (`internal/worker/locks`) serializes operations on the same instance/image ID. Reject conflicting actions with `409`. A request takes the lock without waiting (so an operator pressing stop twice is told the instance is busy); a task waits for it, because two queued tasks for one instance are going to run in some order. An unfinished task row counts as busy too, since a task killed with the process holds no lock until it is requeued.
+- **Per-resource lock:** an in-process keyed mutex (`internal/worker/locks`) serializes operations on the same instance/image/VPC ID. Reject conflicting actions with `409`. A request takes the lock without waiting (so an operator pressing stop twice is told the instance is busy); a task waits for it, because two queued tasks for one instance are going to run in some order. An unfinished task row counts as busy too, since a task killed with the process holds no lock until it is requeued. Tasks operating on VPCs serialize on `vpc.LockKey(id)`.
+- **Consistency from transactions, not locks:** A state check and its write share one SQLite transaction (single writer via WAL mode), so a launch cannot slip into a VPC or subnet that a delete has just checked.
 - **Reconciler (every 10 s, plus libvirt lifecycle events):**
   1. List domains from libvirt, match by name == instance ID.
   2. DB instance without a domain and not `pending`/`terminated` → mark `error` (`domain_missing`).
@@ -79,7 +82,8 @@
 | `KUMO_LIBVIRT_URI` | `unix:///var/run/libvirt/libvirt-sock` | libvirt socket |
 | `KUMO_POOL_IMAGES` | `kumo-images` | libvirt storage pool for base images |
 | `KUMO_POOL_INSTANCES` | `kumo-instances` | pool for root disks and seed ISOs |
-| `KUMO_NETWORK` | `kumo-default` | libvirt network for instance NICs |
+| `KUMO_NETWORK` | `kumo-default` | default libvirt network adopted on first run if present |
+| `KUMO_DEFAULT_VPC_CIDR` | `192.168.100.0/24` | range of the default VPC a fresh boot creates; must be RFC 1918 and must not overlap any host LAN route (a NAT guest network never shadows the operator's own network), set this when your LAN already owns the default |
 | `KUMO_JWT_SECRET_FILE` | `$DATA_DIR/jwt.key` | auto-generated if missing (0600) |
 | `KUMO_ACCESS_TTL` | `15m` | access token lifetime |
 | `KUMO_REFRESH_TTL` | `168h` | refresh token lifetime |
@@ -126,7 +130,7 @@ memory- or disk-bound nodes; the endpoint reports that rather than hiding it.
 
 1. Load config, open SQLite (WAL, `busy_timeout=5000`, `foreign_keys=ON`), run embedded goose migrations.
 2. Ensure JWT key exists.
-3. Connect to hypervisor; **bootstrap**: ensure storage pools and network exist (create if missing: dir pools under `$DATA_DIR/pools/*`, NAT network `192.168.100.0/24` named `kumo-default`).
+3. Connect to hypervisor; **bootstrap**: ensure storage pools exist (dir pools under `$DATA_DIR/pools/*`). Ensure default VPC and subnet exist in DB and libvirt; if an existing `kumo-default` network is found, adopt it (storing its existing network and bridge names); otherwise create the default VPC network (`kmb` + 8 hex ID) with collision validation against host routes/interfaces.
 4. Create the staging directory (`$KUMO_IMAGE_TEMP_DIR`), where image downloads land before they become volumes.
 5. Seed the `kumo.*` `instance_types` presets. Seeding is idempotent (`INSERT OR IGNORE`), so a preset an operator tuned on the node survives a restart.
 6. Start worker + reconciler. The worker first *recovers* tasks left `running` by a previous process (back to `pending`, attempts preserved) and only then starts claiming.
