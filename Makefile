@@ -96,6 +96,10 @@ openapi: ## Validate api/openapi.yaml and regenerate the TypeScript types
 	# the generated file is formatted before the tree is checked again.
 	$(NPM) --prefix $(WEB) run format --if-present
 
+.PHONY: security-config
+security-config: ## Configure AppArmor/SELinux for Kumo's pools (run as root)
+	./scripts/security-config.sh
+
 .PHONY: version
 version: ## Print the version this build would carry
 	@echo "$(VERSION) ($(COMMIT))"
