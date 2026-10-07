@@ -927,6 +927,12 @@ export interface components {
       key_pair_name?: string | null
       private_ip?: string | null
       mac_address?: string | null
+      /** @description The VPC of the instance, read from its network interface. Null for a terminated instance. */
+      vpc_id?: string | null
+      /** @description The subnet the instance's interface belongs to. Null for a terminated instance. */
+      subnet_id?: string | null
+      /** @description The live interfaces of the instance. Empty for a terminated instance. */
+      network_interfaces?: components['schemas']['NetworkInterface'][]
       /** @description Only present for administrators; never returned by list. */
       user_data?: string | null
       /** @description The task of the most recent state change. */
@@ -939,6 +945,18 @@ export interface components {
       updated_at?: string
       tags?: components['schemas']['TagMap']
     }
+    NetworkInterface: {
+      /** @example eni-0a1b2c3d4e5f60718 */
+      id: string
+      /** @description 0 is eth0; multi-NIC instances will carry higher indexes. */
+      device_index: number
+      /** @example 52:54:00:0a:0b:0c */
+      mac_address: string
+      /** @description The address the launch allocated, served by dnsmasq. */
+      private_ip: string
+      subnet_id: string
+      vpc_id: string
+    }
     /** @enum {string} */
     InstanceState:
       'pending' | 'running' | 'stopping' | 'stopped' | 'terminating' | 'terminated' | 'error'
@@ -949,6 +967,11 @@ export interface components {
       instance_type: string
       /** @description Injects the public key into the guest. */
       key_pair_id?: string
+      /**
+       * @description Attaches the instance to one subnet. Omitted, it attaches to the
+       *     default subnet of the default VPC.
+       */
+      subnet_id?: string
       /** @description Defaults to the image's `min_disk_gb`. */
       root_disk_gb?: number
       /** @description Cloud-init payload, at most 16 KiB. Never logged. */

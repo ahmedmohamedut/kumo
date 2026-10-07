@@ -2,17 +2,22 @@ package instance
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/netip"
 	"path/filepath"
 	"strings"
 
 	"github.com/ahmedmohamedut/kumo/internal/id"
+	"github.com/ahmedmohamedut/kumo/internal/network"
 	"github.com/ahmedmohamedut/kumo/internal/service"
 	"github.com/ahmedmohamedut/kumo/internal/service/capacity"
 	"github.com/ahmedmohamedut/kumo/internal/service/image"
+	"github.com/ahmedmohamedut/kumo/internal/service/instancetype"
 	"github.com/ahmedmohamedut/kumo/internal/service/keypair"
+	"github.com/ahmedmohamedut/kumo/internal/service/subnet"
 	"github.com/ahmedmohamedut/kumo/internal/service/task"
 	"github.com/ahmedmohamedut/kumo/internal/store"
 	"github.com/ahmedmohamedut/kumo/internal/store/sqlc"
@@ -24,6 +29,9 @@ type LaunchInput struct {
 	ImageID      string
 	InstanceType string
 	KeyPairID    string
+	// SubnetID attaches the instance to one subnet. Empty attaches it to the
+	// default subnet of the default VPC.
+	SubnetID string
 	// RootDiskGB defaults to the image's min_disk_gb.
 	RootDiskGB int
 	UserData   string
@@ -111,57 +119,257 @@ func (s *Service) Launch(ctx context.Context, in LaunchInput) (Launched, error) 
 		return Launched{}, err
 	}
 
+	// The subnet the instance attaches to is resolved before the lock: an
+	// explicit id that does not exist is a 400, and an omitted one names the
+	// default subnet (which missing is a conflict the operator must build away).
+	allocSubnet, err := s.resolveLaunchSubnet(ctx, in.SubnetID)
+	if err != nil {
+		return Launched{}, err
+	}
+
+	// A launch allocates out of the subnet inside the transaction below while a
+	// subnet delete would remove the row; both take the very same key the
+	// subnet service deletes under, so a launch that races a delete refuses
+	// instead of allocating out of a range that vanishes underneath it
+	// (docs/design/01-api.md §Subnets).
+	release, err := s.subnetLocks.TryAcquire(subnet.LockKey(allocSubnet.ID), "launch")
+	if err != nil {
+		holder, held := s.subnetLocks.Holder(subnet.LockKey(allocSubnet.ID))
+		if !held {
+			// Unreachable in practice: a held lock is what made TryAcquire fail.
+			holder = "another operation"
+		}
+		return Launched{}, fmt.Errorf("%w: the subnet %q is busy with %s",
+			service.ErrConflict, allocSubnet.ID, holder)
+	}
+	defer release()
+
 	var launched Instance
-	err = s.store.WithTx(ctx, func(ctx context.Context, tx *store.Tx) error {
-		now := formatTime(s.now())
-		row, err := tx.CreateInstance(ctx, sqlc.CreateInstanceParams{
-			ID:           newInstanceID(),
-			Name:         in.Name,
-			State:        string(StatePending),
-			StateReason:  sql.NullString{},
-			ImageID:      source.ID,
-			InstanceType: preset.ID,
-			Vcpus:        int64(preset.VCPUs),
-			MemoryMib:    int64(preset.MemoryMiB),
-			RootDiskGb:   int64(in.RootDiskGB),
-			KeyPairID:    nullableString(keyPair.ID),
-			KeyPairName:  nullableString(keyPair.Name),
-			UserData:     nullableString(in.UserData),
-			CreatedBy:    nullableString(in.CreatedBy),
-			LaunchedAt:   now,
-			UpdatedAt:    now,
-		})
-		if err != nil {
-			if isUniqueViolation(err) {
-				return fmt.Errorf("%w: an instance named %q already exists",
-					service.ErrAlreadyExists, in.Name)
-			}
-			return fmt.Errorf("create the instance row: %w", err)
-		}
-
-		if err := replaceTags(ctx, tx, row.ID, in.Tags); err != nil {
-			return err
-		}
-
-		created, err := s.tasks.CreateInTx(ctx, tx, task.TypeInstanceLaunch, row.ID,
-			launchPayload{InstanceID: row.ID})
-		if err != nil {
-			return err
-		}
-
-		launched = instanceFromRow(row, imageName{ID: source.ID, Name: source.Name}, in.Tags)
-		launched.TaskID = &created.ID
-		return nil
-	})
+	err = s.launchInTx(ctx, in, preset, source, keyPair, allocSubnet, &launched)
 	if err != nil {
 		return Launched{}, err
 	}
 
 	s.logger.InfoContext(ctx, "instance: launch queued",
 		"instance_id", launched.ID, "name", launched.Name,
-		"image_id", launched.ImageID, "instance_type", launched.InstanceType, "task_id", deref(launched.TaskID))
+		"image_id", launched.ImageID, "instance_type", launched.InstanceType,
+		"subnet_id", launched.SubnetID, "task_id", deref(launched.TaskID))
 
 	return launched, nil
+}
+
+// launchInTx writes the instance row, its interface and its launch task, retrying
+// the whole transaction when the address allocation collides with another
+// launch. The collision only shows up at write time, because the read of the
+// allocated addresses and the insert that claims one are two statements; the
+// unique index on (subnet_id, private_ip) is what turns the race into an error,
+// and a fresh allocation is what resolves it.
+func (s *Service) launchInTx(ctx context.Context, in LaunchInput, preset instancetype.Type,
+	source image.LaunchSource, keyPair keypair.Detail, allocSubnet sqlc.Subnet, launched *Instance) error {
+	var err error
+	for attempt := 0; attempt < maxLaunchAllocationAttempts; attempt++ {
+		err = s.store.WithTx(ctx, func(ctx context.Context, tx *store.Tx) error {
+			return s.launchAllocate(ctx, tx, in, preset, source, keyPair, allocSubnet, launched)
+		})
+		if err == nil {
+			return nil
+		}
+		// A collision is retryable, and so is a busy database: both raced
+		// another launch and both resolve by trying again.
+		if !errors.Is(err, errMACConflict) && !isDBLocked(err) {
+			return err
+		}
+	}
+	return err
+}
+
+// launchAllocate performs one launch transaction: it allocates an address and a
+// MAC, writes the instance row, its interface and the launch task, and projects
+// the answer. The rows and the allocation live in one transaction so a launch
+// that fails half way leaves nothing allocated behind it.
+func (s *Service) launchAllocate(ctx context.Context, tx *store.Tx, in LaunchInput, preset instancetype.Type,
+	source image.LaunchSource, keyPair keypair.Detail, allocSubnet sqlc.Subnet, launched *Instance) error {
+	now := formatTime(s.now())
+
+	// The gateway is the one address of the VPC that is never for sale; the
+	// subnet row only carries its own CIDR.
+	vpcRow, err := tx.GetVPC(ctx, sqlc.GetVPCParams{ID: allocSubnet.VpcID})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: the VPC %q of the subnet %q is gone",
+				service.ErrConflict, allocSubnet.VpcID, allocSubnet.ID)
+		}
+		return fmt.Errorf("read the VPC %q: %w", allocSubnet.VpcID, err)
+	}
+	gateway, err := netip.ParseAddr(vpcRow.GatewayIp)
+	if err != nil {
+		return fmt.Errorf("parse the gateway %q of VPC %q: %w", vpcRow.GatewayIp, vpcRow.ID, err)
+	}
+
+	allocated, err := tx.ListAllocatedIPsInSubnet(ctx, sqlc.ListAllocatedIPsInSubnetParams{SubnetID: allocSubnet.ID})
+	if err != nil {
+		return fmt.Errorf("list the allocated addresses of subnet %q: %w", allocSubnet.ID, err)
+	}
+	ip, err := allocateIP(allocSubnet.Cidr, gateway, allocated)
+	if err != nil {
+		return err
+	}
+	mac := randomMAC()
+
+	instanceID := newInstanceID()
+	row, err := tx.CreateInstance(ctx, sqlc.CreateInstanceParams{
+		ID:           instanceID,
+		Name:         in.Name,
+		State:        string(StatePending),
+		StateReason:  sql.NullString{},
+		ImageID:      source.ID,
+		InstanceType: preset.ID,
+		Vcpus:        int64(preset.VCPUs),
+		MemoryMib:    int64(preset.MemoryMiB),
+		RootDiskGb:   int64(in.RootDiskGB),
+		KeyPairID:    nullableString(keyPair.ID),
+		KeyPairName:  nullableString(keyPair.Name),
+		UserData:     nullableString(in.UserData),
+		MacAddress:   nullableString(mac),
+		PrivateIp:    nullableString(ip.String()),
+		CreatedBy:    nullableString(in.CreatedBy),
+		LaunchedAt:   now,
+		UpdatedAt:    now,
+	})
+	if err != nil {
+		if isUniqueViolation(err) {
+			// With an interface the rows are inserted in one transaction, so the
+			// only unique index an instance insert can trip is the live name.
+			return fmt.Errorf("%w: an instance named %q already exists",
+				service.ErrAlreadyExists, in.Name)
+		}
+		return fmt.Errorf("create the instance row: %w", err)
+	}
+
+	eni, err := tx.CreateNetworkInterface(ctx, sqlc.CreateNetworkInterfaceParams{
+		ID:          id.NetworkInterface(),
+		InstanceID:  row.ID,
+		SubnetID:    allocSubnet.ID,
+		DeviceIndex: 0,
+		MacAddress:  mac,
+		PrivateIp:   ip.String(),
+		CreatedAt:   now,
+	})
+	if err != nil {
+		// A unique violation naming network_interfaces is an address or MAC that
+		// another launch claimed between the read and this insert.
+		if isUniqueViolation(err) && strings.Contains(err.Error(), "network_interfaces") {
+			return fmt.Errorf("allocate the interface of %q: %w", row.ID, errMACConflict)
+		}
+		return fmt.Errorf("create the network interface: %w", err)
+	}
+
+	if err := replaceTags(ctx, tx, row.ID, in.Tags); err != nil {
+		return err
+	}
+
+	created, err := s.tasks.CreateInTx(ctx, tx, task.TypeInstanceLaunch, row.ID,
+		launchPayload{InstanceID: row.ID})
+	if err != nil {
+		return err
+	}
+
+	out := instanceFromRow(row, imageName{ID: source.ID, Name: source.Name}, in.Tags)
+	out.NetworkInterfaces = []Interface{{
+		ID:          eni.ID,
+		DeviceIndex: int(eni.DeviceIndex),
+		MACAddress:  eni.MacAddress,
+		PrivateIP:   eni.PrivateIp,
+		SubnetID:    eni.SubnetID,
+		VPCID:       vpcRow.ID,
+	}}
+	out.VPCID = &vpcRow.ID
+	out.SubnetID = &allocSubnet.ID
+	out.TaskID = &created.ID
+	*launched = out
+	return nil
+}
+
+// maxLaunchAllocationAttempts bounds the retries of a collision: each retry
+// reads the addresses again and mints a fresh MAC, so a pick that loses a race
+// once loses it for a different pick the second time. Five attempts cover a
+// busy moment without stalling the request.
+const maxLaunchAllocationAttempts = 5
+
+// errMACConflict is the retryable allocation collision of launchAllocate: the
+// interface's MAC or address was claimed by another launch between the read and
+// the insert. It is a sentinel because the retry is the concern of launchInTx,
+// not of the api layer.
+var errMACConflict = errors.New("instance: the interface allocation collided with another launch")
+
+// resolveLaunchSubnet names the subnet an instance attaches to. An explicit
+// subnet must exist, or the request is a 400 naming the field; an omitted one
+// falls back to the default subnet of the default VPC, whose absence is a
+// conflict: the operator has to create a VPC before instances can exist.
+func (s *Service) resolveLaunchSubnet(ctx context.Context, subnetID string) (sqlc.Subnet, error) {
+	if subnetID == "" {
+		subnetRow, err := s.store.GetDefaultSubnet(ctx)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return sqlc.Subnet{}, fmt.Errorf(
+					"%w: no default subnet; create a VPC first or pass subnet_id", service.ErrConflict)
+			}
+			return sqlc.Subnet{}, fmt.Errorf("read the default subnet: %w", err)
+		}
+		return subnetRow, nil
+	}
+
+	subnetRow, err := s.store.GetSubnet(ctx, sqlc.GetSubnetParams{ID: subnetID})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return sqlc.Subnet{}, &service.ValidationError{
+				Message: "the launch request is not acceptable",
+				Fields:  []service.FieldError{{Field: "subnet_id", Reason: "no such subnet"}},
+			}
+		}
+		return sqlc.Subnet{}, fmt.Errorf("read the subnet %q: %w", subnetID, err)
+	}
+	return subnetRow, nil
+}
+
+// allocateIP chooses the lowest free address of a subnet, given the addresses
+// already handed out. It refuses a subnet whose every usable address is taken.
+func allocateIP(subnetCIDR string, gateway netip.Addr, allocated []string) (netip.Addr, error) {
+	prefix, err := netip.ParsePrefix(subnetCIDR)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("parse the subnet CIDR %q: %w", subnetCIDR, err)
+	}
+
+	taken := make(map[netip.Addr]struct{}, len(allocated))
+	for _, address := range allocated {
+		if addr, err := netip.ParseAddr(address); err == nil {
+			taken[addr] = struct{}{}
+		}
+	}
+
+	var free netip.Addr
+	network.ForEachUsable(prefix, gateway, func(addr netip.Addr) bool {
+		if _, ok := taken[addr]; ok {
+			return true
+		}
+		free = addr
+		return false
+	})
+	if !free.IsValid() {
+		return netip.Addr{}, fmt.Errorf("%w: the subnet %s has no free address",
+			service.ErrQuota, prefix)
+	}
+	return free, nil
+}
+
+// randomMAC mints a locally administered unicast MAC in QEMU's 52:54:00 space,
+// the same prefix libvirt would pick itself. The last three bytes are random: a
+// hand-picked value could collide with a MAC the interface table already holds,
+// and the unique index would refuse the launch.
+func randomMAC() string {
+	var b [3]byte
+	_, _ = rand.Read(b[:])
+	return fmt.Sprintf("52:54:00:%02x:%02x:%02x", b[0], b[1], b[2])
 }
 
 // launchPayload is the task input of a launch. It only names the instance: the
@@ -202,6 +410,12 @@ func validateLaunch(in LaunchInput) []service.FieldError {
 	}
 	if strings.TrimSpace(in.InstanceType) == "" {
 		fields = append(fields, service.FieldError{Field: "instance_type", Reason: "is required"})
+	}
+	if in.SubnetID != "" && !id.HasResourceShape(id.PrefixSubnet, in.SubnetID) {
+		fields = append(fields, service.FieldError{
+			Field:  "subnet_id",
+			Reason: "must be a subnet-… id",
+		})
 	}
 	if in.RootDiskGB < 0 || in.RootDiskGB > MaxRootDiskGB {
 		fields = append(fields, service.FieldError{

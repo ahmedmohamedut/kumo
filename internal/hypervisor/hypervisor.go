@@ -168,6 +168,10 @@ type DomainSpec struct {
 	SeedISOPath    string
 	ConsoleLogPath string
 	Network        string
+	// MACAddress is the MAC the guest's virtio NIC is created with, from the
+	// interface the launch allocated. Empty when a launch predates interfaces:
+	// the backend then lets libvirt pick a MAC itself.
+	MACAddress string
 }
 
 // NetworkMode is the forwarding mode of a VPC's libvirt network: nat reaches

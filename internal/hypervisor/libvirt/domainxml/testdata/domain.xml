@@ -35,6 +35,7 @@
       <readonly></readonly>
     </disk>
     <interface type="network">
+      <mac address="52:54:00:0a:0b:0c"></mac>
       <source network="kumo-default"></source>
       <model type="virtio"></model>
     </interface>

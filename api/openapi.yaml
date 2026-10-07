@@ -1706,6 +1706,19 @@ components:
         mac_address:
           type: string
           nullable: true
+        vpc_id:
+          type: string
+          nullable: true
+          description: The VPC of the instance, read from its network interface. Null for a terminated instance.
+        subnet_id:
+          type: string
+          nullable: true
+          description: The subnet the instance's interface belongs to. Null for a terminated instance.
+        network_interfaces:
+          type: array
+          description: The live interfaces of the instance. Empty for a terminated instance.
+          items:
+            $ref: '#/components/schemas/NetworkInterface'
         user_data:
           type: string
           nullable: true
@@ -1726,6 +1739,32 @@ components:
           format: date-time
         tags:
           $ref: '#/components/schemas/TagMap'
+    NetworkInterface:
+      type: object
+      required:
+        - id
+        - device_index
+        - mac_address
+        - private_ip
+        - subnet_id
+        - vpc_id
+      properties:
+        id:
+          type: string
+          example: eni-0a1b2c3d4e5f60718
+        device_index:
+          type: integer
+          description: 0 is eth0; multi-NIC instances will carry higher indexes.
+        mac_address:
+          type: string
+          example: 52:54:00:0a:0b:0c
+        private_ip:
+          type: string
+          description: The address the launch allocated, served by dnsmasq.
+        subnet_id:
+          type: string
+        vpc_id:
+          type: string
     InstanceState:
       type: string
       enum: [pending, running, stopping, stopped, terminating, terminated, error]
@@ -1746,6 +1785,11 @@ components:
         key_pair_id:
           type: string
           description: Injects the public key into the guest.
+        subnet_id:
+          type: string
+          description: |
+            Attaches the instance to one subnet. Omitted, it attaches to the
+            default subnet of the default VPC.
         root_disk_gb:
           type: integer
           minimum: 1

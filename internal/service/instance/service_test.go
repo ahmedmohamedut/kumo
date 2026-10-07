@@ -14,6 +14,7 @@ import (
 
 	"github.com/ahmedmohamedut/kumo/internal/hypervisor"
 	"github.com/ahmedmohamedut/kumo/internal/hypervisor/fake"
+	"github.com/ahmedmohamedut/kumo/internal/id"
 	"github.com/ahmedmohamedut/kumo/internal/imagefetch"
 	"github.com/ahmedmohamedut/kumo/internal/imagefmt/qcow2test"
 	"github.com/ahmedmohamedut/kumo/internal/logging"
@@ -65,8 +66,13 @@ type harness struct {
 	keyPair *keypair.Service
 	tasks   *task.Service
 	locks   *locks.Set
-	console string
-	now     *time.Time
+	// vpcID, subnetID and network are the fixture default VPC every launch
+	// attaches to, seeded by newHarnessWith.
+	vpcID    string
+	subnetID string
+	network  string
+	console  string
+	now      *time.Time
 }
 
 func newHarness(t *testing.T) harness {
@@ -91,6 +97,7 @@ func newHarnessWith(t *testing.T, hvConfig fake.Config, opts instance.Options) h
 	}); err != nil {
 		t.Fatalf("EnsureInfra(): %v", err)
 	}
+	vpcID, subnetID := seedDefaultNetwork(t, db, hv)
 
 	types, err := instancetype.New(instancetype.Options{Store: db})
 	if err != nil {
@@ -154,6 +161,11 @@ func newHarnessWith(t *testing.T, hvConfig fake.Config, opts instance.Options) h
 	lockSet := locks.New()
 	opts.Locks = lockSet
 
+	// Subnet allocation shares one lock set with the subnet service in serve.go;
+	// the harness keeps its own and passes it through the same option.
+	subnetLocks := locks.New()
+	opts.SubnetLocks = subnetLocks
+
 	opts.Logger = logging.Discard()
 	opts.Store = db
 	opts.Hypervisor = hv
@@ -175,16 +187,57 @@ func newHarnessWith(t *testing.T, hvConfig fake.Config, opts instance.Options) h
 	}
 
 	return harness{
-		svc:     svc,
-		store:   db,
-		hv:      hv,
-		images:  images,
-		keyPair: pairs,
-		tasks:   tasks,
-		locks:   lockSet,
-		console: console,
-		now:     &now,
+		svc:      svc,
+		store:    db,
+		hv:       hv,
+		images:   images,
+		keyPair:  pairs,
+		tasks:    tasks,
+		locks:    lockSet,
+		vpcID:    vpcID,
+		subnetID: subnetID,
+		network:  vpcID,
+		console:  console,
+		now:      &now,
 	}
+}
+
+// seedDefaultNetwork stands in for the M4b.2 bootstrap: a default VPC row, its
+// default subnet and the fake network that backs them, so a launch resolves
+// them exactly as serve.go would. The default VPC's libvirt network is named
+// after the VPC id, and the subnet is a /25 inside the VPC's /24, so the lowest
+// free address is .2.
+func seedDefaultNetwork(t *testing.T, db *store.Store, hv *fake.Fake) (vpcID, subnetID string) {
+	t.Helper()
+
+	vpcID = id.VPC()
+	subnetID = id.Subnet()
+
+	if _, err := db.Exec(t.Context(),
+		`INSERT INTO vpcs (id, name, cidr, mode, gateway_ip, netmask, bridge_name, libvirt_network, is_default, created_at, updated_at)
+		 VALUES (?1, 'default', '192.168.100.0/24', 'nat', '192.168.100.1', '255.255.255.0', ?2, ?1, 1,
+		        '2026-01-02T09:00:00Z', '2026-01-02T09:00:00Z')`,
+		vpcID, hypervisor.BridgeName(vpcID)); err != nil {
+		t.Fatalf("seed the default VPC: %v", err)
+	}
+	if _, err := db.Exec(t.Context(),
+		`INSERT INTO subnets (id, vpc_id, name, cidr, is_default, created_at, updated_at)
+		 VALUES (?1, ?2, 'default', '192.168.100.0/25', 1, '2026-01-02T09:00:00Z', '2026-01-02T09:00:00Z')`,
+		subnetID, vpcID); err != nil {
+		t.Fatalf("seed the default subnet: %v", err)
+	}
+
+	if err := hv.DefineNetwork(t.Context(), hypervisor.NetworkSpec{
+		Name: vpcID, Bridge: hypervisor.BridgeName(vpcID),
+		CIDR: "192.168.100.0/24", Gateway: "192.168.100.1",
+		Mode: hypervisor.NetworkModeNAT, Domain: "default",
+	}); err != nil {
+		t.Fatalf("DefineNetwork(): %v", err)
+	}
+	if err := hv.StartNetwork(t.Context(), vpcID); err != nil {
+		t.Fatalf("StartNetwork(): %v", err)
+	}
+	return vpcID, subnetID
 }
 
 // nilDownloader is a downloader that refuses everything: these tests publish the
@@ -438,6 +491,11 @@ func TestLaunchRefusesAnUnacceptableRequest(t *testing.T) {
 			field: "count",
 		},
 		{
+			name:  "subnet id with a bad shape",
+			in:    instance.LaunchInput{Name: "web", ImageID: "img-1", InstanceType: instanceType, SubnetID: "pool-1"},
+			field: "subnet_id",
+		},
+		{
 			name:  "empty tag key",
 			in:    instance.LaunchInput{Name: "web", ImageID: "img-1", InstanceType: instanceType, Tags: map[string]string{" ": "x"}},
 			field: "tags",
@@ -532,6 +590,51 @@ func TestLaunchRefusesAnUnknownKeyPair(t *testing.T) {
 	})
 	if !isValidationErrorFor(t, err, "key_pair_id") {
 		t.Fatalf("Launch() error = %v, want a key_pair_id validation error", err)
+	}
+}
+
+func TestLaunchAttachesTheRequestedSubnet(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	source := h.availableImage(t, "ubuntu")
+
+	launched, err := h.svc.Launch(t.Context(), instance.LaunchInput{
+		Name: "web", ImageID: source.ID, InstanceType: instanceType, RootDiskGB: 8,
+		SubnetID: h.subnetID,
+	})
+	if err != nil {
+		t.Fatalf("Launch(): %v", err)
+	}
+	if launched.SubnetID == nil || *launched.SubnetID != h.subnetID {
+		t.Fatalf("subnet_id = %v, want %q", launched.SubnetID, h.subnetID)
+	}
+	if launched.VPCID == nil || *launched.VPCID != h.vpcID {
+		t.Fatalf("vpc_id = %v, want %q", launched.VPCID, h.vpcID)
+	}
+	if len(launched.NetworkInterfaces) != 1 {
+		t.Fatalf("network_interfaces = %+v, want the interface", launched.NetworkInterfaces)
+	}
+	if iface := launched.NetworkInterfaces[0]; iface.SubnetID != h.subnetID || iface.VPCID != h.vpcID {
+		t.Fatalf("interface = %+v, want subnet %q / vpc %q", iface, h.subnetID, h.vpcID)
+	}
+}
+
+func TestLaunchRefusesAnUnknownSubnet(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	source := h.availableImage(t, "ubuntu")
+
+	// A subnet id that matches the shape but is not in the database is a 400
+	// naming the field, not a fallback to the default subnet: an explicit
+	// request that cannot be honored must not silently attach elsewhere.
+	_, err := h.svc.Launch(t.Context(), instance.LaunchInput{
+		Name: "web", ImageID: source.ID, InstanceType: instanceType, RootDiskGB: 8,
+		SubnetID: id.Subnet(),
+	})
+	if !isValidationErrorFor(t, err, "subnet_id") {
+		t.Fatalf("Launch() error = %v, want a subnet_id validation error", err)
 	}
 }
 
@@ -634,8 +737,32 @@ func TestLaunchRecordsTheRequestAndTheTask(t *testing.T) {
 	if launched.TaskID == nil || !strings.HasPrefix(*launched.TaskID, "task-") {
 		t.Fatalf("Launch() task_id = %v, want a task id", launched.TaskID)
 	}
-	if launched.PrivateIP != nil || launched.MACAddress != nil {
-		t.Fatal("Launch() published an address before the guest booted")
+	// The allocation happens in the launch transaction, so the answer already
+	// names the address and MAC the guest will come up with; what is missing is
+	// the domain, which belongs to the worker.
+	if launched.PrivateIP == nil || *launched.PrivateIP == "" {
+		t.Fatalf("Launch() private_ip = %v, want an allocated address", launched.PrivateIP)
+	}
+	if launched.MACAddress == nil || *launched.MACAddress == "" {
+		t.Fatalf("Launch() mac_address = %v, want an allocated MAC", launched.MACAddress)
+	}
+	if len(launched.NetworkInterfaces) != 1 {
+		t.Fatalf("Launch() network_interfaces = %+v, want the interface", launched.NetworkInterfaces)
+	}
+	iface := launched.NetworkInterfaces[0]
+	if iface.PrivateIP != *launched.PrivateIP || iface.MACAddress != *launched.MACAddress {
+		t.Fatalf("Launch() interface = %+v, want the instance's own address and MAC", iface)
+	}
+	if launched.VPCID == nil || *launched.VPCID != h.vpcID {
+		t.Fatalf("Launch() vpc_id = %v, want %q", launched.VPCID, h.vpcID)
+	}
+	if launched.SubnetID == nil || *launched.SubnetID != h.subnetID {
+		t.Fatalf("Launch() subnet_id = %v, want %q", launched.SubnetID, h.subnetID)
+	}
+	// The static dhcp host is the worker's job, written right before the domain
+	// boots; the API path must not touch the network.
+	if hosts := h.hv.DHCPHosts(h.network); len(hosts) != 0 {
+		t.Fatalf("Launch() wrote the dhcp hosts %+v, want the worker to", hosts)
 	}
 	if launched.RootDiskGB != 8 || launched.ImageID != source.ID {
 		t.Fatalf("Launch() row = %+v, want the requested size and image", launched)
@@ -782,6 +909,17 @@ func TestLaunchWorkflowPublishesARunningInstance(t *testing.T) {
 			t.Fatalf("the root disk is %d bytes, want 8 GiB", volume.VirtualSizeBytes)
 		}
 	}
+
+	// The static dhcp host that answers the guest's lease request stays on the
+	// network, keyed by the same MAC the domain XML pins.
+	hosts := h.hv.DHCPHosts(h.network)
+	if len(hosts) != 1 {
+		t.Fatalf("the network holds the dhcp hosts %+v, want the instance's", hosts)
+	}
+	if hosts[0].MAC != *got.MACAddress || hosts[0].IP != *got.PrivateIP || hosts[0].Name != launched.Name {
+		t.Fatalf("dhcp host = %+v, want mac %q / ip %q / name %q",
+			hosts[0], *got.MACAddress, *got.PrivateIP, launched.Name)
+	}
 }
 
 func TestLaunchWorkflowIsIdempotent(t *testing.T) {
@@ -886,6 +1024,12 @@ func TestLaunchWorkflowRollsBackWhatItCreated(t *testing.T) {
 			remaining: []string{},
 		},
 		{
+			name: "the dhcp host fails",
+			op:   hypervisor.OpAddDHCPHost,
+			// The volumes of the steps before it are still rolled back.
+			remaining: []string{},
+		},
+		{
 			name:      "the domain fails",
 			op:        hypervisor.OpDefineAndStart,
 			remaining: []string{},
@@ -931,8 +1075,19 @@ func TestLaunchWorkflowRollsBackWhatItCreated(t *testing.T) {
 			if got.StateReason == nil || !strings.Contains(*got.StateReason, "the backend said no") {
 				t.Fatalf("state_reason = %v, want the backend's message", got.StateReason)
 			}
-			if got.PrivateIP != nil {
-				t.Fatal("a failed launch published an address")
+			// The allocation is made in the launch transaction and a failed launch
+			// keeps it: the row still names the address the guest would have used,
+			// in state error where nobody can expect it to answer.
+			if got.PrivateIP == nil || *got.PrivateIP == "" {
+				t.Fatal("a failed launch released its allocation, want it reserved")
+			}
+			if got.MACAddress == nil || *got.MACAddress == "" {
+				t.Fatal("a failed launch dropped its MAC, want it reserved")
+			}
+			// The agent that hands the address out, the static dhcp host, must not
+			// survive a rollback: a dead instance takes no leases.
+			if hosts := h.hv.DHCPHosts(h.network); len(hosts) != 0 {
+				t.Fatalf("the failed launch left the dhcp hosts %+v, want a clean network", hosts)
 			}
 		})
 	}
@@ -1341,6 +1496,16 @@ func TestListCarriesTheImageNameAndNoUserData(t *testing.T) {
 	}
 	if page.Items[0].UserData != nil {
 		t.Fatalf("user_data = %v, want a list never to carry it", page.Items[0].UserData)
+	}
+	// The network placement is part of the listed shape, read from the same
+	// interface the detail view shows.
+	if page.Items[0].VPCID == nil || *page.Items[0].VPCID != h.vpcID ||
+		page.Items[0].SubnetID == nil || *page.Items[0].SubnetID != h.subnetID {
+		t.Fatalf("vpc_id/subnet_id = %v/%v, want %q/%q",
+			page.Items[0].VPCID, page.Items[0].SubnetID, h.vpcID, h.subnetID)
+	}
+	if len(page.Items[0].NetworkInterfaces) != 1 {
+		t.Fatalf("network_interfaces = %+v, want the interface", page.Items[0].NetworkInterfaces)
 	}
 }
 

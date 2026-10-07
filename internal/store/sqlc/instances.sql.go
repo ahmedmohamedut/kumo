@@ -20,8 +20,8 @@ INSERT INTO instances (
 ) VALUES (
   ?1, ?2, ?3, ?4, ?5, ?6,
   ?7, ?8, ?9,
-  ?10, ?11, ?12, NULL, NULL, NULL,
-  ?13, ?14, ?15
+  ?10, ?11, ?12, NULL, ?13, ?14,
+  ?15, ?16, ?17
 )
 RETURNING id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at
 `
@@ -39,6 +39,8 @@ type CreateInstanceParams struct {
 	KeyPairID    sql.NullString `json:"key_pair_id"`
 	KeyPairName  sql.NullString `json:"key_pair_name"`
 	UserData     sql.NullString `json:"user_data"`
+	MacAddress   sql.NullString `json:"mac_address"`
+	PrivateIp    sql.NullString `json:"private_ip"`
 	CreatedBy    sql.NullString `json:"created_by"`
 	LaunchedAt   string         `json:"launched_at"`
 	UpdatedAt    string         `json:"updated_at"`
@@ -58,6 +60,8 @@ func (q *Queries) CreateInstance(ctx context.Context, arg CreateInstanceParams) 
 		arg.KeyPairID,
 		arg.KeyPairName,
 		arg.UserData,
+		arg.MacAddress,
+		arg.PrivateIp,
 		arg.CreatedBy,
 		arg.LaunchedAt,
 		arg.UpdatedAt,

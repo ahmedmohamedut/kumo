@@ -34,6 +34,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/version"
 	"github.com/ahmedmohamedut/kumo/internal/webui"
 	"github.com/ahmedmohamedut/kumo/internal/worker"
+	"github.com/ahmedmohamedut/kumo/internal/worker/locks"
 )
 
 // fakeSubnet is the private range the in-memory backend hands out addresses
@@ -121,7 +122,12 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		return fmt.Errorf("build the task service: %w", err)
 	}
 
-	subnets, err := subnet.New(subnet.Options{Logger: logger, Store: db})
+	// Subnets and the potentially conflicting operations on them share one lock
+	// set: a launch allocates out of a subnet while a delete would remove the
+	// row, and both have to take the very same key (subnet.LockKey).
+	subnetLocks := locks.New()
+
+	subnets, err := subnet.New(subnet.Options{Logger: logger, Store: db, Locks: subnetLocks})
 	if err != nil {
 		return fmt.Errorf("build the subnet service: %w", err)
 	}
@@ -198,6 +204,7 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		ImagesPool:    cfg.PoolImages,
 		ConsoleDir:    consoleDir(cfg.DataDir),
 		Network:       defaultVPC.LibvirtNetwork,
+		SubnetLocks:   subnetLocks,
 		StopTimeout:   cfg.StopTimeout,
 		Limits: capacity.Limits{
 			MemoryReserveMiB: cfg.MemoryReserveMiB,

@@ -22,6 +22,7 @@ type launchInstanceRequest struct {
 	ImageID      string            `json:"image_id"`
 	InstanceType string            `json:"instance_type"`
 	KeyPairID    string            `json:"key_pair_id"`
+	SubnetID     string            `json:"subnet_id"`
 	RootDiskGB   int               `json:"root_disk_gb"`
 	UserData     string            `json:"user_data"`
 	Count        int               `json:"count"`
@@ -74,6 +75,7 @@ func (h *Handler) launchInstance(c *gin.Context) {
 		ImageID:      req.ImageID,
 		InstanceType: req.InstanceType,
 		KeyPairID:    req.KeyPairID,
+		SubnetID:     req.SubnetID,
 		RootDiskGB:   req.RootDiskGB,
 		UserData:     req.UserData,
 		Count:        req.Count,

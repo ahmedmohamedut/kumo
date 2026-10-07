@@ -166,8 +166,16 @@ type target struct {
 
 type iface struct {
 	Type   string      `xml:"type,attr"`
+	MAC    *ifaceMAC   `xml:"mac,omitempty"`
 	Source ifaceSource `xml:"source"`
 	Model  ifaceModel  `xml:"model"`
+}
+
+// ifaceMAC is the interface's MAC address element, emitted only for launches
+// that allocated an interface: the domain must come up with exactly the MAC
+// dnsmasq serves.
+type ifaceMAC struct {
+	Address string `xml:"address,attr"`
 }
 
 type ifaceSource struct {
@@ -324,6 +332,7 @@ func Build(spec hypervisor.DomainSpec) ([]byte, error) {
 			},
 			Interface: iface{
 				Type:   "network",
+				MAC:    mac(spec),
 				Source: ifaceSource{Network: network(spec)},
 				Model:  ifaceModel{Type: "virtio"},
 			},
@@ -435,4 +444,14 @@ func network(spec hypervisor.DomainSpec) string {
 		return DefaultNetwork
 	}
 	return spec.Network
+}
+
+// mac returns the interface's MAC element, or nil when the spec carries none: a
+// launch without an allocated interface lets libvirt choose a MAC, and an empty
+// address attribute would be invalid.
+func mac(spec hypervisor.DomainSpec) *ifaceMAC {
+	if spec.MACAddress == "" {
+		return nil
+	}
+	return &ifaceMAC{Address: spec.MACAddress}
 }

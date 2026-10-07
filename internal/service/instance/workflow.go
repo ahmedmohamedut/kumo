@@ -24,6 +24,10 @@ var ErrBadTaskPayload = errors.New("instance: the task payload is not acceptable
 // launch fails rather than publishing an instance nobody can reach.
 var ErrNoAddress = errors.New("instance: the guest took no address")
 
+// errNoNetworkInterface means the instance has no live interface row, so the
+// launch cannot place it on a network.
+var errNoNetworkInterface = errors.New("instance: the instance has no network interface; the launch cannot place it")
+
 // domainArch is the only architecture the domain template of
 // docs/design/04-libvirt-integration.md §5 writes.
 const domainArch = "x86_64"
@@ -124,7 +128,7 @@ func (s *Service) LaunchHandler(ctx context.Context, t worker.Task) error {
 	return nil
 }
 
-// launch runs the four steps of the workflow and reports the domain it reached.
+// launch runs the steps of the workflow and reports the domain it reached.
 func (s *Service) launch(
 	ctx context.Context, row sqlc.Instance, created *rollback,
 ) (hypervisor.DomainInfo, error) {
@@ -140,12 +144,24 @@ func (s *Service) launch(
 		return hypervisor.DomainInfo{}, err
 	}
 
-	if _, err := s.startDomain(ctx, row, created); err != nil {
+	// The static host is written before the domain starts: dnsmasq has to know
+	// the MAC-to-address pairing before the guest asks for a lease, or the
+	// first handshake is answered from the pool and the launch records an
+	// address nothing pinned (docs/design/04-libvirt-integration.md §6.4).
+	network, err := s.interfaceNetwork(ctx, row.ID)
+	if err != nil {
+		return hypervisor.DomainInfo{}, err
+	}
+	if err := s.addDHCPHost(ctx, row, network, created); err != nil {
 		return hypervisor.DomainInfo{}, err
 	}
 
-	// Step 4: the address only exists once the guest has asked for one, so this
-	// is a wait rather than a read. A guest that never takes one fails the
+	if _, err := s.startDomain(ctx, row, network, created); err != nil {
+		return hypervisor.DomainInfo{}, err
+	}
+
+	// The address only exists once the guest has asked for one, so this is a
+	// wait rather than a read. A guest that never takes one fails the
 	// launch, because an instance without an address is one nobody can reach.
 	if err := s.awaitAddress(ctx, row.ID); err != nil {
 		return hypervisor.DomainInfo{}, err
@@ -261,10 +277,65 @@ func (s *Service) seedDocuments(
 	}, nil
 }
 
+// interfaceNetwork resolves the libvirt network an instance's interface sits on.
+// The DNS host entry is written to that network, so this has to point at exactly
+// the network the VPC service defined. An instance with no interface row cannot
+// be placed, which fails the launch rather than booting a guest with no network
+// identity.
+func (s *Service) interfaceNetwork(ctx context.Context, instanceID string) (string, error) {
+	rows, err := s.store.ListInterfacesByInstances(ctx, sqlc.ListInterfacesByInstancesParams{
+		InstanceIds: []string{instanceID},
+	})
+	if err != nil {
+		return "", fmt.Errorf("read the interface of instance %q: %w", instanceID, err)
+	}
+	if len(rows) == 0 {
+		return "", fmt.Errorf("%w: instance %q", errNoNetworkInterface, instanceID)
+	}
+	return rows[0].LibvirtNetwork, nil
+}
+
+// addDHCPHost tells dnsmasq to serve the instance's allocated address to the MAC
+// the domain will come up with. There is no DHCP pool to guess from: the network
+// serves exactly what Kumo allocates, and the domain XML pins the very same MAC
+// (docs/design/04-libvirt-integration.md §6.4).
+func (s *Service) addDHCPHost(
+	ctx context.Context, row sqlc.Instance, network string, created *rollback,
+) error {
+	if !row.MacAddress.Valid || !row.PrivateIp.Valid {
+		return fmt.Errorf("%w: instance %q has no allocated address", ErrBadTaskPayload, row.ID)
+	}
+
+	err := s.hv.AddDHCPHost(ctx, network, hypervisor.DHCPHost{
+		MAC:  row.MacAddress.String,
+		IP:   row.PrivateIp.String,
+		Name: row.Name,
+	})
+	switch {
+	case err == nil:
+		created.network = network
+		created.dhcpMAC = row.MacAddress.String
+		created.dhcp = true
+		return nil
+	case errors.Is(err, hypervisor.ErrAlreadyExists):
+		// A requeued launch wrote the host already. It has to exist for the
+		// domain to take the address, so adopt it and let the rollback remove it
+		// if this run fails.
+		created.network = network
+		created.dhcpMAC = row.MacAddress.String
+		created.dhcp = true
+		s.logger.InfoContext(ctx, "instance: adopting the dhcp host of an earlier attempt",
+			"instance_id", row.ID, "network", network, "mac", row.MacAddress.String)
+		return nil
+	default:
+		return fmt.Errorf("add the dhcp host of instance %q: %w", row.ID, err)
+	}
+}
+
 // startDomain resolves the volume paths, writes the domain XML and boots the
 // guest.
 func (s *Service) startDomain(
-	ctx context.Context, row sqlc.Instance, created *rollback,
+	ctx context.Context, row sqlc.Instance, network string, created *rollback,
 ) (hypervisor.DomainInfo, error) {
 	rootDisk := hypervisor.RootDiskName(row.ID)
 	seed := hypervisor.SeedISOName(row.ID)
@@ -295,7 +366,15 @@ func (s *Service) startDomain(
 		// the volumes, and the console of an instance that failed to launch is
 		// worth reading afterwards.
 		ConsoleLogPath: s.consoleLogPath(row.ID),
-		Network:        s.network,
+		// The network the interface row resolved, and the same MAC the dnsmasq
+		// host serves: the domain must come up asking for exactly the lease Kumo
+		// allocated (docs/design/04-libvirt-integration.md §6.4).
+		Network: network,
+	}
+	// A launch that predates interfaces leaves the MAC to libvirt; its domain
+	// XML carries no mac element.
+	if row.MacAddress.Valid {
+		spec.MACAddress = row.MacAddress.String
 	}
 
 	info, err := s.hv.DefineAndStart(ctx, spec)
@@ -394,13 +473,20 @@ func (s *Service) failLaunch(ctx context.Context, instanceID, taskID string, cau
 
 // rollback remembers what a launch has created, so a failure can be undone in the
 // reverse of the order the steps made it: the domain first, because it has the
-// volumes attached, and the volumes newest first.
+// volumes attached, then the dhcp host, then the volumes newest first
+// (docs/design/04-libvirt-integration.md §3).
 type rollback struct {
 	// instanceID is the domain name to undefine. It is recorded up front because a
 	// rollback that does not know what to remove cannot clean up.
 	instanceID string
 	// domain is true once the domain is defined.
 	domain bool
+	// network is the libvirt network the static host was written to.
+	network string
+	// dhcp is true once the static dhcp host was written.
+	dhcp bool
+	// dhcpMAC is the MAC the static host is keyed by, so the rollback can find it.
+	dhcpMAC string
 	// volumes are the volume names created so far, oldest first.
 	volumes []string
 }
@@ -415,6 +501,14 @@ func (s *Service) undo(ctx context.Context, r *rollback) {
 		if err := s.hv.Undefine(ctx, r.instanceID); err != nil && !errors.Is(err, hypervisor.ErrNotFound) {
 			s.logger.ErrorContext(ctx, "instance: rollback could not undefine the domain",
 				"instance_id", r.instanceID, "error", err)
+		}
+	}
+
+	if r.dhcp {
+		if err := s.hv.DeleteDHCPHost(ctx, r.network, r.dhcpMAC); err != nil &&
+			!errors.Is(err, hypervisor.ErrNotFound) {
+			s.logger.ErrorContext(ctx, "instance: rollback could not remove the dhcp host",
+				"instance_id", r.instanceID, "network", r.network, "mac", r.dhcpMAC, "error", err)
 		}
 	}
 

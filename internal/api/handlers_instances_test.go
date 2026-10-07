@@ -14,6 +14,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/auth"
 	"github.com/ahmedmohamedut/kumo/internal/hypervisor"
 	"github.com/ahmedmohamedut/kumo/internal/hypervisor/fake"
+	"github.com/ahmedmohamedut/kumo/internal/id"
 	"github.com/ahmedmohamedut/kumo/internal/imagefetch"
 	"github.com/ahmedmohamedut/kumo/internal/logging"
 	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
@@ -37,24 +38,36 @@ const (
 // instanceBody is the shape of an instance in a response. UserData is a pointer
 // so a test can tell "hidden from a viewer" from "there was none".
 type instanceBody struct {
-	ID           string            `json:"id"`
-	Name         string            `json:"name"`
-	ImageID      string            `json:"image_id"`
-	ImageName    *string           `json:"image_name"`
-	InstanceType string            `json:"instance_type"`
-	State        string            `json:"state"`
-	StateReason  *string           `json:"state_reason"`
-	PrivateIP    *string           `json:"private_ip"`
-	MacAddress   *string           `json:"mac_address"`
-	LibvirtUUID  *string           `json:"libvirt_uuid"`
-	KeyPairID    *string           `json:"key_pair_id"`
-	KeyPairName  *string           `json:"key_pair_name"`
-	RootDiskGB   int               `json:"root_disk_gb"`
-	UserData     *string           `json:"user_data"`
-	Tags         map[string]string `json:"tags"`
-	TaskID       *string           `json:"task_id"`
-	LaunchedAt   *time.Time        `json:"launched_at"`
-	CreatedAt    time.Time         `json:"created_at"`
+	ID                string            `json:"id"`
+	Name              string            `json:"name"`
+	ImageID           string            `json:"image_id"`
+	ImageName         *string           `json:"image_name"`
+	InstanceType      string            `json:"instance_type"`
+	State             string            `json:"state"`
+	StateReason       *string           `json:"state_reason"`
+	PrivateIP         *string           `json:"private_ip"`
+	MacAddress        *string           `json:"mac_address"`
+	VpcID             *string           `json:"vpc_id"`
+	SubnetID          *string           `json:"subnet_id"`
+	NetworkInterfaces []interfaceBody   `json:"network_interfaces"`
+	KeyPairID         *string           `json:"key_pair_id"`
+	KeyPairName       *string           `json:"key_pair_name"`
+	RootDiskGB        int               `json:"root_disk_gb"`
+	UserData          *string           `json:"user_data"`
+	Tags              map[string]string `json:"tags"`
+	TaskID            *string           `json:"task_id"`
+	LaunchedAt        *time.Time        `json:"launched_at"`
+	CreatedAt         time.Time         `json:"created_at"`
+}
+
+// interfaceBody is one element of network_interfaces.
+type interfaceBody struct {
+	ID          string `json:"id"`
+	DeviceIndex int    `json:"device_index"`
+	MACAddress  string `json:"mac_address"`
+	PrivateIP   string `json:"private_ip"`
+	SubnetID    string `json:"subnet_id"`
+	VpcID       string `json:"vpc_id"`
 }
 
 // instancePage is a listing response.
@@ -104,6 +117,7 @@ func newInstanceRouter(t *testing.T) instanceRouter {
 	}); err != nil {
 		t.Fatalf("EnsureInfra(): %v", err)
 	}
+	seedDefaultNetwork(t, db, hv)
 
 	images, err := image.New(image.Options{
 		Logger:     logger,
@@ -178,6 +192,42 @@ func newInstanceRouter(t *testing.T) instanceRouter {
 	startInstanceWorkers(t, ir)
 
 	return ir
+}
+
+// seedDefaultNetwork stands in for the M4b.2 bootstrap: a default VPC row, its
+// default subnet and the fake network that backs them, so a launch resolves
+// them exactly as serve.go would. The subnet is a /25 inside the VPC's /24, so
+// the lowest free address is .2 — the prefix the launch tests assert.
+func seedDefaultNetwork(t *testing.T, db *store.Store, hv *fake.Fake) {
+	t.Helper()
+
+	vpcID := id.VPC()
+	subnetID := id.Subnet()
+
+	if _, err := db.Exec(t.Context(),
+		`INSERT INTO vpcs (id, name, cidr, mode, gateway_ip, netmask, bridge_name, libvirt_network, is_default, created_at, updated_at)
+		 VALUES (?1, 'default', '192.168.100.0/24', 'nat', '192.168.100.1', '255.255.255.0', ?2, ?1, 1,
+		        '2026-01-02T09:00:00Z', '2026-01-02T09:00:00Z')`,
+		vpcID, hypervisor.BridgeName(vpcID)); err != nil {
+		t.Fatalf("seed the default VPC: %v", err)
+	}
+	if _, err := db.Exec(t.Context(),
+		`INSERT INTO subnets (id, vpc_id, name, cidr, is_default, created_at, updated_at)
+		 VALUES (?1, ?2, 'default', '192.168.100.0/25', 1, '2026-01-02T09:00:00Z', '2026-01-02T09:00:00Z')`,
+		subnetID, vpcID); err != nil {
+		t.Fatalf("seed the default subnet: %v", err)
+	}
+
+	if err := hv.DefineNetwork(t.Context(), hypervisor.NetworkSpec{
+		Name: vpcID, Bridge: hypervisor.BridgeName(vpcID),
+		CIDR: "192.168.100.0/24", Gateway: "192.168.100.1",
+		Mode: hypervisor.NetworkModeNAT, Domain: "default",
+	}); err != nil {
+		t.Fatalf("DefineNetwork(): %v", err)
+	}
+	if err := hv.StartNetwork(t.Context(), vpcID); err != nil {
+		t.Fatalf("StartNetwork(): %v", err)
+	}
 }
 
 // startInstanceWorkers runs one pool for both the image and the launch
@@ -263,8 +313,24 @@ func TestLaunchInstanceIsAsynchronousAndEndsRunning(t *testing.T) {
 	if got, want := accepted.Header().Get("Location"), "/api/v1/tasks/"+*launched.TaskID; got != want {
 		t.Errorf("Location = %q, want %q", got, want)
 	}
-	if launched.PrivateIP != nil {
-		t.Errorf("private_ip = %q, want null until the guest has an address", *launched.PrivateIP)
+	// The address and the MAC are allocated with the row, before the guest
+	// exists: dnsmasq has to know the pairing when the guest first asks.
+	if launched.PrivateIP == nil || !strings.HasPrefix(*launched.PrivateIP, "192.168.100.") {
+		t.Errorf("private_ip = %v, want an address out of the default subnet", launched.PrivateIP)
+	}
+	if launched.MacAddress == nil {
+		t.Error("mac_address is null in the launch response")
+	}
+	if launched.VpcID == nil || launched.SubnetID == nil {
+		t.Errorf("vpc_id/subnet_id = %v/%v, want the default network placement",
+			launched.VpcID, launched.SubnetID)
+	}
+	if len(launched.NetworkInterfaces) != 1 {
+		t.Fatalf("network_interfaces = %d entries, want 1", len(launched.NetworkInterfaces))
+	}
+	eni := launched.NetworkInterfaces[0]
+	if eni.MACAddress != *launched.MacAddress || eni.PrivateIP != *launched.PrivateIP {
+		t.Errorf("interface = %+v, want the same MAC and IP as the instance", eni)
 	}
 
 	// The task runs, and the instance ends up with the runtime data the launch
@@ -285,6 +351,12 @@ func TestLaunchInstanceIsAsynchronousAndEndsRunning(t *testing.T) {
 	}
 	if found.MacAddress == nil {
 		t.Error("mac_address is null after a launch")
+	}
+	if found.VpcID == nil || found.SubnetID == nil {
+		t.Error("vpc_id/subnet_id are null after a launch")
+	}
+	if len(found.NetworkInterfaces) != 1 {
+		t.Errorf("network_interfaces = %d entries after a launch, want 1", len(found.NetworkInterfaces))
 	}
 	if found.LaunchedAt == nil {
 		t.Error("launched_at is null after a launch")

@@ -43,8 +43,13 @@ func (s *Service) Get(ctx context.Context, instanceID string, includeUserData bo
 	if err != nil {
 		return Instance{}, err
 	}
+	interfaces, err := s.interfacesByInstances(ctx, []string{row.ID})
+	if err != nil {
+		return Instance{}, err
+	}
 
 	out := instanceFromRow(row, images[row.ImageID], tags[row.ID])
+	applyNetwork(&out, interfaces[row.ID])
 	if includeUserData && row.UserData.Valid {
 		out.UserData = &row.UserData.String
 	}
@@ -151,11 +156,17 @@ func (s *Service) List(ctx context.Context, in ListInput) (Page, error) {
 	if err != nil {
 		return Page{}, err
 	}
+	interfaces, err := s.interfacesByInstances(ctx, ids)
+	if err != nil {
+		return Page{}, err
+	}
 
 	// A list never carries the task of each instance: that is one more query per
 	// row, and a table does not show it. Get returns it.
 	for _, row := range rows {
-		page.Items = append(page.Items, instanceFromRow(row, images[row.ImageID], tags[row.ID]))
+		out := instanceFromRow(row, images[row.ImageID], tags[row.ID])
+		applyNetwork(&out, interfaces[row.ID])
+		page.Items = append(page.Items, out)
 	}
 
 	return page, nil
@@ -317,4 +328,55 @@ func instanceFromRow(row sqlc.Instance, image imageName, tags map[string]string)
 	}
 
 	return out
+}
+
+// interfacesByInstances reads the live interfaces of several instances at once,
+// grouped by instance. An instance with no interface (a terminated one) is
+// absent from the map.
+func (s *Service) interfacesByInstances(ctx context.Context, instanceIDs []string) (map[string][]Interface, error) {
+	unique := make([]string, 0, len(instanceIDs))
+	seen := make(map[string]struct{}, len(instanceIDs))
+	for _, instanceID := range instanceIDs {
+		if _, ok := seen[instanceID]; ok {
+			continue
+		}
+		seen[instanceID] = struct{}{}
+		unique = append(unique, instanceID)
+	}
+	if len(unique) == 0 {
+		return map[string][]Interface{}, nil
+	}
+
+	rows, err := s.store.ListInterfacesByInstances(ctx, sqlc.ListInterfacesByInstancesParams{
+		InstanceIds: unique,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list the network interfaces of the instances: %w", err)
+	}
+
+	out := make(map[string][]Interface, len(unique))
+	for _, row := range rows {
+		out[row.InstanceID] = append(out[row.InstanceID], Interface{
+			ID:          row.ID,
+			DeviceIndex: int(row.DeviceIndex),
+			MACAddress:  row.MacAddress,
+			PrivateIP:   row.PrivateIp,
+			SubnetID:    row.SubnetID,
+			VPCID:       row.VpcID,
+		})
+	}
+	return out, nil
+}
+
+// applyNetwork fills the network placement of an instance from its interfaces:
+// the top-level vpc_id and subnet_id are the first interface's, and the array
+// itself. An instance without an interface keeps nulls and an empty array.
+func applyNetwork(out *Instance, interfaces []Interface) {
+	if len(interfaces) == 0 {
+		out.NetworkInterfaces = []Interface{}
+		return
+	}
+	out.NetworkInterfaces = interfaces
+	out.VPCID = &interfaces[0].VPCID
+	out.SubnetID = &interfaces[0].SubnetID
 }

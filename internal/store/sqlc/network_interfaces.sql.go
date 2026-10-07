@@ -108,3 +108,199 @@ func (q *Queries) CountVPCSubnets(ctx context.Context, arg CountVPCSubnetsParams
 	err := row.Scan(&count)
 	return count, err
 }
+
+const createNetworkInterface = `-- name: CreateNetworkInterface :one
+INSERT INTO network_interfaces (id, instance_id, subnet_id, device_index, mac_address, private_ip, created_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+RETURNING id, instance_id, subnet_id, device_index, mac_address, private_ip, created_at
+`
+
+type CreateNetworkInterfaceParams struct {
+	ID          string `json:"id"`
+	InstanceID  string `json:"instance_id"`
+	SubnetID    string `json:"subnet_id"`
+	DeviceIndex int64  `json:"device_index"`
+	MacAddress  string `json:"mac_address"`
+	PrivateIp   string `json:"private_ip"`
+	CreatedAt   string `json:"created_at"`
+}
+
+// A launch writes the interface in the same transaction as the instance row: a
+// domain that boots without an interface is a domain with no identity on its
+// network, and a lease nobody can match to a row.
+func (q *Queries) CreateNetworkInterface(ctx context.Context, arg CreateNetworkInterfaceParams) (NetworkInterface, error) {
+	row := q.db.QueryRowContext(ctx, createNetworkInterface,
+		arg.ID,
+		arg.InstanceID,
+		arg.SubnetID,
+		arg.DeviceIndex,
+		arg.MacAddress,
+		arg.PrivateIp,
+		arg.CreatedAt,
+	)
+	var i NetworkInterface
+	err := row.Scan(
+		&i.ID,
+		&i.InstanceID,
+		&i.SubnetID,
+		&i.DeviceIndex,
+		&i.MacAddress,
+		&i.PrivateIp,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const deleteInterfacesByInstance = `-- name: DeleteInterfacesByInstance :execrows
+DELETE FROM network_interfaces WHERE instance_id = ?1
+`
+
+type DeleteInterfacesByInstanceParams struct {
+	InstanceID string `json:"instance_id"`
+}
+
+func (q *Queries) DeleteInterfacesByInstance(ctx context.Context, arg DeleteInterfacesByInstanceParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteInterfacesByInstance, arg.InstanceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const getDefaultSubnet = `-- name: GetDefaultSubnet :one
+SELECT id, vpc_id, name, cidr, is_default, created_by, created_at, updated_at FROM subnets
+WHERE is_default = 1
+  AND vpc_id = (SELECT id FROM vpcs WHERE is_default = 1)
+LIMIT 1
+`
+
+// Launches with no explicit subnet attach to the VPC's default subnet, the same
+// one the bootstrap seeds.
+func (q *Queries) GetDefaultSubnet(ctx context.Context) (Subnet, error) {
+	row := q.db.QueryRowContext(ctx, getDefaultSubnet)
+	var i Subnet
+	err := row.Scan(
+		&i.ID,
+		&i.VpcID,
+		&i.Name,
+		&i.Cidr,
+		&i.IsDefault,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const listAllocatedIPsInSubnet = `-- name: ListAllocatedIPsInSubnet :many
+SELECT private_ip FROM network_interfaces WHERE subnet_id = ?1
+`
+
+type ListAllocatedIPsInSubnetParams struct {
+	SubnetID string `json:"subnet_id"`
+}
+
+// The addresses a subnet already hands out, so the allocator can offer the next
+// free one. Freed addresses disappear with the interface row that held them.
+func (q *Queries) ListAllocatedIPsInSubnet(ctx context.Context, arg ListAllocatedIPsInSubnetParams) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listAllocatedIPsInSubnet, arg.SubnetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var private_ip string
+		if err := rows.Scan(&private_ip); err != nil {
+			return nil, err
+		}
+		items = append(items, private_ip)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listInterfacesByInstances = `-- name: ListInterfacesByInstances :many
+SELECT ni.id, ni.instance_id, ni.subnet_id, ni.device_index, ni.mac_address, ni.private_ip, ni.created_at, s.cidr AS subnet_cidr, s.is_default AS subnet_is_default,
+       v.id AS vpc_id, v.cidr AS vpc_cidr, v.gateway_ip, v.libvirt_network
+FROM network_interfaces ni
+JOIN subnets s ON s.id = ni.subnet_id
+JOIN vpcs v ON v.id = s.vpc_id
+WHERE ni.instance_id IN (/*SLICE:instance_ids*/?)
+ORDER BY ni.instance_id, ni.device_index
+`
+
+type ListInterfacesByInstancesParams struct {
+	InstanceIds []string `json:"instance_ids"`
+}
+
+type ListInterfacesByInstancesRow struct {
+	ID              string `json:"id"`
+	InstanceID      string `json:"instance_id"`
+	SubnetID        string `json:"subnet_id"`
+	DeviceIndex     int64  `json:"device_index"`
+	MacAddress      string `json:"mac_address"`
+	PrivateIp       string `json:"private_ip"`
+	CreatedAt       string `json:"created_at"`
+	SubnetCidr      string `json:"subnet_cidr"`
+	SubnetIsDefault int64  `json:"subnet_is_default"`
+	VpcID           string `json:"vpc_id"`
+	VpcCidr         string `json:"vpc_cidr"`
+	GatewayIp       string `json:"gateway_ip"`
+	LibvirtNetwork  string `json:"libvirt_network"`
+}
+
+// The launch and terminate workflows resolve the network behind an instance's
+// interfaces. The join reads the VPC row so the DHCP host can be placed on the
+// right libvirt network and rolled back off it.
+func (q *Queries) ListInterfacesByInstances(ctx context.Context, arg ListInterfacesByInstancesParams) ([]ListInterfacesByInstancesRow, error) {
+	query := listInterfacesByInstances
+	var queryParams []interface{}
+	if len(arg.InstanceIds) > 0 {
+		for _, v := range arg.InstanceIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:instance_ids*/?", strings.Repeat(",?", len(arg.InstanceIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:instance_ids*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListInterfacesByInstancesRow{}
+	for rows.Next() {
+		var i ListInterfacesByInstancesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.InstanceID,
+			&i.SubnetID,
+			&i.DeviceIndex,
+			&i.MacAddress,
+			&i.PrivateIp,
+			&i.CreatedAt,
+			&i.SubnetCidr,
+			&i.SubnetIsDefault,
+			&i.VpcID,
+			&i.VpcCidr,
+			&i.GatewayIp,
+			&i.LibvirtNetwork,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

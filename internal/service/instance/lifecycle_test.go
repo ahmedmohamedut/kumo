@@ -214,6 +214,20 @@ func TestStartBootsAStoppedInstance(t *testing.T) {
 	if got.PrivateIP == nil || *got.PrivateIP == "" {
 		t.Fatal("private_ip is empty after the start")
 	}
+
+	// Both the MAC and the static host that serves it are the launch
+	// allocation: stopping and starting must not renumber the guest.
+	if stopped.MACAddress == nil || got.MACAddress == nil || *got.MACAddress != *stopped.MACAddress {
+		t.Fatalf("mac_address = %v, want the launch allocation %v", got.MACAddress, stopped.MACAddress)
+	}
+	if *got.PrivateIP != *stopped.PrivateIP {
+		t.Fatalf("private_ip = %q after the start, want %q", *got.PrivateIP, *stopped.PrivateIP)
+	}
+	hosts := h.hv.DHCPHosts(h.network)
+	if len(hosts) != 1 || hosts[0].MAC != *stopped.MACAddress || hosts[0].IP != *stopped.PrivateIP {
+		t.Fatalf("dhcp hosts = %+v, want the launch allocation %s / %s still served",
+			hosts, *stopped.MACAddress, *stopped.PrivateIP)
+	}
 }
 
 func TestStartAdoptsADomainSomebodyStartedOutOfBand(t *testing.T) {
@@ -509,6 +523,11 @@ func TestTerminateRemovesTheDomainAndTheVolumes(t *testing.T) {
 			t.Fatalf("the pool still holds %q: %v", name, h.volumeNames(instancesPool))
 		}
 	}
+	// The static dhcp host went with the domain: a terminated instance takes no
+	// leases, and its address belongs to the subnet again.
+	if hosts := h.hv.DHCPHosts(h.network); len(hosts) != 0 {
+		t.Fatalf("the network still holds the dhcp hosts %+v after terminate", hosts)
+	}
 	// The image volume is the backing file of other instances' disks and of every
 	// launch to come, so a terminate must not touch it.
 	if !contains(h.volumeNames(imagesPool), source) {
@@ -525,6 +544,23 @@ func TestTerminateRemovesTheDomainAndTheVolumes(t *testing.T) {
 	}
 	if !row.TerminatedAt.Valid {
 		t.Error("terminated_at is empty; the row cannot be ordered against the rest")
+	}
+
+	// The interface row is deleted with the domain, so the terminated instance
+	// no longer looks placed; the address and MAC it held stay on the row for
+	// history.
+	gone, err := h.svc.Get(t.Context(), running.ID, false)
+	if err != nil {
+		t.Fatalf("Get() after terminate: %v", err)
+	}
+	if len(gone.NetworkInterfaces) != 0 {
+		t.Fatalf("network_interfaces = %+v, want none for a terminated instance", gone.NetworkInterfaces)
+	}
+	if gone.VPCID != nil || gone.SubnetID != nil {
+		t.Fatalf("vpc_id = %v, subnet_id = %v, want null without an interface", gone.VPCID, gone.SubnetID)
+	}
+	if gone.PrivateIP == nil || gone.MACAddress == nil {
+		t.Fatal("terminate dropped the address and MAC the row keeps for history")
 	}
 
 	// The name is free again, which is what the partial unique index on the name is

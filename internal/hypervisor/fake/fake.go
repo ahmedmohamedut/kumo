@@ -395,10 +395,28 @@ func (f *Fake) DefineAndStart(ctx context.Context, spec hypervisor.DomainSpec) (
 		uuid = UUIDFor(spec.ID)
 	}
 
-	// The address is allocated once, at definition time, and held back from the
-	// domain until enough polls have passed: a caller that waits for a lease has
-	// to actually wait, without anyone else taking the address meanwhile.
+	// The MAC is the one the launch allocated: the domain must come up with
+	// exactly the MAC dnsmasq serves for its static host entry, or the guest
+	// lease never arrives. A launch that predates interfaces lets libvirt pick,
+	// so the fake derives one the way MACFor does.
+	mac := spec.MACAddress
+	if mac == "" {
+		mac = MACFor(spec.ID)
+	}
+
+	// The address is allocated once, at definition time. When the spec names a
+	// network with a static host for this domain's MAC, the lease is that host's
+	// address: dnsmasq serves exactly what Kumo allocated. Otherwise the fake
+	// hands out the next subnet address. Either way the address is held back
+	// from the domain until enough polls have passed: a caller that waits for a
+	// lease has to actually wait, without anyone else taking the address
+	// meanwhile.
 	address := f.allocateIPLocked()
+	if net, ok := f.networks[spec.Network]; ok && net.active {
+		if host, ok := net.dhcpHosts[mac]; ok {
+			address = host.IP
+		}
+	}
 	lease := address
 	if f.leaseDelay > 0 {
 		lease = ""
@@ -411,7 +429,7 @@ func (f *Fake) DefineAndStart(ctx context.Context, spec hypervisor.DomainSpec) (
 			UUID:      uuid,
 			State:     hypervisor.DomainStateRunning,
 			IP:        lease,
-			MAC:       MACFor(spec.ID),
+			MAC:       mac,
 			VCPUs:     spec.VCPUs,
 			MemoryMiB: spec.MemoryMiB,
 		},

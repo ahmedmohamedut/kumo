@@ -55,6 +55,19 @@ const (
 	StateError State = "error"
 )
 
+// Interface is one virtual NIC of an instance, the row of the network_interfaces
+// table in the shape api/openapi.yaml promises. An instance that has not been
+// terminated carries exactly one, device 0; a terminated instance carries none,
+// because the row is deleted with the domain.
+type Interface struct {
+	ID          string `json:"id"`
+	DeviceIndex int    `json:"device_index"`
+	MACAddress  string `json:"mac_address"`
+	PrivateIP   string `json:"private_ip"`
+	SubnetID    string `json:"subnet_id"`
+	VPCID       string `json:"vpc_id"`
+}
+
 // Instance is the projection of an instance row, in the shape
 // api/openapi.yaml promises. Nullable columns are pointers so the JSON carries
 // null rather than an empty string.
@@ -73,6 +86,14 @@ type Instance struct {
 	KeyPairName  *string `json:"key_pair_name"`
 	PrivateIP    *string `json:"private_ip"`
 	MACAddress   *string `json:"mac_address"`
+	// VPCID and SubnetID are the network placement of the instance, read from its
+	// live interface. They are null for a terminated instance, whose interface
+	// row is gone.
+	VPCID    *string `json:"vpc_id"`
+	SubnetID *string `json:"subnet_id"`
+	// NetworkInterfaces carries every live interface, empty for a terminated
+	// instance.
+	NetworkInterfaces []Interface `json:"network_interfaces"`
 	// UserData is only filled in for an administrator, and never by List: it can
 	// carry a secret a user pasted into it.
 	UserData *string `json:"user_data"`
@@ -185,6 +206,11 @@ type Options struct {
 	// §4). A nil value gets a set of its own, which is right for a process that
 	// runs one instance service; a test that has to hold a lock passes its own.
 	Locks *locks.Set
+	// SubnetLocks serializes the allocation of one subnet. Launch allocates an
+	// address inside the launch transaction while a subnet delete would remove
+	// the row, so both must take the very same key (subnet.LockKey). The set is
+	// shared with the subnet service; a nil value gets one of its own.
+	SubnetLocks *locks.Set
 	// Limits are the capacity rules of the node.
 	Limits capacity.Limits
 	// PollInterval and PollTimeout bound the wait for a guest address, as
@@ -214,6 +240,7 @@ type Service struct {
 	consoleDir    string
 	network       string
 	locks         *locks.Set
+	subnetLocks   *locks.Set
 	limits        capacity.Limits
 	pollInterval  time.Duration
 	pollTimeout   time.Duration
@@ -289,6 +316,9 @@ func New(opts Options) (*Service, error) {
 	if opts.Locks == nil {
 		opts.Locks = locks.New()
 	}
+	if opts.SubnetLocks == nil {
+		opts.SubnetLocks = locks.New()
+	}
 	if opts.PollInterval <= 0 {
 		opts.PollInterval = defaultPollInterval
 	}
@@ -317,6 +347,7 @@ func New(opts Options) (*Service, error) {
 		consoleDir:    opts.ConsoleDir,
 		network:       opts.Network,
 		locks:         opts.Locks,
+		subnetLocks:   opts.SubnetLocks,
 		limits:        opts.Limits,
 		pollInterval:  opts.PollInterval,
 		pollTimeout:   opts.PollTimeout,
@@ -355,4 +386,11 @@ func nullableString(value string) sql.NullString {
 // violations, which are not conflicts.
 func isUniqueViolation(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
+// isDBLocked reports a SQLite "database is locked" failure: another writer held
+// the commit long enough that the busy timeout ran out. The launch retries it,
+// because it is a race with another launch, not a condition of the request.
+func isDBLocked(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "database is locked")
 }

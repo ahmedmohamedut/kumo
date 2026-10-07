@@ -556,13 +556,20 @@ func (s *Service) TerminateHandler(ctx context.Context, t worker.Task) error {
 	return nil
 }
 
-// terminateInstance removes the domain and the two volumes of an instance.
+// terminateInstance removes the domain, its static host entry, the two volumes
+// and the interface row of an instance, in the order
+// docs/design/04-libvirt-integration.md §3 fixes: the domain first (it holds the
+// volumes and the lease), then the dhcp host, then the volumes.
 func (s *Service) terminateInstance(ctx context.Context, row sqlc.Instance) error {
 	if err := s.hv.Destroy(ctx, row.ID); err != nil && !errors.Is(err, hypervisor.ErrNotFound) {
 		return fmt.Errorf("destroy the domain of instance %q: %w", row.ID, err)
 	}
 	if err := s.hv.Undefine(ctx, row.ID); err != nil && !errors.Is(err, hypervisor.ErrNotFound) {
 		return fmt.Errorf("undefine the domain of instance %q: %w", row.ID, err)
+	}
+
+	if err := s.removeDHCPHost(ctx, row); err != nil {
+		return err
 	}
 
 	for _, name := range []string{hypervisor.RootDiskName(row.ID), hypervisor.SeedISOName(row.ID)} {
@@ -573,6 +580,33 @@ func (s *Service) terminateInstance(ctx context.Context, row sqlc.Instance) erro
 	}
 
 	return s.markTerminated(ctx, row.ID)
+}
+
+// removeDHCPHost removes the static host entry of a terminating instance from the
+// libvirt network its interface sat on. It is skipped for an instance that
+// predates interfaces (no allocated MAC, or no interface row) and tolerates a
+// host that is already gone: the terminate workflow is safe to run twice, and a
+// requeued task finds the host already removed.
+func (s *Service) removeDHCPHost(ctx context.Context, row sqlc.Instance) error {
+	if !row.MacAddress.Valid || row.MacAddress.String == "" {
+		return nil
+	}
+
+	interfaces, err := s.store.ListInterfacesByInstances(ctx, sqlc.ListInterfacesByInstancesParams{
+		InstanceIds: []string{row.ID},
+	})
+	if err != nil {
+		return fmt.Errorf("read the interface of instance %q: %w", row.ID, err)
+	}
+	if len(interfaces) == 0 {
+		return nil
+	}
+
+	err = s.hv.DeleteDHCPHost(ctx, interfaces[0].LibvirtNetwork, row.MacAddress.String)
+	if err != nil && !errors.Is(err, hypervisor.ErrNotFound) {
+		return fmt.Errorf("remove the dhcp host of instance %q: %w", row.ID, err)
+	}
+	return nil
 }
 
 // markRunning records a domain that is up again.
@@ -620,23 +654,33 @@ func (s *Service) markStopped(ctx context.Context, instanceID string) error {
 	return nil
 }
 
-// markTerminated records an instance whose domain and volumes are gone.
+// markTerminated records an instance whose domain, volumes and interface are
+// gone. The interface row is deleted in the same transaction as the state write,
+// because a terminated instance must not look placed: the launch allocation it
+// held goes back to the subnet at the same moment the row stops saying it is
+// alive.
 //
-// The row stays, on purpose: it keeps the launch inputs for history and, through
-// the partial unique index on the name, releases the name for reuse
-// (docs/design/02-data-model.md). Only terminated releases the allocation the
-// capacity report sums.
+// The row stays, on purpose: it keeps the launch inputs — the MAC and address
+// among them — for history and, through the partial unique index on the name,
+// releases the name for reuse (docs/design/02-data-model.md). Only terminated
+// releases the allocation the capacity report sums.
 func (s *Service) markTerminated(ctx context.Context, instanceID string) error {
 	now := formatTime(s.now())
-	_, err := s.store.MarkInstanceTerminated(ctx, sqlc.MarkInstanceTerminatedParams{
-		ID:           instanceID,
-		TerminatedAt: sql.NullString{String: now, Valid: true},
-		UpdatedAt:    now,
+	return s.store.WithTx(ctx, func(ctx context.Context, tx *store.Tx) error {
+		if _, err := tx.DeleteInterfacesByInstance(ctx, sqlc.DeleteInterfacesByInstanceParams{
+			InstanceID: instanceID,
+		}); err != nil {
+			return fmt.Errorf("delete the network interfaces of instance %q: %w", instanceID, err)
+		}
+		if _, err := tx.MarkInstanceTerminated(ctx, sqlc.MarkInstanceTerminatedParams{
+			ID:           instanceID,
+			TerminatedAt: sql.NullString{String: now, Valid: true},
+			UpdatedAt:    now,
+		}); err != nil {
+			return fmt.Errorf("mark instance %q terminated: %w", instanceID, err)
+		}
+		return nil
 	})
-	if err != nil {
-		return fmt.Errorf("mark instance %q terminated: %w", instanceID, err)
-	}
-	return nil
 }
 
 // recordFailure writes the state and the reason of a workflow that could not do

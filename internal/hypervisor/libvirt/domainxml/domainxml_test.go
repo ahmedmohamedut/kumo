@@ -26,6 +26,7 @@ func testSpec() hypervisor.DomainSpec {
 		Machine:        "q35",
 		Arch:           "x86_64",
 		Network:        "kumo-default",
+		MACAddress:     "52:54:00:0a:0b:0c",
 		Firmware:       "",
 		RootDiskPath:   "/var/lib/kumo/pools/kumo-instances/i-0a1b2c3d4e5f60718-root.qcow2",
 		SeedISOPath:    "/var/lib/kumo/pools/kumo-instances/i-0a1b2c3d4e5f60718-seed.iso",
