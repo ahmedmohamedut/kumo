@@ -254,9 +254,9 @@ func isOperationInvalid(err error) bool {
 // the size of the instances pool.
 //
 // It is deliberately the totals and nothing else. What is already taken is
-// summed from the instances table by the service layer, because a terminated
-// instance keeps its row for history while holding nothing, and libvirt cannot
-// tell the difference between an overlay on top of an image and a stale one.
+// summed from the instances table by the service layer, because libvirt cannot
+// tell the difference between an overlay on top of an image and a stale one, and
+// a terminate removes the row that said which overlays were live.
 func (c *Client) Capacity(ctx context.Context) (hypervisor.Capacity, error) {
 	var out hypervisor.Capacity
 

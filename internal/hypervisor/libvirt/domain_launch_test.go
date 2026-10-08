@@ -2,6 +2,7 @@ package libvirt
 
 import (
 	"encoding/xml"
+	"errors"
 	"slices"
 	"testing"
 
@@ -10,6 +11,10 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/hypervisor"
 	"github.com/ahmedmohamedut/kumo/internal/hypervisor/libvirt/domainxml"
 )
+
+// errDestroyBoom is an unrelated failure for the destroyError test: the mapping
+// has to keep a cause that is not a domain one, so a caller can still match it.
+var errDestroyBoom = errors.New("the connection dropped")
 
 func TestDomainStateMapsEveryLibvirtState(t *testing.T) {
 	t.Parallel()
@@ -348,5 +353,68 @@ func TestVCPUsFallsBackToTheMaximum(t *testing.T) {
 	}
 	if doc.MemoryMiB() != 0 {
 		t.Errorf("memory = %d MiB, want 0", doc.MemoryMiB())
+	}
+}
+
+// TestDestroyErrorTreatsAnOffDomainAsSuccess is the regression test for a
+// terminate of a stopped instance: libvirt answers DomainDestroyFlags for a
+// domain that is not running with VIR_ERR_OPERATION_INVALID ("Requested
+// operation is not valid: domain is not running"), and a hard stop of something
+// already off is the state the caller wanted, not a failure. A domain that
+// vanished between the lookup and the call reads as ErrNotFound, which every
+// cleanup path already tolerates; anything else is still an error.
+func TestDestroyErrorTreatsAnOffDomainAsSuccess(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		err          error
+		wantNil      bool
+		wantNotFound bool
+	}{
+		{name: "no error", err: nil, wantNil: true},
+		{
+			name: "already off",
+			err: golibvirt.Error{
+				Code:    uint32(golibvirt.ErrOperationInvalid),
+				Message: "Requested operation is not valid: domain is not running",
+			},
+			wantNil: true,
+		},
+		{
+			name: "gone between the lookup and the call",
+			err: golibvirt.Error{
+				Code:    uint32(golibvirt.ErrNoDomain),
+				Message: "no domain with name 'i-x'",
+			},
+			wantNotFound: true,
+		},
+		{name: "a real failure", err: errDestroyBoom},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := destroyError("i-x", test.err)
+			switch {
+			case test.wantNil:
+				if got != nil {
+					t.Errorf("destroyError() = %v, want nil", got)
+				}
+			case test.wantNotFound:
+				if !errors.Is(got, hypervisor.ErrNotFound) {
+					t.Errorf("destroyError() = %v, want ErrNotFound", got)
+				}
+			default:
+				if got == nil {
+					t.Fatal("destroyError() = nil, want an error")
+				}
+				// The cause is preserved, so a caller can still match on it.
+				if !errors.Is(got, test.err) {
+					t.Errorf("destroyError() = %v, want it to wrap %v", got, test.err)
+				}
+			}
+		})
 	}
 }

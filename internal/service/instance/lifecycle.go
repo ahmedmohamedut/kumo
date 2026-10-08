@@ -548,7 +548,11 @@ func (s *Service) TerminateHandler(ctx context.Context, t worker.Task) error {
 // host, then the volumes — and the row only once everything above it is gone, so
 // a failure that has to be retried still has a row to be retried against.
 func (s *Service) terminateInstance(ctx context.Context, row sqlc.Instance) error {
-	if err := s.hv.Destroy(ctx, row.ID); err != nil && !errors.Is(err, hypervisor.ErrNotFound) {
+	// Destroy is a hard stop, and a domain that is already off is the state this
+	// step wants: "not running" is not a failure. Undefine stops the domain
+	// anyway if it is somehow still up.
+	if err := s.hv.Destroy(ctx, row.ID); err != nil &&
+		!errors.Is(err, hypervisor.ErrNotFound) && !errors.Is(err, hypervisor.ErrInvalidState) {
 		return fmt.Errorf("destroy the domain of instance %q: %w", row.ID, err)
 	}
 	if err := s.hv.Undefine(ctx, row.ID); err != nil && !errors.Is(err, hypervisor.ErrNotFound) {

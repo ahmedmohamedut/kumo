@@ -998,9 +998,10 @@ func TestDeleteRefusesAnImageInUse(t *testing.T) {
 	}
 }
 
-// A terminated instance keeps its image_id for history, and the foreign key
-// would block the row delete after the volume was already gone. The delete is
-// refused up front instead, so the pool and the metadata never disagree.
+// A row an earlier release left in `terminated` still references its image, and
+// the foreign key would block the row delete after the volume was already gone.
+// The delete is refused up front instead, so the pool and the metadata never
+// disagree.
 func TestDeleteRefusesAnImageAterminatedInstanceStillReferences(t *testing.T) {
 	t.Parallel()
 

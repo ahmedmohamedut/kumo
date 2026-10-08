@@ -319,8 +319,8 @@ func insertUser(t *testing.T, db *store.Store, id, role string) {
 func TestAllocatedCapacity(t *testing.T) {
 	t.Parallel()
 
-	// A terminated instance keeps its row for history but holds nothing, so it
-	// must not keep consuming the node's capacity.
+	// A row an earlier release left in `terminated` holds nothing, so it must
+	// not keep consuming the node's capacity.
 	tests := []struct {
 		name      string
 		instances []allocatedInstance

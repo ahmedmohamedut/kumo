@@ -598,6 +598,36 @@ func TestTerminateRemovesTheDomainAndTheVolumes(t *testing.T) {
 	}
 }
 
+// TestTerminateRemovesAStoppedInstance covers the state most instances sit in
+// between runs: the domain is not running, and the hard stop that opens a
+// terminate has to treat that as done rather than fail on the guest's state.
+func TestTerminateRemovesAStoppedInstance(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	stopped := h.stoppedInstance(t, "web")
+
+	queued, err := h.svc.Terminate(t.Context(), stopped.ID)
+	if err != nil {
+		t.Fatalf("Terminate() of a stopped instance: %v", err)
+	}
+	if err := h.runTask(t, queued, task.TypeInstanceTerminate); err != nil {
+		t.Fatalf("TerminateHandler(): %v", err)
+	}
+
+	if _, err := h.svc.Get(t.Context(), stopped.ID, false); !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("Get() after terminate = %v, want ErrNotFound", err)
+	}
+	for _, name := range []string{
+		hypervisor.RootDiskName(stopped.ID),
+		hypervisor.SeedISOName(stopped.ID),
+	} {
+		if contains(h.volumeNames(instancesPool), name) {
+			t.Errorf("the pool still holds %q after terminating a stopped instance", name)
+		}
+	}
+}
+
 func TestTerminateIsSafeToRepeat(t *testing.T) {
 	t.Parallel()
 

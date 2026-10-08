@@ -437,6 +437,12 @@ func TestLaunchBootsCirrOS(t *testing.T) {
 	if err := client.Destroy(ctx, instanceID); err != nil && !errors.Is(err, hypervisor.ErrNotFound) {
 		t.Errorf("Destroy() at the end: %v", err)
 	}
+	// The domain is off now. Destroying it again is still success: the guest's
+	// state must not matter to a hard stop, which is what a terminate of a
+	// stopped instance relies on.
+	if err := client.Destroy(ctx, instanceID); err != nil {
+		t.Errorf("Destroy() on an already-stopped domain = %v, want nil", err)
+	}
 }
 
 // TestDefineAndStartAdoptsAnInactiveDefinition is the regression test for the

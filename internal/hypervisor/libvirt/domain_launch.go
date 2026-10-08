@@ -216,11 +216,27 @@ func (c *Client) Destroy(ctx context.Context, id string) error {
 		if err != nil {
 			return err
 		}
-		if err := conn.DomainDestroyFlags(dom, 0); err != nil {
-			return fmt.Errorf("destroy the domain %q: %w", id, err)
-		}
-		return nil
+		return destroyError(id, conn.DomainDestroyFlags(dom, 0))
 	})
+}
+
+// destroyError maps the answer to DomainDestroyFlags.
+//
+// A domain that is already off is where a destroy wants to end up, so libvirt's
+// "operation is not valid: domain is not running" is success rather than a
+// conflict: a terminate of a stopped instance, and the rollback of a launch
+// that never booted, both have to run to completion. A domain that disappeared
+// between the lookup and the call is ErrNotFound, like one that was never there,
+// because the cleanup paths already treat that as done.
+func destroyError(id string, err error) error {
+	switch {
+	case err == nil || isOperationInvalid(err):
+		return nil
+	case isNoDomain(err) || isNotFound(err):
+		return fmt.Errorf("the domain %q: %w", id, hypervisor.ErrNotFound)
+	default:
+		return fmt.Errorf("destroy the domain %q: %w", id, err)
+	}
 }
 
 // Undefine removes a definition and everything the definition owns: the NVRAM
@@ -243,7 +259,7 @@ func (c *Client) Undefine(ctx context.Context, id string) error {
 			return fmt.Errorf("read the state of the domain %q: %w", id, err)
 		}
 		if state != int32(golibvirt.DomainShutoff) {
-			if err := conn.DomainDestroyFlags(dom, 0); err != nil && !isNotFound(err) {
+			if err := destroyError(id, conn.DomainDestroyFlags(dom, 0)); err != nil {
 				return fmt.Errorf("stop the domain %q before undefining it: %w", id, err)
 			}
 		}
