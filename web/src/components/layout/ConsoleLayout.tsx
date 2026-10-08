@@ -12,6 +12,7 @@ import { toggleMode } from '@/app/theme'
 import { useLogoutMutation } from '@/features/auth/api'
 import { selectUser } from '@/features/auth/authSlice'
 import { dismiss } from '@/features/notifications/notificationsSlice'
+import { useAutoDismiss } from '@/features/notifications/useAutoDismiss'
 import { activeHref, navigationItems } from './navigation'
 
 type Utilities = NonNullable<TopNavigationProps['utilities']>
@@ -66,6 +67,8 @@ export function ConsoleLayout() {
   const dispatch = useAppDispatch()
   const { breadcrumbs } = usePageMetaContext()
   const notifications = useAppSelector((state) => state.notifications.items)
+  // Notifications retire on their own; see useAutoDismiss.
+  useAutoDismiss(notifications)
   const username = useAppSelector(selectUser)?.username ?? 'User'
   const [logout] = useLogoutMutation()
 
