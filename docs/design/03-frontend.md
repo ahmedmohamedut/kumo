@@ -139,7 +139,7 @@ Create form: name, type (ED25519 default / RSA), tags. On success show a **Modal
 
 ## 7. UX details
 
-- **Notifications:** `notifications` slice holds Flashbar items; each mutation result pushes a success/error item (dismissible, auto-dismiss success after 8 s).
+- **Notifications:** `notifications` slice holds Flashbar items; each mutation result pushes a success/error item (dismissible, every notification auto-dismisses after 5 s via `features/notifications/useAutoDismiss.ts`).
 - **Errors:** map API `details[].field` onto `FormField errorText`.
 - **Loading:** `Table loading`, `Spinner`, skeleton states via `loadingText`.
 - **Time:** relative + absolute tooltip (`lib/format.ts`). **Bytes/GiB** formatters in `lib/format.ts`.
