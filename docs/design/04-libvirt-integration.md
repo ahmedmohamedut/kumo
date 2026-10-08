@@ -112,11 +112,19 @@ Behavior the steps above do not make obvious:
   failed to be recorded is the normal case, not an exceptional one.
 
 ### Terminate
-`Destroy` (ignore "not running") → `DomainUndefineFlags` (include NVRAM flag if UEFI) → remove static DHCP host from libvirt network → delete `-root.qcow2` and `-seed.iso` → in 1 txn: delete `network_interfaces` row(s), set instance state `terminated` and `terminated_at`. Idempotent: every step tolerates "already gone".
+`Destroy` (ignore "not running") → `Undefine` → remove static DHCP host from libvirt network → delete `-root.qcow2` and `-seed.iso` → in 1 txn: delete the tags and the instance row, whose `network_interfaces` rows follow through the foreign key cascade → remove `$KUMO_DATA_DIR/console/<instance-id>.log`. Idempotent: every step tolerates "already gone".
 
-The row stays behind with `terminated_at` set (see `02-data-model.md`): it keeps the launch inputs,
-`private_ip` and `mac_address` for history and, through the partial unique index on the name, releases the name for reuse. So
-`DeleteInstance` has no caller — the row *is* the history, and only a purge would delete it.
+`Undefine` is `virsh undefine --remove-all-storage --nvram` (`internal/hypervisor`): libvirt has no
+single call for that, so virsh undefines the domain with its NVRAM file and then deletes the volumes
+it read out of the domain XML, and so does `Undefine`. The explicit `-root.qcow2`/`-seed.iso` pass
+that follows is what still cleans up when there was no domain left to read the disks from: a task
+requeued after an earlier attempt, or a domain an operator removed by hand.
+
+The row is removed with everything else rather than kept as history: an instance that has been
+terminated is a deleted resource (`01-api.md`), its name is free again and the capacity report stops
+summing what no longer exists. The tasks are what survive, as the record of what was done to the
+instance, and `GET /instances/{id}` answers `404` once the terminate has run. A row an earlier
+release left in `terminated` is purged by the next `DELETE` for that id.
 
 Every terminate step treats "no such domain" as done, which is what makes the workflow safe to run
 twice: a task interrupted after deleting the seed ISO is requeued on the next start and has to be
@@ -290,8 +298,10 @@ Implementation notes:
 ### 6.5 Network interfaces
 
 - One interface per instance initially (`device_index = 0`), modelled for multi-NIC later.
-- An interface exists exactly as long as its instance is not terminated.
-- Deletion of the `network_interfaces` row occurs in the same transaction that sets `terminated_at`, while `instances.private_ip` and `instances.mac_address` preserve the history.
+- An interface exists exactly as long as its instance does.
+- Deletion of the `network_interfaces` rows is the cascade of the instance row delete, which a
+  terminate makes: the same statement, the same transaction, and no history left in
+  `instances.private_ip` and `instances.mac_address` to preserve either — those go with the row.
 
 ### 6.6 Validation & collision prevention
 

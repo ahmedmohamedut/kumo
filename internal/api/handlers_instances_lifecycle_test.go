@@ -115,26 +115,20 @@ func TestLifecycleActionsWalkAnInstanceThroughItsStates(t *testing.T) {
 		t.Errorf("the terminate answered %q, want terminating", terminated.State)
 	}
 	waitForTaskState(t, ir.router, ir.tokens.access, *terminated.TaskID, "succeeded")
-	if got := stateOf(t, ir, launched.ID); got != string(instance.StateTerminated) {
-		t.Fatalf("state = %q after the terminate, want terminated", got)
+
+	// The terminate does not leave a row behind, so the read that used to answer
+	// `terminated` now answers 404 (01-api.md §Instances).
+	missing := doWithToken(t, ir.router, http.MethodGet, base, "", ir.tokens.access)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("GET after the terminate status = %d, want 404 (body %s)", missing.Code, missing.Body)
 	}
 
-	// Repeating the call is the retry a client does when it never saw the answer,
-	// and it must not queue a second task for a domain that is already gone.
+	// Repeating the call is the retry a client does when it never saw the answer.
+	// The instance is gone by then, and a DELETE of an unknown id is a 404 rather
+	// than a second answer to a question that has been settled.
 	again := doWithToken(t, ir.router, http.MethodDelete, base, "", ir.tokens.access)
-	if again.Code != http.StatusAccepted {
-		t.Fatalf("the repeated DELETE status = %d, want 202 (body %s)", again.Code, again.Body)
-	}
-	var repeated instanceBody
-	decode(t, again, &repeated)
-	if repeated.State != string(instance.StateTerminated) {
-		t.Errorf("the repeated terminate answered %q, want terminated", repeated.State)
-	}
-	if repeated.TaskID != nil {
-		t.Errorf("the repeated terminate queued task %q", *repeated.TaskID)
-	}
-	if got := again.Header().Get("Location"); got != "" {
-		t.Errorf("the repeated terminate sent Location %q, want none", got)
+	if again.Code != http.StatusNotFound {
+		t.Fatalf("the repeated DELETE status = %d, want 404 (body %s)", again.Code, again.Body)
 	}
 }
 

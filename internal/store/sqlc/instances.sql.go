@@ -99,9 +99,12 @@ type DeleteInstanceParams struct {
 	ID string `json:"id"`
 }
 
-// Delete /instances/{id} removes the row once the volume is gone. The launch
-// workflow never calls it: a failed instance keeps its row in 'error' so the
-// console can show what happened and a retry has something to work on.
+// The end of a terminate: the row goes once the domain, its volumes and its dhcp
+// host are gone, taking its network_interfaces rows with it through the cascade;
+// the tags go in the same transaction. That releases the name and the capacity
+// the row held (docs/design/02-data-model.md). The launch workflow never calls
+// it: a failed instance keeps its row in 'error' so the console can show what
+// happened and a retry has something to work on.
 func (q *Queries) DeleteInstance(ctx context.Context, arg DeleteInstanceParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteInstance, arg.ID)
 	if err != nil {
@@ -430,54 +433,6 @@ func (q *Queries) MarkInstanceRunning(ctx context.Context, arg MarkInstanceRunni
 		arg.PrivateIp,
 		arg.UpdatedAt,
 	)
-	var i Instance
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.State,
-		&i.StateReason,
-		&i.ImageID,
-		&i.InstanceType,
-		&i.Vcpus,
-		&i.MemoryMib,
-		&i.RootDiskGb,
-		&i.KeyPairID,
-		&i.KeyPairName,
-		&i.UserData,
-		&i.LibvirtUuid,
-		&i.MacAddress,
-		&i.PrivateIp,
-		&i.CreatedBy,
-		&i.LaunchedAt,
-		&i.TerminatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const markInstanceTerminated = `-- name: MarkInstanceTerminated :one
-UPDATE instances
-SET state = 'terminated',
-    state_reason = NULL,
-    terminated_at = ?2,
-    updated_at = ?3
-WHERE id = ?1
-RETURNING id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at
-`
-
-type MarkInstanceTerminatedParams struct {
-	ID           string         `json:"id"`
-	TerminatedAt sql.NullString `json:"terminated_at"`
-	UpdatedAt    string         `json:"updated_at"`
-}
-
-// The end of a terminate. terminated_at is written together with the state,
-// because a row that says terminated without a time cannot be ordered against the
-// ones that followed it, and the row outlives the domain on purpose: it keeps
-// the launch inputs for history and releases the name for reuse through the
-// partial unique index (docs/design/02-data-model.md).
-func (q *Queries) MarkInstanceTerminated(ctx context.Context, arg MarkInstanceTerminatedParams) (Instance, error) {
-	row := q.db.QueryRowContext(ctx, markInstanceTerminated, arg.ID, arg.TerminatedAt, arg.UpdatedAt)
 	var i Instance
 	err := row.Scan(
 		&i.ID,

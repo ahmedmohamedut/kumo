@@ -128,7 +128,10 @@ administrator. Open `http://localhost:8080`.
    stays in `stopping` — Force stop is the way out.
 5. **Terminate.** Terminate asks for the name typed; a wrong name keeps the button shut.
    After it settles, `old-*` volumes are gone from `kumo-instances`
-   (`virsh vol-list --pool kumo-instances`) and the name is free to reuse.
+   (`virsh vol-list --pool kumo-instances`), the domain is undefined
+   (`virsh list --all`), the console takes you back to the list, and the instance's
+   own URL answers `404` — the row is deleted, not left in `terminated` — so the
+   name is free to reuse.
 6. **Destructive guards.** Try deleting the image an instance was launched from: the
    console keeps you on the page and shows the `409` naming the instance that blocks it.
 

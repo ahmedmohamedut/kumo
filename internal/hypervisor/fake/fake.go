@@ -580,7 +580,10 @@ func (f *Fake) reboot(ctx context.Context, op hypervisor.Op, id, message string)
 	return nil
 }
 
-// Undefine removes a domain definition, keeping its volumes.
+// Undefine removes a domain definition and the storage volumes the domain
+// declares: the root disk and the seed ISO go with it, the way
+// `virsh undefine --remove-all-storage --nvram` does. The image volume a root
+// disk reads from is shared, never the domain's own, so it stays.
 func (f *Fake) Undefine(ctx context.Context, id string) error {
 	if err := f.begin(ctx, hypervisor.OpUndefine); err != nil {
 		return err
@@ -593,6 +596,9 @@ func (f *Fake) Undefine(ctx context.Context, id string) error {
 		return fmt.Errorf("fake: domain %q: %w", id, hypervisor.ErrNotFound)
 	}
 	delete(f.domains, id)
+	for _, name := range []string{hypervisor.RootDiskName(id), hypervisor.SeedISOName(id)} {
+		delete(f.volumes, volumeKey(f.infrastructure.InstancesPool, name))
+	}
 	f.emitLocked(hypervisor.DomainEvent{
 		ID:     id,
 		Action: hypervisor.ActionUndefine,

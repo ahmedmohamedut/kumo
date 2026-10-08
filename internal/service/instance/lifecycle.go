@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -73,10 +74,6 @@ type action struct {
 	// leaves the row saying stopped until the guest is up, because there pending
 	// means a launch.
 	next State
-	// settled are the states that already mean the action is done. A terminate
-	// answers for them without queueing a second task, which is what makes
-	// repeating the call safe.
-	settled []State
 	// force records ?force=true in the task payload.
 	force bool
 }
@@ -84,16 +81,6 @@ type action struct {
 // allows reports whether the action may be queued from state.
 func (a action) allows(state State) bool {
 	for _, candidate := range a.from {
-		if candidate == state {
-			return true
-		}
-	}
-	return false
-}
-
-// isSettled reports whether state already means the action is done.
-func (a action) isSettled(state State) bool {
-	for _, candidate := range a.settled {
 		if candidate == state {
 			return true
 		}
@@ -148,21 +135,24 @@ func (s *Service) Reboot(ctx context.Context, instanceID string, force bool) (In
 	})
 }
 
-// Terminate queues the removal of an instance: the domain goes, both volumes go
-// and the row stays as history (docs/design/04-libvirt-integration.md §3).
+// Terminate queues the removal of an instance: the domain goes, the volumes go,
+// the NVRAM file and the console log go with them, and the row goes last
+// (docs/design/04-libvirt-integration.md §3).
 //
-// It is allowed from every state a live instance can be in, because it is also
-// the way out of one that is stuck; a repeated call for an instance that is already
-// terminated answers without queueing anything.
+// It is allowed from every state, because it is also the way out of one that is
+// stuck. `terminated` is in the list for rows an earlier release left behind:
+// they were kept as history then, and a DELETE is what purges them now. Once the
+// task has run the row is gone, so repeating the call is a 404 rather than the
+// second answer of a pair.
 func (s *Service) Terminate(ctx context.Context, instanceID string) (Instance, error) {
 	return s.queue(ctx, action{
 		instanceID: instanceID,
 		taskType:   task.TypeInstanceTerminate,
 		from: []State{
-			StatePending, StateRunning, StateStopping, StateStopped, StateTerminating, StateError,
+			StatePending, StateRunning, StateStopping, StateStopped,
+			StateTerminating, StateTerminated, StateError,
 		},
-		next:    StateTerminating,
-		settled: []State{StateTerminated},
+		next: StateTerminating,
 	})
 }
 
@@ -214,11 +204,7 @@ func (s *Service) queue(ctx context.Context, act action) (Instance, error) {
 			return fmt.Errorf("get instance: %w", err)
 		}
 
-		switch state := State(row.State); {
-		case act.isSettled(state):
-			// Already done: answer with the row and queue nothing.
-			return nil
-		case !act.allows(state):
+		if state := State(row.State); !act.allows(state) {
 			return fmt.Errorf("%w: instance %q is %s, and %s only applies to a %s instance",
 				service.ErrConflict, row.ID, state, act.taskType, act.expects())
 		}
@@ -525,8 +511,8 @@ func (s *Service) rebootInstance(ctx context.Context, row sqlc.Instance, force b
 	}
 }
 
-// TerminateHandler destroys the domain and deletes the volumes of an instance,
-// then records the termination (docs/design/04-libvirt-integration.md §3).
+// TerminateHandler destroys the domain, deletes the volumes and removes the row
+// of an instance (docs/design/04-libvirt-integration.md §3).
 //
 // Every step tolerates a resource that is already gone. That is what makes the
 // workflow safe to run twice, which matters because a task interrupted
@@ -556,10 +542,11 @@ func (s *Service) TerminateHandler(ctx context.Context, t worker.Task) error {
 	return nil
 }
 
-// terminateInstance removes the domain, its static host entry, the two volumes
-// and the interface row of an instance, in the order
-// docs/design/04-libvirt-integration.md §3 fixes: the domain first (it holds the
-// volumes and the lease), then the dhcp host, then the volumes.
+// terminateInstance removes the domain, its static host entry, its volumes and
+// finally the row itself, in the order docs/design/04-libvirt-integration.md §3
+// fixes: the domain first (it holds the volumes and the lease), then the dhcp
+// host, then the volumes — and the row only once everything above it is gone, so
+// a failure that has to be retried still has a row to be retried against.
 func (s *Service) terminateInstance(ctx context.Context, row sqlc.Instance) error {
 	if err := s.hv.Destroy(ctx, row.ID); err != nil && !errors.Is(err, hypervisor.ErrNotFound) {
 		return fmt.Errorf("destroy the domain of instance %q: %w", row.ID, err)
@@ -572,6 +559,9 @@ func (s *Service) terminateInstance(ctx context.Context, row sqlc.Instance) erro
 		return err
 	}
 
+	// Undefine has just removed the volumes the domain declared. This pass is
+	// what still cleans up when there was no domain to read them from: a task
+	// requeued after an earlier attempt, or a domain an operator removed by hand.
 	for _, name := range []string{hypervisor.RootDiskName(row.ID), hypervisor.SeedISOName(row.ID)} {
 		if err := s.hv.DeleteVolume(ctx, s.instancesPool, name); err != nil &&
 			!errors.Is(err, hypervisor.ErrNotFound) {
@@ -579,7 +569,7 @@ func (s *Service) terminateInstance(ctx context.Context, row sqlc.Instance) erro
 		}
 	}
 
-	return s.markTerminated(ctx, row.ID)
+	return s.deleteInstance(ctx, row.ID)
 }
 
 // removeDHCPHost removes the static host entry of a terminating instance from the
@@ -654,33 +644,47 @@ func (s *Service) markStopped(ctx context.Context, instanceID string) error {
 	return nil
 }
 
-// markTerminated records an instance whose domain, volumes and interface are
-// gone. The interface row is deleted in the same transaction as the state write,
-// because a terminated instance must not look placed: the launch allocation it
-// held goes back to the subnet at the same moment the row stops saying it is
-// alive.
+// deleteInstance removes the row of an instance and everything that exists only
+// because it does.
 //
-// The row stays, on purpose: it keeps the launch inputs — the MAC and address
-// among them — for history and, through the partial unique index on the name,
-// releases the name for reuse (docs/design/02-data-model.md). Only terminated
-// releases the allocation the capacity report sums.
-func (s *Service) markTerminated(ctx context.Context, instanceID string) error {
-	now := formatTime(s.now())
-	return s.store.WithTx(ctx, func(ctx context.Context, tx *store.Tx) error {
-		if _, err := tx.DeleteInterfacesByInstance(ctx, sqlc.DeleteInterfacesByInstanceParams{
-			InstanceID: instanceID,
+// The interface rows follow the row through the foreign key, and the tags are
+// deleted in the same transaction, so nothing that describes the instance is left
+// in the database. The tasks are left alone on purpose: they are the record of
+// what was done to the instance, and the terminate task itself has not been
+// answered yet. With the row gone the name is free — through the partial unique
+// index or simply because there is nothing left to collide with — and the capacity
+// report stops summing what no longer exists (docs/design/02-data-model.md).
+func (s *Service) deleteInstance(ctx context.Context, instanceID string) error {
+	if err := s.store.WithTx(ctx, func(ctx context.Context, tx *store.Tx) error {
+		if err := tx.DeleteResourceTags(ctx, sqlc.DeleteResourceTagsParams{
+			ResourceID: instanceID,
 		}); err != nil {
-			return fmt.Errorf("delete the network interfaces of instance %q: %w", instanceID, err)
+			return fmt.Errorf("delete the tags of instance %q: %w", instanceID, err)
 		}
-		if _, err := tx.MarkInstanceTerminated(ctx, sqlc.MarkInstanceTerminatedParams{
-			ID:           instanceID,
-			TerminatedAt: sql.NullString{String: now, Valid: true},
-			UpdatedAt:    now,
-		}); err != nil {
-			return fmt.Errorf("mark instance %q terminated: %w", instanceID, err)
+		deleted, err := tx.DeleteInstance(ctx, sqlc.DeleteInstanceParams{ID: instanceID})
+		if err != nil {
+			return fmt.Errorf("delete the row of instance %q: %w", instanceID, err)
+		}
+		if deleted == 0 {
+			// Zero rows means the instance is already gone, which is where this
+			// transaction was trying to end up: a repeated or requeued terminate
+			// must not report a failure it has no way to undo.
+			s.logger.InfoContext(ctx, "instance: the row was already gone",
+				"instance_id", instanceID)
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+
+	// The console log is a file rather than a row, so it is removed after the
+	// commit. Losing it is a warning, never an error: the instance is gone by
+	// then, and failing the task would report a deletion that has happened.
+	if err := os.Remove(s.consoleLogPath(instanceID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		s.logger.WarnContext(ctx, "instance: could not remove the console log",
+			"instance_id", instanceID, "error", err)
+	}
+	return nil
 }
 
 // recordFailure writes the state and the reason of a workflow that could not do
@@ -815,8 +819,10 @@ func (s *Service) claimed(ctx context.Context, t worker.Task, instanceID string)
 	}
 
 	switch state := State(row.State); {
-	case state == StateTerminated:
+	case state == StateTerminated && t.Type != task.TypeInstanceTerminate:
 		// Everything is already gone; the task is a repeat of work that finished.
+		// A terminate is the exception: it is what purges a row that an earlier
+		// release left behind in `terminated` (docs/design/04-libvirt-integration.md §3).
 		s.logger.InfoContext(ctx, "instance: task skipped, the instance is terminated",
 			"instance_id", instanceID, "task_id", t.ID)
 		release()

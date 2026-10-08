@@ -65,20 +65,6 @@ SET name = ?2,
 WHERE id = ?1
 RETURNING *;
 
--- The end of a terminate. terminated_at is written together with the state,
--- because a row that says terminated without a time cannot be ordered against the
--- ones that followed it, and the row outlives the domain on purpose: it keeps
--- the launch inputs for history and releases the name for reuse through the
--- partial unique index (docs/design/02-data-model.md).
--- name: MarkInstanceTerminated :one
-UPDATE instances
-SET state = 'terminated',
-    state_reason = NULL,
-    terminated_at = ?2,
-    updated_at = ?3
-WHERE id = ?1
-RETURNING *;
-
 -- Keyset pagination over (launched_at, id); instr(haystack, '') is 1 in
 -- SQLite, so an empty query matches every row, and an empty state_filter
 -- matches every state.
@@ -116,8 +102,11 @@ WHERE resource_id = ?1
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
 
--- Delete /instances/{id} removes the row once the volume is gone. The launch
--- workflow never calls it: a failed instance keeps its row in 'error' so the
--- console can show what happened and a retry has something to work on.
+-- The end of a terminate: the row goes once the domain, its volumes and its dhcp
+-- host are gone, taking its network_interfaces rows with it through the cascade;
+-- the tags go in the same transaction. That releases the name and the capacity
+-- the row held (docs/design/02-data-model.md). The launch workflow never calls
+-- it: a failed instance keeps its row in 'error' so the console can show what
+-- happened and a retry has something to work on.
 -- name: DeleteInstance :execrows
 DELETE FROM instances WHERE id = ?1;

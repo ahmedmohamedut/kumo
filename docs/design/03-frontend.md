@@ -103,6 +103,8 @@ State → `StatusIndicator`:
 
 The reason is rendered as small inactive text *below* the indicator, not as the indicator's tooltip. A tooltip is only reachable on hover, which hides the one thing an operator scanning a column of failures is looking for; a `pending` row says what it is waiting for on the same grounds.
 
+`terminated` stays in the mapping for the rows an earlier release left behind — a terminate deletes the row now, so nothing the console does produces the state — and for the seeded fixtures.
+
 ### 6.2 Launch instance (form)
 Sections (`SpaceBetween` of `Container`s, sticky footer actions Cancel / **Launch instance**):
 1. **Name and tags**: name `Input`, tags editor (`TagEditor`).
@@ -119,6 +121,8 @@ On submit → `POST /instances` → navigate to the detail page and show a succe
 `ContentLayout` header with name, ID, state indicator and actions. `Tabs`: **Details** (`ColumnLayout` of `KeyValuePairs`: ID, state, type, vCPU, memory, image, key pair, IPs, launch time, MAC), **Storage** (root disk), **Tags**, **Console output** (`<pre>` with Refresh; VNC console button added in M5), **Tasks** (recent tasks).
 
 The lifecycle actions are here as well as on the list. An operator who followed a launch to this page is watching an instance come up, and the thing they want when a boot hangs is Stop — not three clicks and a page change away. The guard table and the confirmations are shared with the list, so the two cannot disagree.
+
+A terminate leaves this page rather than waiting on it: the task deletes the row, so the console goes back to the list the moment the call is accepted and the success Flashbar says what happened there. A page left open against an instance somebody else removed reads `404`, which is an `info` alert ("This instance no longer exists") rather than an error one: the API is answering a question, not reporting a fault.
 
 `user_data` is not shown. The endpoint only carries it for an administrator (01-api.md §Instances) and the launch form is the only place it is typed; the detail page has nothing useful to add, and printing a secret-adjacent payload into a page an operator might screenshot is not a trade worth making.
 

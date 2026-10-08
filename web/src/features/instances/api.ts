@@ -150,8 +150,9 @@ export const instancesApi = kumoApi.injectEndpoints({
       invalidatesTags: (_result, _error, { id }) => [{ type: 'Instance', id }, 'Instance'],
     }),
 
-    // Terminating keeps the row with `terminated_at` set, so a repeat answers
-    // `202` with no task rather than a 404 — the list invalidates either way.
+    // A terminate removes the row rather than marking it, so the list refetch
+    // finds the instance gone and a repeat of the request answers `404` like any
+    // other unknown id. The list invalidates either way.
     terminateInstance: build.mutation<Instance, string>({
       query: (id) => ({ url: `/instances/${encodeURIComponent(id)}`, method: 'DELETE' }),
       invalidatesTags: (_result, _error, id) => [{ type: 'Instance', id }, 'Instance'],

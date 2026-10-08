@@ -631,8 +631,12 @@ paths:
       operationId: terminateInstance
       summary: Terminate an instance
       description: |
-        Destroys the domain and deletes its disks as a task, answering `202`.
-        Repeating the call for an already terminated instance succeeds.
+        Removes the instance as a task, answering `202`: the domain, its storage
+        and its NVRAM file go, then the row itself, so `GET /instances/{id}`
+        answers `404` once the task has run. Repeating the call after that is a
+        `404` like any other unknown id. `terminated` is still a state the call
+        is accepted from, for the rows an earlier release kept as history —
+        the task purges those.
       responses:
         '202':
           description: The termination was accepted.
@@ -1367,8 +1371,11 @@ components:
         Host totals versus what is already allocated. `total` is measured by the
         hypervisor (node vCPUs multiplied by the configured overcommit ratio, node
         memory, and the size of the instances pool); `allocated` is summed from the
-        instances table, counting every instance that is not `terminated`. The
-        capacity rules are documented in `00-architecture.md` §6.
+        instances table, counting every instance that is not `terminated`. A
+        terminate deletes the row, so a terminated instance stops being counted
+        as soon as it is gone, and rows left in `terminated` by an earlier
+        release hold nothing. The capacity rules are documented in
+        `00-architecture.md` §6.
       required: [vcpus, memory_bytes, disk_bytes]
       properties:
         vcpus:
@@ -1658,6 +1665,9 @@ components:
                 $ref: '#/components/schemas/Image'
     Instance:
       type: object
+      description: >-
+        An instance on this node. A terminate removes it, so an id that has been
+        terminated reads as `404` rather than as a row in `terminated`.
       required:
         - id
         - name
@@ -1709,14 +1719,14 @@ components:
         vpc_id:
           type: string
           nullable: true
-          description: The VPC of the instance, read from its network interface. Null for a terminated instance.
+          description: The VPC of the instance, read from its network interface. Null when the instance has no interface.
         subnet_id:
           type: string
           nullable: true
-          description: The subnet the instance's interface belongs to. Null for a terminated instance.
+          description: The subnet the instance's interface belongs to. Null when the instance has no interface.
         network_interfaces:
           type: array
-          description: The live interfaces of the instance. Empty for a terminated instance.
+          description: The live interfaces of the instance. A terminate deletes them with the row.
           items:
             $ref: '#/components/schemas/NetworkInterface'
         user_data:
@@ -1734,6 +1744,9 @@ components:
           type: string
           format: date-time
           nullable: true
+          description: >-
+            Set only on a row an earlier release kept as history. A terminate
+            deletes the row rather than writing it.
         updated_at:
           type: string
           format: date-time
@@ -1767,6 +1780,10 @@ components:
           type: string
     InstanceState:
       type: string
+      description: >-
+        `terminated` is only ever seen on a row an earlier release kept as
+        history: a terminate deletes the row, and `DELETE` purges such a row when
+        it is asked for.
       enum: [pending, running, stopping, stopped, terminating, terminated, error]
     LaunchInstanceRequest:
       type: object

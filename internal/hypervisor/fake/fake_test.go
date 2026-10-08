@@ -654,9 +654,17 @@ func TestUndefine(t *testing.T) {
 		t.Errorf("second Undefine() error = %v, want ErrNotFound", err)
 	}
 
-	// The volumes are kept: only the domain definition is gone.
-	if err := f.DeleteVolume(ctx, instancesPool, fake.RootDiskName("i-web")); err != nil {
-		t.Errorf("the root disk should survive an undefine, DeleteVolume() error = %v", err)
+	// The storage the domain declared goes with it, the way
+	// `virsh undefine --remove-all-storage` does: the root disk and the seed ISO
+	// are gone rather than left for somebody to notice later.
+	for _, name := range []string{fake.RootDiskName("i-web"), fake.SeedISOName("i-web")} {
+		if err := f.DeleteVolume(ctx, instancesPool, name); !errors.Is(err, hypervisor.ErrNotFound) {
+			t.Errorf("%q should be gone with the domain, DeleteVolume() error = %v", name, err)
+		}
+	}
+	// The image is shared backing, never the domain's own storage, so it stays.
+	if _, err := f.ImageInfo(ctx, "img-base"); err != nil {
+		t.Errorf("ImageInfo() after undefine error = %v, want the image untouched", err)
 	}
 }
 

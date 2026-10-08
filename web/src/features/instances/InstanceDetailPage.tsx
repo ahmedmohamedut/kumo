@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import Alert from '@cloudscape-design/components/alert'
 import Box from '@cloudscape-design/components/box'
 import Button from '@cloudscape-design/components/button'
@@ -43,7 +43,7 @@ import { InstanceStateIndicator } from '@/features/instances/InstanceStateIndica
 import { STATE_INDICATOR } from '@/features/instances/state'
 import { notify } from '@/features/notifications/notificationsSlice'
 import { pollInterval as taskPollInterval, tasksApi, useListTasksQuery } from '@/features/tasks/api'
-import { errorMessage, fieldErrors, type ApiError } from '@/lib/apiError'
+import { errorMessage, fieldErrors, isNotFound, type ApiError } from '@/lib/apiError'
 import { formatAbsoluteTime, formatGiB, formatRelativeTime } from '@/lib/format'
 
 /** CONSOLE_TAIL_KIB is how much of the serial log the console tab asks for. */
@@ -77,6 +77,7 @@ interface PendingAction {
  */
 export function InstanceDetailPage() {
   const { instanceId } = useParams<{ instanceId: string }>()
+  const navigate = useNavigate()
   const dispatch = useAppDispatch()
 
   const id = instanceId ?? ''
@@ -154,6 +155,11 @@ export function InstanceDetailPage() {
           break
         case 'terminate':
           await terminateInstance(instance.id).unwrap()
+          // A terminate removes the instance rather than marking it: the task
+          // deletes the row, so this page is a 404 a few seconds from now. The
+          // list is where an operator watches the rest of them, and the flash
+          // below still says what happened.
+          navigate('/instances')
           break
       }
       dispatch(
@@ -250,8 +256,17 @@ export function InstanceDetailPage() {
     >
       <SpaceBetween size="l">
         {error !== undefined && (
-          <Alert type="error" header="The instance could not be loaded">
-            {errorMessage(error, 'The instance could not be loaded.')}
+          <Alert
+            type={isNotFound(error) ? 'info' : 'error'}
+            header={
+              isNotFound(error)
+                ? 'This instance no longer exists'
+                : 'The instance could not be loaded'
+            }
+          >
+            {isNotFound(error)
+              ? `${errorMessage(error, 'The instance is gone.')} A terminate removes an instance rather than marking it: its domain, its storage and its row are all gone, and this page outlived them.`
+              : errorMessage(error, 'The instance could not be loaded.')}
           </Alert>
         )}
 
@@ -553,7 +568,7 @@ export function InstanceDetailPage() {
           <SpaceBetween size="m">
             <Alert type="warning" header="This cannot be undone">
               {pending.action === 'terminate'
-                ? 'Terminating removes the domain and both of its disks. The name is kept as history so it can be reused, but nothing of the instance survives.'
+                ? 'Terminating removes the domain and both of its disks, and then the instance itself: the row is deleted, the name is freed, and only the tasks are left to show what happened.'
                 : 'A force stop cuts power to the guest. Anything it has not written to disk is lost, exactly as if the machine had been unplugged.'}
             </Alert>
 

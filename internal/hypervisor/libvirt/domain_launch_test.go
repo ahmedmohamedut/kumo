@@ -2,6 +2,7 @@ package libvirt
 
 import (
 	"encoding/xml"
+	"slices"
 	"testing"
 
 	golibvirt "github.com/digitalocean/go-libvirt"
@@ -261,6 +262,70 @@ func TestDomainDescReadsWhatLibvirtAddsBack(t *testing.T) {
 	}
 	if doc.MAC() != "52:54:00:ab:cd:ef" {
 		t.Errorf("mac = %q, want the first interface that has one", doc.MAC())
+	}
+}
+
+// TestStoragePathsReadsEveryDiskUndefineHasToRemove covers the two disks Kumo
+// defines and the shapes a description can carry: a block device, a network disk
+// whose source is a name rather than a path, and a disk with no source at all.
+// Undefine deletes what these paths name, so a path they fail to read is a file
+// left behind after the instance is gone.
+func TestStoragePathsReadsEveryDiskUndefineHasToRemove(t *testing.T) {
+	t.Parallel()
+
+	spec := hypervisor.DomainSpec{
+		ID:             "i-0a1b2c3d4e5f60718",
+		Name:           "i-0a1b2c3d4e5f60718",
+		RootDiskPool:   "kumo-instances",
+		RootDiskPath:   "/var/lib/libvirt/images/kumo-instances/root.qcow2",
+		SeedISOPath:    "/var/lib/libvirt/images/kumo-instances/seed.iso",
+		ConsoleLogPath: "/var/lib/kumo/console/i-0a1b2c3d4e5f60718.log",
+		VCPUs:          2,
+		MemoryMiB:      4096,
+		Network:        "default",
+	}
+
+	document, err := domainxml.Build(spec)
+	if err != nil {
+		t.Fatalf("Build(): %v", err)
+	}
+
+	var doc domainDesc
+	if err := xml.Unmarshal(document, &doc); err != nil {
+		t.Fatalf("Unmarshal(): %v", err)
+	}
+	if got, want := doc.StoragePaths(), []string{spec.RootDiskPath, spec.SeedISOPath}; !slices.Equal(got, want) {
+		t.Errorf("StoragePaths() = %v, want %v", got, want)
+	}
+
+	const described = `<domain type="kvm">
+  <name>i-0a1b2c3d4e5f60718</name>
+  <devices>
+    <disk type="file" device="disk">
+      <source file="/var/lib/libvirt/images/kumo-instances/root.qcow2"/>
+    </disk>
+    <disk type="block" device="disk">
+      <source dev="/dev/vg/data"/>
+    </disk>
+    <disk type="network" device="disk">
+      <source protocol="iscsi" name="iqn.2026-01.example:disk"/>
+    </disk>
+    <disk type="file" device="cdrom">
+      <target dev="sda" bus="sata"/>
+    </disk>
+  </devices>
+</domain>`
+
+	var rewritten domainDesc
+	if err := xml.Unmarshal([]byte(described), &rewritten); err != nil {
+		t.Fatalf("Unmarshal(): %v", err)
+	}
+	want := []string{
+		"/var/lib/libvirt/images/kumo-instances/root.qcow2",
+		"/dev/vg/data",
+	}
+	if got := rewritten.StoragePaths(); !slices.Equal(got, want) {
+		t.Errorf("StoragePaths() = %v, want %v", got, want)
 	}
 }
 

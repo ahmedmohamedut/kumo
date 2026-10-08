@@ -62,6 +62,10 @@ type Hypervisor interface {
 	Destroy(ctx context.Context, id string) error  // hard stop
 	Reboot(ctx context.Context, id string) error
 	Reset(ctx context.Context, id string) error
+	// Undefine removes a domain definition together with everything the
+	// definition owns: its NVRAM file and every storage volume it declares. It
+	// is the equivalent of `virsh undefine --remove-all-storage --nvram`, and a
+	// caller may treat "already gone" as done.
 	Undefine(ctx context.Context, id string) error
 	GetDomain(ctx context.Context, id string) (DomainInfo, error)
 	ListDomains(ctx context.Context) ([]DomainInfo, error)

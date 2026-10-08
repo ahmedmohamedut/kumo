@@ -37,8 +37,10 @@ const ALLOWED_FROM: Record<InstanceAction, ReadonlySet<InstanceState>> = {
   'force-stop': new Set<InstanceState>(['running', 'stopping']),
   reboot: new Set<InstanceState>(['running']),
   // Terminate is also the way out of an instance that is stuck, so it is offered
-  // from `error` and `pending` too. A `terminated` instance is already gone and
-  // the row stays as history, so there is nothing left to terminate.
+  // from `error` and `pending` too. `terminated` is left out because such a row
+  // is a leftover of the release that kept them as history: a DELETE does purge
+  // one, but a button labelled Terminate on something already terminated would
+  // do more than it says it does.
   terminate: new Set<InstanceState>([
     'pending',
     'running',

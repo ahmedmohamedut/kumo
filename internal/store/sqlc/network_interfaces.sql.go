@@ -151,22 +151,6 @@ func (q *Queries) CreateNetworkInterface(ctx context.Context, arg CreateNetworkI
 	return i, err
 }
 
-const deleteInterfacesByInstance = `-- name: DeleteInterfacesByInstance :execrows
-DELETE FROM network_interfaces WHERE instance_id = ?1
-`
-
-type DeleteInterfacesByInstanceParams struct {
-	InstanceID string `json:"instance_id"`
-}
-
-func (q *Queries) DeleteInterfacesByInstance(ctx context.Context, arg DeleteInterfacesByInstanceParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, deleteInterfacesByInstance, arg.InstanceID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
 const getDefaultSubnet = `-- name: GetDefaultSubnet :one
 SELECT id, vpc_id, name, cidr, is_default, created_by, created_at, updated_at FROM subnets
 WHERE is_default = 1
