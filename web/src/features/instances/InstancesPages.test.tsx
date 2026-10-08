@@ -600,8 +600,11 @@ describe('InstanceDetailPage', () => {
     await signInAs()
     detailOf('i-00000000000000000')
 
-    expect(await screen.findByText('The instance could not be loaded')).toBeInTheDocument()
+    // A missing instance is usually the console's own doing: a terminate deletes
+    // the row, so the page outlives it. It reads as an answer, not as a fault.
+    expect(await screen.findByText('This instance no longer exists')).toBeInTheDocument()
     expect(screen.getByText(/no instance/)).toBeInTheDocument()
+    expect(screen.queryByText('The instance could not be loaded')).not.toBeInTheDocument()
   })
 
   it('shows the root disk on the storage tab and admits it cannot be resized', async () => {
@@ -671,6 +674,9 @@ describe('InstanceDetailPage', () => {
     await userEvent.click(screen.getByTestId('confirm-destructive'))
 
     await waitFor(() => expect(findMockInstance(WEB_1)?.state).toBe('terminating'))
+    // The console goes back to the list rather than sitting on a page the task is
+    // about to turn into a 404: a terminate removes the instance, row and all.
+    expect(await screen.findByPlaceholderText('Find instances')).toBeInTheDocument()
   })
 
   it('offers a force stop that does not ask for the name', async () => {

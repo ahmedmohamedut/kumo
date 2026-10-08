@@ -41,6 +41,19 @@ export function errorMessage(error: ApiError, fallback: string): string {
 }
 
 /**
+ * isNotFound reports whether the failure is a `404` from the API.
+ *
+ * A `404` is an answer rather than a fault: the API is saying the resource is
+ * gone, not that something broke. It matters for instances, because a terminate
+ * deletes the row — a page left open outlives the instance it is showing, and
+ * telling an operator that the instance they removed "could not be loaded" is
+ * true in the least helpful way available.
+ */
+export function isNotFound(error: ApiError): boolean {
+  return (error as FetchBaseQueryError | undefined)?.status === 404
+}
+
+/**
  * fieldErrors maps `details[].field` onto the FormField that caused it, which
  * is what 03-frontend.md §7 asks for: a validation failure lands on the field
  * instead of in a banner above the form.

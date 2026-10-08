@@ -142,14 +142,18 @@ Each action is only accepted from the states that make sense for it. That is the
 | `start` | `stopped` | none: the row stays `stopped` until the guest is up (`pending` means a launch) |
 | `stop` | `running`, `stopping` | `stopping` |
 | `reboot` | `running` | none |
-| `DELETE` | `pending`, `running`, `stopping`, `stopped`, `terminating`, `error` | `terminating` |
+| `DELETE` | `pending`, `running`, `stopping`, `stopped`, `terminating`, `terminated`, `error` | `terminating` |
 
 A `stop` that leaves a guest which ignores its ACPI request times out and leaves the row in
 `stopping`; `stopping` is therefore also a state a stop may be asked from, so `?force=true` is the
-way out. `DELETE` is answered without a task for an instance that is already `terminated`, so the
-call is safe to repeat when a client never saw the first answer. `DELETE` keeps the row with
-`terminated_at` set (see `02-data-model.md`), so the name becomes reusable and the launch inputs
-stay for history.
+way out. `DELETE` removes the instance rather than marking it: the task destroys the domain, deletes
+its storage and its NVRAM file, deletes the row (its interface rows and tags go with it, its console
+log file beside it) and leaves the tasks as the record of what happened. `GET /instances/{id}`
+answers `404` once it has run. A repeat of the call is a `404` like any other unknown id: the work
+is done and there is nothing left to queue, and a client that never saw the first answer learns the
+same thing from it. `terminated` is still a state a `DELETE` is accepted from, for the rows an
+earlier release kept as history — the task purges those, so an operator can clear them without a
+migration that deletes history on its own.
 
 `?force=true` is the destructive shortcut: a forced stop destroys the domain instead of asking the
 guest, and a forced reboot resets it instead of asking the guest to restart. It has to be a

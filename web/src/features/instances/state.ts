@@ -10,7 +10,10 @@ export type InstanceState = components['schemas']['InstanceState']
  * The set reads as a life cycle: arriving, up, going down, down, being removed,
  * gone, broken. `terminated` is `stopped` rather than an error on purpose — a
  * terminated instance is the outcome the operator asked for, and colouring it
- * like a failure would train them to ignore red in this table.
+ * like a failure would train them to ignore red in this table. A terminate now
+ * deletes the row, so `terminated` is what a row an earlier release left behind
+ * looks like until an operator purges it: the mapping stays so those rows and
+ * the seeded fixtures still render.
  */
 export const STATE_INDICATOR: Record<
   InstanceState,

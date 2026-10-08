@@ -389,8 +389,12 @@ export interface paths {
     post?: never
     /**
      * Terminate an instance
-     * @description Destroys the domain and deletes its disks as a task, answering `202`.
-     *     Repeating the call for an already terminated instance succeeds.
+     * @description Removes the instance as a task, answering `202`: the domain, its storage
+     *     and its NVRAM file go, then the row itself, so `GET /instances/{id}`
+     *     answers `404` once the task has run. Repeating the call after that is a
+     *     `404` like any other unknown id. `terminated` is still a state the call
+     *     is accepted from, for the rows an earlier release kept as history —
+     *     the task purges those.
      */
     delete: operations['terminateInstance']
     options?: never
@@ -741,7 +745,7 @@ export interface components {
         kvm?: boolean | null
       }
     }
-    /** @description Host totals versus what is already allocated. `total` is measured by the hypervisor (node vCPUs multiplied by the configured overcommit ratio, node memory, and the size of the instances pool); `allocated` is summed from the instances table, counting every instance that is not `terminated`. The capacity rules are documented in `00-architecture.md` §6. */
+    /** @description Host totals versus what is already allocated. `total` is measured by the hypervisor (node vCPUs multiplied by the configured overcommit ratio, node memory, and the size of the instances pool); `allocated` is summed from the instances table, counting every instance that is not `terminated`. A terminate deletes the row, so a terminated instance stops being counted as soon as it is gone, and rows left in `terminated` by an earlier release hold nothing. The capacity rules are documented in `00-architecture.md` §6. */
     SystemCapacity: {
       vcpus: components['schemas']['CapacityMetric']
       memory_bytes: components['schemas']['CapacityMetric']
@@ -908,6 +912,7 @@ export interface components {
     ImageList: components['schemas']['Page'] & {
       items: components['schemas']['Image'][]
     }
+    /** @description An instance on this node. A terminate removes it, so an id that has been terminated reads as `404` rather than as a row in `terminated`. */
     Instance: {
       /** @example i-0a1b2c3d4e5f60718 */
       id: string
@@ -927,11 +932,11 @@ export interface components {
       key_pair_name?: string | null
       private_ip?: string | null
       mac_address?: string | null
-      /** @description The VPC of the instance, read from its network interface. Null for a terminated instance. */
+      /** @description The VPC of the instance, read from its network interface. Null when the instance has no interface. */
       vpc_id?: string | null
-      /** @description The subnet the instance's interface belongs to. Null for a terminated instance. */
+      /** @description The subnet the instance's interface belongs to. Null when the instance has no interface. */
       subnet_id?: string | null
-      /** @description The live interfaces of the instance. Empty for a terminated instance. */
+      /** @description The live interfaces of the instance. A terminate deletes them with the row. */
       network_interfaces?: components['schemas']['NetworkInterface'][]
       /** @description Only present for administrators; never returned by list. */
       user_data?: string | null
@@ -939,7 +944,10 @@ export interface components {
       task_id?: string | null
       /** Format: date-time */
       launched_at: string
-      /** Format: date-time */
+      /**
+       * Format: date-time
+       * @description Set only on a row an earlier release kept as history. A terminate deletes the row rather than writing it.
+       */
       terminated_at?: string | null
       /** Format: date-time */
       updated_at?: string
@@ -957,7 +965,10 @@ export interface components {
       subnet_id: string
       vpc_id: string
     }
-    /** @enum {string} */
+    /**
+     * @description `terminated` is only ever seen on a row an earlier release kept as history: a terminate deletes the row, and `DELETE` purges such a row when it is asked for.
+     * @enum {string}
+     */
     InstanceState:
       'pending' | 'running' | 'stopping' | 'stopped' | 'terminating' | 'terminated' | 'error'
     LaunchInstanceRequest: {

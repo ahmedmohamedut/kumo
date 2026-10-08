@@ -114,15 +114,17 @@ CREATE TABLE instances (
   key_pair_name  TEXT,                           -- kept for display after key deletion
   user_data      TEXT,
   libvirt_uuid   TEXT,
-  mac_address    TEXT,                           -- history snapshot; kept after termination
-  private_ip     TEXT,                           -- history snapshot; kept after termination
+  mac_address    TEXT,                           -- snapshot of the address the domain was given
+  private_ip     TEXT,                           -- snapshot of the address the domain was given
   created_by     TEXT REFERENCES users(id) ON DELETE SET NULL,
   launched_at    TEXT NOT NULL,
-  terminated_at  TEXT,
+  terminated_at  TEXT,                           -- only ever set on rows an earlier release kept
   updated_at     TEXT NOT NULL
 );
 CREATE INDEX idx_instances_state ON instances(state);
 CREATE INDEX idx_instances_image ON instances(image_id);
+-- The live-name rule. A terminate deletes the row, so this only matters for the
+-- rows an earlier release left in 'terminated'.
 CREATE UNIQUE INDEX idx_instances_name_live ON instances(name) WHERE state <> 'terminated';
 
 CREATE TABLE network_interfaces (
@@ -171,9 +173,9 @@ CREATE TABLE settings (
 
 ## Notes
 
-- `instances` keeps terminated rows for history (shown for a while in the UI, like AWS); the partial unique index lets names be reused after termination.
-- `network_interfaces` exists exactly as long as its instance is not terminated: it is deleted in the same transaction that sets `terminated_at`, while `instances.private_ip` and `instances.mac_address` preserve the allocation history.
-- `key_pair_name`/`vcpus`/`memory_mib` are denormalized snapshots so history survives deletions and preset changes.
+- A terminate **deletes** the `instances` row rather than keeping it as history (`01-api.md`): its `network_interfaces` rows follow through the cascade and its tags go in the same transaction, so a terminated instance leaves nothing behind but its tasks and its id, which stays allocated. Rows an earlier release left in `terminated` are the exception and stay until an operator `DELETE`s that id — the `state` CHECK still accepts the value and the partial unique index still releases the name, so such a row neither blocks a launch nor needs a migration of its own to disappear.
+- `network_interfaces` exists exactly as long as its instance does: its rows are the cascade of the `instances` row delete, which a terminate makes in one transaction with the tags. There is no allocation history left to preserve in `instances.private_ip` and `instances.mac_address`; those go with the row that held them.
+- `key_pair_name`/`vcpus`/`memory_mib` are denormalized snapshots, so a row keeps what it was launched with even after the key pair is deleted or the preset changes.
 - `vpcs` and `subnets`: immutable attributes (`cidr`, `mode`, `name`, `vpc_id`) prevent accidental disruption of active routing and DNS domains. Only `tags` are editable.
 - Consistency from transactions: IP allocation, interface creation, and capacity reservation execute within a single SQLite transaction (single writer in WAL mode). A launch cannot slip into a subnet or VPC that a delete has just checked.
 - Tags: max 50/resource, key ≤ 128, value ≤ 256 chars. Orphan tags are cleaned when a resource is hard-deleted.

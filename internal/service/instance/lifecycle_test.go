@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -500,6 +502,18 @@ func TestTerminateRemovesTheDomainAndTheVolumes(t *testing.T) {
 	running := h.runningInstance(t, "web")
 	source := h.runningImageOf(t, running.ID)
 
+	// Tags and the console log are the two things an instance owns that are
+	// neither its domain nor its volumes, and a terminate takes them too.
+	if _, err := h.svc.Update(t.Context(), running.ID, instance.UpdateInput{
+		Tags: map[string]string{"env": "test"},
+	}, false); err != nil {
+		t.Fatalf("Update() with tags: %v", err)
+	}
+	consoleLog := filepath.Join(h.console, running.ID+".log")
+	if err := os.WriteFile(consoleLog, []byte("cloud-init: done\n"), 0o600); err != nil {
+		t.Fatalf("write the console log: %v", err)
+	}
+
 	queued, err := h.svc.Terminate(t.Context(), running.ID)
 	if err != nil {
 		t.Fatalf("Terminate(): %v", err)
@@ -534,37 +548,44 @@ func TestTerminateRemovesTheDomainAndTheVolumes(t *testing.T) {
 		t.Fatalf("the images pool lost %q: %v", source, h.volumeNames(imagesPool))
 	}
 
-	state, reason := h.state(t, running.ID)
-	if state != string(instance.StateTerminated) {
-		t.Fatalf("state = %q with reason %q, want terminated", state, reason)
+	// The row is gone: a terminated instance is a deleted resource, not a record
+	// of one (01-api.md §Instances). Everything that existed only because the row
+	// did goes with it in the same transaction or the same cascade.
+	if _, err := h.store.GetInstance(t.Context(), sqlc.GetInstanceParams{ID: running.ID}); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("GetInstance() after terminate = %v, want sql.ErrNoRows", err)
 	}
-	row, err := h.store.GetInstance(t.Context(), sqlc.GetInstanceParams{ID: running.ID})
+	if _, err := h.svc.Get(t.Context(), running.ID, false); !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("Get() after terminate = %v, want ErrNotFound", err)
+	}
+	interfaces, err := h.store.ListInterfacesByInstances(t.Context(), sqlc.ListInterfacesByInstancesParams{
+		InstanceIds: []string{running.ID},
+	})
 	if err != nil {
-		t.Fatalf("GetInstance(): %v", err)
+		t.Fatalf("ListInterfacesByInstances(): %v", err)
 	}
-	if !row.TerminatedAt.Valid {
-		t.Error("terminated_at is empty; the row cannot be ordered against the rest")
+	if len(interfaces) != 0 {
+		t.Errorf("network_interfaces = %+v, want none for a removed instance", interfaces)
+	}
+	tags, err := h.store.ListResourceTags(t.Context(), sqlc.ListResourceTagsParams{
+		ResourceID: running.ID,
+	})
+	if err != nil {
+		t.Fatalf("ListResourceTags(): %v", err)
+	}
+	if len(tags) != 0 {
+		t.Errorf("tags = %+v, want none for a removed instance", tags)
+	}
+	if _, err := os.Stat(consoleLog); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the console log is still there: %v", err)
+	}
+	// The tasks stay: they are the record of what was done to the instance, and
+	// the console follows the task that is doing the removing right now.
+	if _, err := h.store.GetTask(t.Context(), sqlc.GetTaskParams{ID: *queued.TaskID}); err != nil {
+		t.Errorf("GetTask() after terminate = %v, want the task kept", err)
 	}
 
-	// The interface row is deleted with the domain, so the terminated instance
-	// no longer looks placed; the address and MAC it held stay on the row for
-	// history.
-	gone, err := h.svc.Get(t.Context(), running.ID, false)
-	if err != nil {
-		t.Fatalf("Get() after terminate: %v", err)
-	}
-	if len(gone.NetworkInterfaces) != 0 {
-		t.Fatalf("network_interfaces = %+v, want none for a terminated instance", gone.NetworkInterfaces)
-	}
-	if gone.VPCID != nil || gone.SubnetID != nil {
-		t.Fatalf("vpc_id = %v, subnet_id = %v, want null without an interface", gone.VPCID, gone.SubnetID)
-	}
-	if gone.PrivateIP == nil || gone.MACAddress == nil {
-		t.Fatal("terminate dropped the address and MAC the row keeps for history")
-	}
-
-	// The name is free again, which is what the partial unique index on the name is
-	// for: a terminated instance keeps its row and gives its name back.
+	// The name is free again, which is what the partial unique index on the name
+	// is for — and with the row deleted there is nothing left to collide with.
 	other := h.availableImage(t, "second-image")
 	again, err := h.svc.Launch(t.Context(), instance.LaunchInput{
 		Name: running.Name, ImageID: other.ID, InstanceType: instanceType, RootDiskGB: 8,
@@ -574,6 +595,36 @@ func TestTerminateRemovesTheDomainAndTheVolumes(t *testing.T) {
 	}
 	if again.ID == running.ID {
 		t.Error("the new instance reuses the terminated id")
+	}
+}
+
+// TestTerminateRemovesAStoppedInstance covers the state most instances sit in
+// between runs: the domain is not running, and the hard stop that opens a
+// terminate has to treat that as done rather than fail on the guest's state.
+func TestTerminateRemovesAStoppedInstance(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	stopped := h.stoppedInstance(t, "web")
+
+	queued, err := h.svc.Terminate(t.Context(), stopped.ID)
+	if err != nil {
+		t.Fatalf("Terminate() of a stopped instance: %v", err)
+	}
+	if err := h.runTask(t, queued, task.TypeInstanceTerminate); err != nil {
+		t.Fatalf("TerminateHandler(): %v", err)
+	}
+
+	if _, err := h.svc.Get(t.Context(), stopped.ID, false); !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("Get() after terminate = %v, want ErrNotFound", err)
+	}
+	for _, name := range []string{
+		hypervisor.RootDiskName(stopped.ID),
+		hypervisor.SeedISOName(stopped.ID),
+	} {
+		if contains(h.volumeNames(instancesPool), name) {
+			t.Errorf("the pool still holds %q after terminating a stopped instance", name)
+		}
 	}
 }
 
@@ -591,17 +642,11 @@ func TestTerminateIsSafeToRepeat(t *testing.T) {
 		t.Fatalf("TerminateHandler(): %v", err)
 	}
 
-	again, err := h.svc.Terminate(t.Context(), running.ID)
-	if err != nil {
-		t.Fatalf("Terminate() on a terminated instance: %v", err)
-	}
-	if again.State != instance.StateTerminated {
-		t.Fatalf("state = %q, want terminated", again.State)
-	}
-	// Nothing is queued: the work is done, and a task that removed volumes which
-	// are already gone would only report a race that never happened.
-	if again.TaskID != nil {
-		t.Errorf("a repeated terminate queued task %q", *again.TaskID)
+	// There is no row left to terminate again, so a repeat is a 404 rather than a
+	// second task for a domain that is already gone. The client that never saw
+	// the first answer learns the same thing from it: the instance is gone.
+	if _, err := h.svc.Terminate(t.Context(), running.ID); !errors.Is(err, service.ErrNotFound) {
+		t.Fatalf("Terminate() once the instance is gone = %v, want ErrNotFound", err)
 	}
 }
 
@@ -629,11 +674,85 @@ func TestTerminateFinishesAfterTheDomainIsAlreadyGone(t *testing.T) {
 		t.Fatalf("TerminateHandler(): %v", err)
 	}
 
-	if state, _ := h.state(t, running.ID); state != string(instance.StateTerminated) {
-		t.Fatalf("state = %q, want terminated", state)
+	// The row is the record being removed, and there was nothing left to do but
+	// remove it: the volumes and the domain were already gone.
+	if _, err := h.store.GetInstance(t.Context(), sqlc.GetInstanceParams{ID: running.ID}); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("GetInstance() after terminate = %v, want sql.ErrNoRows", err)
 	}
 	if names := h.volumeNames(instancesPool); len(names) != 0 {
 		t.Fatalf("the pool still holds %v", names)
+	}
+}
+
+func TestTerminatePurgesARowAnEarlierReleaseLeftBehind(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	running := h.runningInstance(t, "web")
+
+	// A release that kept the row left the database with rows in `terminated`:
+	// domain and volumes gone, interface rows deleted, terminated_at set. Those
+	// rows are still listed as history after an upgrade, and DELETE is what
+	// removes them now rather than a migration that deletes history on its own.
+	if _, err := h.store.Exec(t.Context(),
+		"DELETE FROM network_interfaces WHERE instance_id = ?", running.ID); err != nil {
+		t.Fatalf("delete the interface rows: %v", err)
+	}
+	h.setState(t, running.ID, instance.StateTerminated)
+
+	queued, err := h.svc.Terminate(t.Context(), running.ID)
+	if err != nil {
+		t.Fatalf("Terminate() on a terminated row: %v", err)
+	}
+	if queued.State != instance.StateTerminating {
+		t.Fatalf("state = %q, want terminating", queued.State)
+	}
+	if err := h.runTask(t, queued, task.TypeInstanceTerminate); err != nil {
+		t.Fatalf("TerminateHandler(): %v", err)
+	}
+
+	if _, err := h.store.GetInstance(t.Context(), sqlc.GetInstanceParams{ID: running.ID}); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("GetInstance() = %v, want sql.ErrNoRows", err)
+	}
+
+	// The name the row held is free the moment the row is gone, which is the
+	// same promise the partial unique index used to make.
+	other := h.availableImage(t, "second-image")
+	again, err := h.svc.Launch(t.Context(), instance.LaunchInput{
+		Name: running.Name, ImageID: other.ID, InstanceType: instanceType, RootDiskGB: 8,
+	})
+	if err != nil {
+		t.Fatalf("Launch() reusing the name of a purged row: %v", err)
+	}
+	if again.ID == running.ID {
+		t.Error("the new instance reuses the purged id")
+	}
+}
+
+func TestOnlyTerminateTouchesATerminatedRow(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	running := h.runningInstance(t, "web")
+
+	// A stop queued against what turns out to be a terminated row (one an
+	// earlier release kept) has no domain to shut down: the task is done rather
+	// than failed, because there is nothing left for it to do. Only a terminate
+	// still has work against such a row — removing it.
+	queued, err := h.svc.Stop(t.Context(), running.ID, false)
+	if err != nil {
+		t.Fatalf("Stop(): %v", err)
+	}
+	h.setState(t, running.ID, instance.StateTerminated)
+
+	if err := h.runTask(t, queued, task.TypeInstanceStop); err != nil {
+		t.Fatalf("StopHandler() on a terminated row: %v", err)
+	}
+	if state, _ := h.state(t, running.ID); state != string(instance.StateTerminated) {
+		t.Errorf("state = %q, want the terminated row left alone", state)
+	}
+	if info, err := h.hv.GetDomain(t.Context(), running.ID); err != nil || info.State != hypervisor.DomainStateRunning {
+		t.Errorf("GetDomain() = %+v, %v, want the domain untouched", info, err)
 	}
 }
 
@@ -825,11 +944,15 @@ func TestALaunchDoesNotResurrectATerminatingInstance(t *testing.T) {
 	if err := h.hv.Undefine(t.Context(), running.ID); err != nil {
 		t.Fatalf("Undefine(): %v", err)
 	}
+	// Undefine has just taken the domain's volumes with it (04-libvirt §3); the
+	// explicit pass is what a terminate whose domain was already gone still runs,
+	// so it tolerates volumes that are already deleted.
 	for _, name := range []string{
 		hypervisor.RootDiskName(running.ID),
 		hypervisor.SeedISOName(running.ID),
 	} {
-		if err := h.hv.DeleteVolume(t.Context(), instancesPool, name); err != nil {
+		if err := h.hv.DeleteVolume(t.Context(), instancesPool, name); err != nil &&
+			!errors.Is(err, hypervisor.ErrNotFound) {
 			t.Fatalf("DeleteVolume(%q): %v", name, err)
 		}
 	}
@@ -947,7 +1070,7 @@ func TestUpdateRenamesAndRetags(t *testing.T) {
 	if updated.Tags["env"] != "staging" {
 		t.Errorf("tags = %v, want env=staging", updated.Tags)
 	}
-	if updated.UpdatedAt == running.UpdatedAt {
+	if updated.UpdatedAt.Equal(running.UpdatedAt) {
 		t.Error("updated_at did not move; the row does not say the rename happened")
 	}
 

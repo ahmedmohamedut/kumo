@@ -60,8 +60,8 @@
 ## 4. Concurrency & state model
 
 - **Instance state machine** (DB column `state`):
-  `pending → running ⇄ stopping → stopped → running`, `* → terminating → terminated`, `* → error`.
-  Transitional states (`pending`, `stopping`, `terminating`) are owned by a task. Steady states are observed from libvirt.
+  `pending → running ⇄ stopping → stopped → running`, `* → terminating → (row deleted)`, `* → error`.
+  Transitional states (`pending`, `stopping`, `terminating`) are owned by a task. Steady states are observed from libvirt. A terminate ends in the row being deleted rather than in a state: `terminated` is still a legal value only because rows an earlier release kept as history have to keep rendering and be purged.
 - **Tasks:** table `tasks` (`pending|running|succeeded|failed`). Worker pool (default 4) claims tasks with an atomic `UPDATE ... WHERE state='pending'`. On startup, tasks left `running` are marked `failed` (or retried if the type is idempotent) and the owning resource moves to `error` or is reconciled.
 - **Per-resource lock:** an in-process keyed mutex (`internal/worker/locks`) serializes operations on the same instance/image/VPC ID. Reject conflicting actions with `409`. A request takes the lock without waiting (so an operator pressing stop twice is told the instance is busy); a task waits for it, because two queued tasks for one instance are going to run in some order. An unfinished task row counts as busy too, since a task killed with the process holds no lock until it is requeued. Tasks operating on VPCs serialize on `vpc.LockKey(id)`.
 - **Consistency from transactions, not locks:** A state check and its write share one SQLite transaction (single writer via WAL mode), so a launch cannot slip into a VPC or subnet that a delete has just checked.
@@ -115,9 +115,7 @@ The split is deliberate:
   node and the pool but not whether a disk backing an overlay was written; SQLite knows
   what was asked for but can drift. Summing the request keeps the report equal to what
   the launch check reserved, which is the number that must never be exceeded.
-- **`allocated` counts every instance whose state is not `terminated`.** A terminated
-  row is kept for history and holds nothing, so it must stop consuming quota or a node
-  could never launch again after enough terminations.
+- **`allocated` counts every instance whose state is not `terminated`, and a terminate removes the row instead of writing that state**, so the report stops summing an instance the moment it is gone. Rows left in `terminated` by an earlier release hold nothing and are purged by the next `DELETE` for their id.
 - **Free is derived, never stored.** `Free = total − allocated`, less
   `KUMO_MEMORY_RESERVE_MIB` for memory so the host keeps room for itself. The same
   arithmetic backs the launch check in `internal/service/capacity`, so what the console

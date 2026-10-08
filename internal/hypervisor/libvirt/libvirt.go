@@ -125,7 +125,7 @@ func (c *Client) withConnection(ctx context.Context, fn func(*golibvirt.Libvirt)
 	err = fn(conn)
 	if err != nil && shouldReconnect(err) {
 		if cerr := c.reconnector.Close(); cerr != nil {
-			c.logger.Debug("closing stale libvirt connection", "error", cerr)
+			c.logger.DebugContext(ctx, "closing stale libvirt connection", "error", cerr)
 		}
 		conn, err = c.reconnector.ensureConnected(ctx)
 		if err != nil {

@@ -43,9 +43,6 @@ ORDER BY ni.instance_id, ni.device_index;
 -- name: ListAllocatedIPsInSubnet :many
 SELECT private_ip FROM network_interfaces WHERE subnet_id = ?1;
 
--- name: DeleteInterfacesByInstance :execrows
-DELETE FROM network_interfaces WHERE instance_id = ?1;
-
 -- Launches with no explicit subnet attach to the VPC's default subnet, the same
 -- one the bootstrap seeds.
 -- name: GetDefaultSubnet :one

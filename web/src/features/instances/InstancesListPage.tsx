@@ -383,7 +383,7 @@ export function InstancesListPage() {
           <SpaceBetween size="m">
             <Alert type="warning" header="This cannot be undone">
               {pending.action === 'terminate'
-                ? 'Terminating removes the domain and both of its disks. The name is kept as history so it can be reused, but nothing of the instance survives.'
+                ? 'Terminating removes the domain and both of its disks, and then the instance itself: the row is deleted, the name is freed, and only the tasks are left to show what happened.'
                 : 'A force stop cuts power to the guest. Anything it has not written to disk is lost, exactly as if the machine had been unplugged.'}
             </Alert>
 

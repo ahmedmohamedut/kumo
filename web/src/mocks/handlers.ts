@@ -462,9 +462,11 @@ const INITIAL_INSTANCES: Instance[] = [
   {
     id: 'i-0d2e3f4a5b6071829',
     name: 'old-1',
-    // Terminated: the row is kept as history so the name can be reused, which is
-    // why the list still shows it. Terminating dropped the interface (M4b.3), so
-    // no network fields survive.
+    // Terminated: the state a row an earlier release kept as history is in. A
+    // terminate deletes the row now, so the console only ever meets this state
+    // on such a row — it still has to render, and the name the row holds is
+    // still reusable. Terminating dropped the interface (M4b.3), so no network
+    // fields survive.
     state: 'terminated',
     state_reason: null,
     image_id: 'img-0d3e4f5a6071829',

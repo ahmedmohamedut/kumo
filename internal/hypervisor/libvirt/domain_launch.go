@@ -63,7 +63,8 @@ func (c *Client) DefineAndStart(ctx context.Context, spec hypervisor.DomainSpec)
 				// Paused, crashed or finishing domains mesh badly with the
 				// launch workflow; failing here lets the service's rollback
 				// probe pick the domain up and clean it up.
-				return fmt.Errorf("the domain %q is in state %d and cannot be adopted", spec.ID, state)
+				return fmt.Errorf("the domain %q is in state %d and cannot be adopted: %w",
+					spec.ID, state, hypervisor.ErrInvalidState)
 			}
 			c.logger.InfoContext(ctx, "libvirt: adopting the definition of an earlier attempt",
 				"domain", spec.ID)
@@ -215,16 +216,37 @@ func (c *Client) Destroy(ctx context.Context, id string) error {
 		if err != nil {
 			return err
 		}
-		if err := conn.DomainDestroyFlags(dom, 0); err != nil {
-			return fmt.Errorf("destroy the domain %q: %w", id, err)
-		}
-		return nil
+		return destroyError(id, conn.DomainDestroyFlags(dom, 0))
 	})
 }
 
-// Undefine removes a definition. A domain that is still running is stopped first,
-// because libvirt refuses to undefine a live domain and a rollback must not stop
-// at that.
+// destroyError maps the answer to DomainDestroyFlags.
+//
+// A domain that is already off is where a destroy wants to end up, so libvirt's
+// "operation is not valid: domain is not running" is success rather than a
+// conflict: a terminate of a stopped instance, and the rollback of a launch
+// that never booted, both have to run to completion. A domain that disappeared
+// between the lookup and the call is ErrNotFound, like one that was never there,
+// because the cleanup paths already treat that as done.
+func destroyError(id string, err error) error {
+	switch {
+	case err == nil || isOperationInvalid(err):
+		return nil
+	case isNoDomain(err) || isNotFound(err):
+		return fmt.Errorf("the domain %q: %w", id, hypervisor.ErrNotFound)
+	default:
+		return fmt.Errorf("destroy the domain %q: %w", id, err)
+	}
+}
+
+// Undefine removes a definition and everything the definition owns: the NVRAM
+// file and every storage volume the domain declares. It is the equivalent of
+// `virsh undefine --remove-all-storage --nvram`, which has no single libvirt
+// call behind it either — virsh undefines with VIR_DOMAIN_UNDEFINE_NVRAM and
+// then deletes the volumes it read out of the domain XML, and so does this.
+//
+// A domain that is still running is stopped first, because libvirt refuses to
+// undefine a live domain and a rollback must not stop at that.
 func (c *Client) Undefine(ctx context.Context, id string) error {
 	return c.withConnection(ctx, func(conn *golibvirt.Libvirt) error {
 		dom, err := lookupDomain(conn, id)
@@ -237,9 +259,21 @@ func (c *Client) Undefine(ctx context.Context, id string) error {
 			return fmt.Errorf("read the state of the domain %q: %w", id, err)
 		}
 		if state != int32(golibvirt.DomainShutoff) {
-			if err := conn.DomainDestroyFlags(dom, 0); err != nil && !isNotFound(err) {
+			if err := destroyError(id, conn.DomainDestroyFlags(dom, 0)); err != nil {
 				return fmt.Errorf("stop the domain %q before undefining it: %w", id, err)
 			}
+		}
+
+		// The volumes are read while the definition still exists: a domain that
+		// is gone describes nothing, and the names of its disks are the only
+		// thing that says which files are about to be orphaned.
+		document, err := conn.DomainGetXMLDesc(dom, 0)
+		if err != nil {
+			return fmt.Errorf("describe the domain %q before undefining it: %w", id, err)
+		}
+		var desc domainDesc
+		if err := xml.Unmarshal([]byte(document), &desc); err != nil {
+			return fmt.Errorf("parse the description of the domain %q: %w", id, err)
 		}
 
 		if err := conn.DomainUndefineFlags(dom, golibvirt.DomainUndefineNvram); err != nil {
@@ -248,8 +282,38 @@ func (c *Client) Undefine(ctx context.Context, id string) error {
 			}
 			return fmt.Errorf("undefine the domain %q: %w", id, err)
 		}
-		return nil
+
+		return c.deleteVolumes(ctx, conn, id, desc.StoragePaths())
 	})
+}
+
+// deleteVolumes removes the volumes the disks of an undefined domain point at.
+//
+// A source libvirt does not manage — a block device, a file in a directory no
+// pool covers — is reported and skipped, the way virsh prints "not managed by
+// libvirt, remove it manually" and carries on: neither of us can delete what we
+// cannot look up. A volume that is found but refuses to go is an error, because
+// leaving a guest's disk behind is exactly what --remove-all-storage promises
+// not to do.
+func (c *Client) deleteVolumes(
+	ctx context.Context, conn *golibvirt.Libvirt, id string, paths []string,
+) error {
+	var refused []error
+	for _, path := range paths {
+		vol, err := conn.StorageVolLookupByPath(path)
+		if err != nil {
+			c.logger.InfoContext(ctx, "libvirt: a disk of the domain is not a managed volume",
+				"domain", id, "source", path, "error", err)
+			continue
+		}
+		if err := conn.StorageVolDelete(vol, golibvirt.StorageVolDeleteNormal); err != nil {
+			refused = append(refused, fmt.Errorf("the volume at %q: %w", path, err))
+		}
+	}
+	if len(refused) > 0 {
+		return fmt.Errorf("remove the storage of the domain %q: %w", id, errors.Join(refused...))
+	}
+	return nil
 }
 
 // lookupDomain resolves an instance id to a libvirt handle. The domain name is
@@ -354,7 +418,36 @@ type domainDesc struct {
 	Serial  serialDesc `xml:"serial"`
 	Devices struct {
 		Interfaces []interfaceDesc `xml:"interface"`
+		Disks      []diskDesc      `xml:"disk"`
 	} `xml:"devices"`
+}
+
+// diskDesc is one <disk> of a domain. Only the source path matters here: it is
+// how a volume the guest reads from is found in the storage pools, so Undefine
+// can delete it with the definition (docs/design/04-libvirt-integration.md §3).
+type diskDesc struct {
+	Source struct {
+		File string `xml:"file,attr"`
+		Dev  string `xml:"dev,attr"`
+	} `xml:"source"`
+}
+
+// StoragePaths returns the sources of the disks the domain declares, in the
+// order the definition lists them. A network disk or a filesystem has no path
+// here and is not a storage volume, so it is left out rather than looked up and
+// missed.
+func (d domainDesc) StoragePaths() []string {
+	paths := make([]string, 0, len(d.Devices.Disks))
+	for _, disk := range d.Devices.Disks {
+		path := strings.TrimSpace(disk.Source.File)
+		if path == "" {
+			path = strings.TrimSpace(disk.Source.Dev)
+		}
+		if path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths
 }
 
 // serialDesc is the first serial port of a domain, which is the one Kumo uses for

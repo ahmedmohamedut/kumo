@@ -48,17 +48,18 @@ const (
 	StateStopped State = "stopped"
 	// StateTerminating means a terminate is in flight.
 	StateTerminating State = "terminating"
-	// StateTerminated means the volumes are gone. It is the only state that
-	// releases an allocation (docs/design/02-data-model.md).
+	// StateTerminated is a row an earlier release kept as history. A terminate
+	// deletes the row instead, so the value is only ever read, and only a
+	// DELETE purges such a row (docs/design/02-data-model.md).
 	StateTerminated State = "terminated"
 	// StateError means the workflow gave up; StateReason says why.
 	StateError State = "error"
 )
 
 // Interface is one virtual NIC of an instance, the row of the network_interfaces
-// table in the shape api/openapi.yaml promises. An instance that has not been
-// terminated carries exactly one, device 0; a terminated instance carries none,
-// because the row is deleted with the domain.
+// table in the shape api/openapi.yaml promises. An instance carries exactly one,
+// device 0, and its interfaces go with the instance row through the foreign key
+// cascade, so a row carrying none is one an earlier release left in `terminated`.
 type Interface struct {
 	ID          string `json:"id"`
 	DeviceIndex int    `json:"device_index"`
@@ -87,12 +88,13 @@ type Instance struct {
 	PrivateIP    *string `json:"private_ip"`
 	MACAddress   *string `json:"mac_address"`
 	// VPCID and SubnetID are the network placement of the instance, read from its
-	// live interface. They are null for a terminated instance, whose interface
-	// row is gone.
+	// interface. They are null when it has none: the interface rows go with the
+	// instance row, so only a row an earlier release left in `terminated` has
+	// lost them.
 	VPCID    *string `json:"vpc_id"`
 	SubnetID *string `json:"subnet_id"`
-	// NetworkInterfaces carries every live interface, empty for a terminated
-	// instance.
+	// NetworkInterfaces carries every live interface. A row an earlier release
+	// left in `terminated` carries none, its interfaces having gone with it.
 	NetworkInterfaces []Interface `json:"network_interfaces"`
 	// UserData is only filled in for an administrator, and never by List: it can
 	// carry a secret a user pasted into it.
@@ -101,7 +103,7 @@ type Instance struct {
 	// follow a launch without guessing which task it was.
 	TaskID       *string           `json:"task_id"`
 	LaunchedAt   time.Time         `json:"launched_at"`
-	TerminatedAt *time.Time        `json:"terminated_at"`
+	TerminatedAt *time.Time        `json:"terminated_at"` // only ever set by a row an earlier release kept
 	UpdatedAt    time.Time         `json:"updated_at"`
 	Tags         map[string]string `json:"tags"`
 }
