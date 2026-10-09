@@ -361,19 +361,28 @@ export function LaunchInstancePage() {
                     description="Presets for how much CPU and memory the instance gets."
                     errorText={errors['instance_type']}
                   >
-                    <Select
-                      selectedOption={presets.find((preset) => preset.id === instanceType) ?? null}
-                      onChange={({ detail }) => setInstanceType(detail.selectedOption?.value ?? '')}
-                      options={presets.map((preset) => ({
+                    {(() => {
+                      const options = presets.map((preset) => ({
                         value: preset.id,
                         label: preset.id,
                         description:
                           preset.description ??
-                          `${preset.vcpus} vCPU · ${formatGiB(Math.round(preset.memory_mib / 1024))}`,
-                      }))}
-                      placeholder="Choose an instance type"
-                      ariaLabel="Instance type"
-                    />
+                          `${preset.vcpus} vCPU · ${formatGiB(
+                            Math.round(preset.memory_mib / 1024)
+                          )}`,
+                      }))
+                      const selected = options.find((o) => o.value === instanceType)
+
+                      return (
+                        <Select
+                          selectedOption={selected ?? null}
+                          onChange={({ detail }) => setInstanceType(detail.selectedOption?.value ?? '')}
+                          options={options}
+                          placeholder="Choose an instance type"
+                          ariaLabel="Instance type"
+                        />
+                      )
+                    })()}
                   </FormField>
                 </Container>
 

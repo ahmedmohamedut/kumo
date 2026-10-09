@@ -11,56 +11,46 @@ export const AUTO_DISMISS_MS = 5_000
 
 /**
  * useAutoDismiss drops notifications on a timer so the Flashbar does not pile
- * up over a session. Every type goes, errors and warnings included: a failure
- * that sits there for the rest of the day stops being read, and the tasks page
- * is where what did not work is still visible.
+ * up over a session. Every type goes, errors and warnings included.
  *
- * The countdown is kept per notification id rather than restarted on every
- * render, so pushing a second flash does not extend the first one's stay, and a
- * notification dismissed by hand cancels its own timer instead of leaving one
- * behind to dispatch later.
+ * The countdown is kept per notification id using a Map in a Ref.
+ * This ensures we don't restart timers on every render, and that manual
+ * dismissals cancel their respective timers.
  */
 export function useAutoDismiss(items: readonly Notification[]): void {
   const dispatch = useAppDispatch()
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>())
 
   useEffect(() => {
-    const pending = timers.current
+    const currentIds = new Set(items.map((item) => item.id))
 
-    // Forget countdowns for notifications that are no longer in the store, so
-    // a stale timer cannot dismiss a later notification that reused the slot.
-    for (const [id, timer] of pending) {
-      if (!items.some((item) => item.id === id)) {
+    // 1. Cleanup timers for notifications that have been manually dismissed or removed
+    for (const [id, timer] of timers.current.entries()) {
+      if (!currentIds.has(id)) {
         clearTimeout(timer)
-        pending.delete(id)
+        timers.current.delete(id)
       }
     }
 
+    // 2. Schedule dismissal for new notifications
     for (const item of items) {
-      if (pending.has(item.id)) {
-        continue
-      }
-      pending.set(
-        item.id,
-        setTimeout(() => {
-          pending.delete(item.id)
+      if (!timers.current.has(item.id)) {
+        const timer = setTimeout(() => {
           dispatch(dismiss(item.id))
-        }, AUTO_DISMISS_MS),
-      )
+          timers.current.delete(item.id)
+        }, AUTO_DISMISS_MS)
+        timers.current.set(item.id, timer)
+      }
     }
   }, [items, dispatch])
 
-  // Unmounting (sign out, test teardown) must not leave timers running against
-  // a store nothing renders any more. This cleanup is deliberately separate
-  // from the one above: returning it from the effect above would clear every
-  // countdown whenever the list changes, restarting them all.
+  // 3. Cleanup all timers when the component unmounts
   useEffect(() => {
-    const pending = timers.current
     return () => {
-      for (const timer of pending.values()) {
+      for (const timer of timers.current.values()) {
         clearTimeout(timer)
       }
-      pending.clear()
+      timers.current.clear()
     }
   }, [])
 }
