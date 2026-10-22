@@ -75,16 +75,23 @@ var catalogImages = []CatalogImage{
 		SourceURL:    "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2",
 	},
 	{
-		ID:           "fedora-41",
-		Name:         "Fedora 41",
+		ID:           "fedora-44",
+		Name:         "Fedora 44",
 		Description:  "Fedora's current release, cloud image",
 		OSFamily:     "fedora",
-		OSVersion:    "41",
+		OSVersion:    "44",
 		Architecture: ArchX86_64,
 		DefaultUser:  "fedora",
 		MinDiskGB:    8,
-		SourceURL:    "https://download.fedoraproject.org/pub/fedora/linux/releases/41/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-41-1.1.x86_64.qcow2",
+		SourceURL:    "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2",
+		ChecksumURL:  "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-44-1.7-x86_64-CHECKSUM",
 	},
+	// Alpine publishes no "latest" alias for its cloud images and keeps only the
+	// newest patch release in the directory, so this URL names 3.22.6 and has to
+	// be bumped when Alpine cuts 3.22.7. The "bios-cloudinit" variant is the one
+	// that fits: Kumo leaves <os firmware> empty, so guests boot on SeaBIOS, and
+	// the "tiny" variants ship without cloud-init and would ignore the NoCloud
+	// seed ISO that carries the key pair and user data.
 	{
 		ID:           "alpine-322",
 		Name:         "Alpine Linux 3.22",
@@ -94,6 +101,6 @@ var catalogImages = []CatalogImage{
 		Architecture: ArchX86_64,
 		DefaultUser:  "alpine",
 		MinDiskGB:    8,
-		SourceURL:    "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/alpine-virt-3.22-x86_64.qcow2",
+		SourceURL:    "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/alpine-3.22.6-x86_64-bios-cloudinit-r0.qcow2",
 	},
 }
