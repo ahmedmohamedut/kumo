@@ -402,6 +402,58 @@ func (q *Queries) ListInstancesDesc(ctx context.Context, arg ListInstancesDescPa
 	return items, nil
 }
 
+const listInstancesForReconcile = `-- name: ListInstancesForReconcile :many
+SELECT id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at FROM instances ORDER BY id
+`
+
+// The reconciler's input: every instance the control plane knows, so one pass
+// can be matched against one ListDomains call (docs/design/00-architecture.md
+// section 4). It is deliberately unpaginated and unfiltered: which rows a pass
+// may touch is a rule of the reconciler, not of SQL, and a node holds few
+// enough instances that a page would only let one drift unobserved.
+func (q *Queries) ListInstancesForReconcile(ctx context.Context) ([]Instance, error) {
+	rows, err := q.db.QueryContext(ctx, listInstancesForReconcile)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Instance{}
+	for rows.Next() {
+		var i Instance
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.State,
+			&i.StateReason,
+			&i.ImageID,
+			&i.InstanceType,
+			&i.Vcpus,
+			&i.MemoryMib,
+			&i.RootDiskGb,
+			&i.KeyPairID,
+			&i.KeyPairName,
+			&i.UserData,
+			&i.LibvirtUuid,
+			&i.MacAddress,
+			&i.PrivateIp,
+			&i.CreatedBy,
+			&i.LaunchedAt,
+			&i.TerminatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markInstanceRunning = `-- name: MarkInstanceRunning :one
 UPDATE instances
 SET state = 'running',

@@ -110,3 +110,11 @@ LIMIT 1;
 -- happened and a retry has something to work on.
 -- name: DeleteInstance :execrows
 DELETE FROM instances WHERE id = ?1;
+
+-- The reconciler's input: every instance the control plane knows, so one pass
+-- can be matched against one ListDomains call (docs/design/00-architecture.md
+-- section 4). It is deliberately unpaginated and unfiltered: which rows a pass
+-- may touch is a rule of the reconciler, not of SQL, and a node holds few
+-- enough instances that a page would only let one drift unobserved.
+-- name: ListInstancesForReconcile :many
+SELECT * FROM instances ORDER BY id;

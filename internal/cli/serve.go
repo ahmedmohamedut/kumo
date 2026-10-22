@@ -237,6 +237,43 @@ func serve(ctx context.Context, stdout io.Writer) error {
 	}()
 	logger.InfoContext(ctx, "task worker is running", "workers", cfg.Workers)
 
+	// The reconciler keeps the rows in step with libvirt: a guest an operator
+	// destroys with virsh, an address a guest renews into, a domain Kumo has no
+	// row for (docs/design/00-architecture.md §4). It starts after the worker so
+	// a pass never races the recovery of a task that still owns an instance.
+	reconciler, err := worker.NewReconciler(worker.ReconcilerOptions{
+		Logger: logger,
+		Pass: func(ctx context.Context) error {
+			report, err := instances.Reconcile(ctx)
+			if err != nil {
+				return err
+			}
+			if report.Updated > 0 || report.Orphans > 0 {
+				logger.InfoContext(ctx, "reconciled",
+					"rows", report.Rows, "domains", report.Domains,
+					"updated", report.Updated, "skipped", report.Skipped,
+					"orphans", report.Orphans)
+			}
+			return nil
+		},
+		Hint:   instances.ReconcileInstance,
+		Events: hv.Events,
+	})
+	if err != nil {
+		return fmt.Errorf("build the reconciler: %w", err)
+	}
+	if err := reconciler.Start(ctx); err != nil {
+		return fmt.Errorf("start the reconciler: %w", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if err := reconciler.Stop(stopCtx); err != nil {
+			logger.ErrorContext(context.WithoutCancel(ctx), "the reconciler did not stop cleanly",
+				"error", err)
+		}
+	}()
+
 	console, err := webui.New(logger)
 	if err != nil {
 		return fmt.Errorf("prepare web console: %w", err)

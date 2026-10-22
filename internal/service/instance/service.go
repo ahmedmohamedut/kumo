@@ -248,6 +248,11 @@ type Service struct {
 	pollTimeout   time.Duration
 	stopTimeout   time.Duration
 	now           func() time.Time
+
+	// orphans is the report of the last reconcile pass: domains that carry an
+	// instance id but have no row (docs/design/00-architecture.md §4.3). It is
+	// held in memory because it describes the hypervisor, not Kumo's metadata.
+	orphans *orphanState
 }
 
 // Sentinel errors of the constructor, so a wiring mistake reads differently from
@@ -355,6 +360,7 @@ func New(opts Options) (*Service, error) {
 		pollTimeout:   opts.PollTimeout,
 		stopTimeout:   opts.StopTimeout,
 		now:           opts.Now,
+		orphans:       &orphanState{seen: make(map[string]Orphan)},
 	}, nil
 }
 

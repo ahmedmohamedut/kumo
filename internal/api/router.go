@@ -231,6 +231,14 @@ func (h *Handler) Router() *gin.Engine {
 		secured.GET("/system/capacity", h.systemCapacity)
 	}
 
+	// The reconciler's orphan report: domains running under an instance id that
+	// no row claims (docs/design/00-architecture.md §4.3). Admin-only, because
+	// it describes the host rather than anything Kumo manages.
+	if h.instances != nil {
+		orphans := secured.Group("", middleware.RequireRole(auth.RoleAdmin))
+		orphans.GET("/system/orphans", h.systemOrphans)
+	}
+
 	// Tasks are readable by both roles: a viewer may watch an image import that
 	// an admin started.
 	if h.tasks != nil {

@@ -136,6 +136,35 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/system/orphans': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Domains the reconciler cannot account for
+     * @description Domains libvirt runs under an instance id that no instance row claims,
+     *     from the most recent reconcile pass (`00-architecture.md` section 4.3).
+     *     Kumo reports them and never removes them: a guest an operator is relying
+     *     on is indistinguishable from a leftover, so the clean-up is a decision
+     *     for a person.
+     *
+     *     The list is served from the last pass rather than probed per request, so
+     *     an empty list is also what a node that has not completed a pass answers.
+     *     Administrators only: an orphan describes the host rather than anything
+     *     Kumo manages.
+     */
+    get: operations['systemOrphans']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/instance-types': {
     parameters: {
       query?: never
@@ -766,6 +795,38 @@ export interface components {
       vcpus: number
       memory_mib: number
       description?: string
+    }
+    OrphanList: {
+      items: components['schemas']['Orphan'][]
+    }
+    Orphan: {
+      /**
+       * @description The libvirt domain name, which for a Kumo domain is the instance id
+       *     it was launched under.
+       * @example i-0a1b2c3d4e5f60718
+       */
+      domain_name: string
+      /** @description libvirt's own identifier for the domain. */
+      uuid: string
+      /**
+       * @description The domain's runtime state in the instance vocabulary, so the console
+       *     renders it with the indicator it uses elsewhere. A domain in a state
+       *     Kumo does not model carries the hypervisor's own word for it.
+       * @example running
+       */
+      state: string
+      /**
+       * Format: date-time
+       * @description When a pass first reported this domain. It is kept across passes, so
+       *     a leftover that has been there for a week reads differently from one
+       *     that appeared during the launch an operator is watching.
+       */
+      first_seen: string
+      /**
+       * Format: date-time
+       * @description The most recent pass that still found it.
+       */
+      last_seen: string
     }
     InstanceTypeList: {
       items: components['schemas']['InstanceType'][]
@@ -1426,6 +1487,28 @@ export interface operations {
         }
       }
       401: components['responses']['Unauthorized']
+    }
+  }
+  systemOrphans: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The domains of the last pass that had no row. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['OrphanList']
+        }
+      }
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
     }
   }
   listInstanceTypes: {
