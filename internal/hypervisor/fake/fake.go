@@ -685,6 +685,48 @@ func (f *Fake) WriteConsole(_ context.Context, id, text string) error {
 	return nil
 }
 
+// Crash puts a domain into the crashed state, which is a guest whose qemu died
+// rather than one anybody asked to stop.
+//
+// Nothing in Kumo produces it: it arrives from the hypervisor, which is exactly
+// why the reconciler has to be testable against it
+// (docs/design/00-architecture.md section 4).
+func (f *Fake) Crash(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	d, ok := f.domains[id]
+	if !ok {
+		return fmt.Errorf("fake: domain %q: %w", id, hypervisor.ErrNotFound)
+	}
+
+	d.info.State = hypervisor.DomainStateCrashed
+	d.appendConsoleLocked("[    0.904112] kumo-fake: guest crashed\n")
+	f.emitLocked(hypervisor.DomainEvent{
+		ID:     id,
+		Action: hypervisor.ActionCrashed,
+		State:  hypervisor.DomainStateCrashed,
+	})
+	return nil
+}
+
+// SetAddress replaces the address a domain reports, the way a guest that renews
+// its lease into a different address would. An empty ip drops the address, which
+// is a guest whose lease expired.
+func (f *Fake) SetAddress(_ context.Context, id, ip string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	d, ok := f.domains[id]
+	if !ok {
+		return fmt.Errorf("fake: domain %q: %w", id, hypervisor.ErrNotFound)
+	}
+
+	d.info.IP = ip
+	d.lease = ip
+	return nil
+}
+
 // Capacity returns the fake host's totals.
 func (f *Fake) Capacity(ctx context.Context) (hypervisor.Capacity, error) {
 	if err := f.begin(ctx, hypervisor.OpCapacity); err != nil {

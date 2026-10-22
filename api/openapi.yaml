@@ -164,6 +164,33 @@ paths:
                 $ref: '#/components/schemas/SystemCapacity'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /system/orphans:
+    get:
+      tags: [System]
+      operationId: systemOrphans
+      summary: Domains the reconciler cannot account for
+      description: |
+        Domains libvirt runs under an instance id that no instance row claims,
+        from the most recent reconcile pass (`00-architecture.md` section 4.3).
+        Kumo reports them and never removes them: a guest an operator is relying
+        on is indistinguishable from a leftover, so the clean-up is a decision
+        for a person.
+
+        The list is served from the last pass rather than probed per request, so
+        an empty list is also what a node that has not completed a pass answers.
+        Administrators only: an orphan describes the host rather than anything
+        Kumo manages.
+      responses:
+        '200':
+          description: The domains of the last pass that had no row.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrphanList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
   /instance-types:
     get:
       tags: [InstanceTypes]
@@ -1408,6 +1435,45 @@ components:
           type: integer
         description:
           type: string
+    OrphanList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Orphan'
+    Orphan:
+      type: object
+      required: [domain_name, uuid, state, first_seen, last_seen]
+      properties:
+        domain_name:
+          type: string
+          description: |
+            The libvirt domain name, which for a Kumo domain is the instance id
+            it was launched under.
+          example: i-0a1b2c3d4e5f60718
+        uuid:
+          type: string
+          description: libvirt's own identifier for the domain.
+        state:
+          type: string
+          description: |
+            The domain's runtime state in the instance vocabulary, so the console
+            renders it with the indicator it uses elsewhere. A domain in a state
+            Kumo does not model carries the hypervisor's own word for it.
+          example: running
+        first_seen:
+          type: string
+          format: date-time
+          description: |
+            When a pass first reported this domain. It is kept across passes, so
+            a leftover that has been there for a week reads differently from one
+            that appeared during the launch an operator is watching.
+        last_seen:
+          type: string
+          format: date-time
+          description: The most recent pass that still found it.
     InstanceTypeList:
       type: object
       required: [items]

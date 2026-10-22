@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"slices"
+	"time"
 
 	golibvirt "github.com/digitalocean/go-libvirt"
 
@@ -20,6 +21,15 @@ var _ hypervisor.Hypervisor = (*Client)(nil)
 // none. The endpoint always asks for a size; the default is what a direct caller
 // of the interface gets.
 const defaultConsoleBytes = 64 << 10
+
+// eventChannelBuffer is the queue depth of the lifecycle channel Events hands
+// out, and eventResubscribeDelay is how long a dropped subscription waits before
+// registering again. Both are generous: events are a hint, and the reconciler's
+// own ticker is the guarantee behind them.
+const (
+	eventChannelBuffer    = 64
+	eventResubscribeDelay = time.Second
+)
 
 // Start boots a domain from the definition Kumo wrote at launch.
 //
@@ -299,9 +309,164 @@ func (c *Client) Capacity(ctx context.Context) (hypervisor.Capacity, error) {
 	return out, nil
 }
 
-// Events is the libvirt event stream the reconciler of M4.5 consumes. Until then
-// it refuses rather than pretend: a caller that reaches it gets
-// hypervisor.ErrNotImplemented and degrades instead of corrupting the host.
-func (c *Client) Events(context.Context) (<-chan hypervisor.DomainEvent, error) {
-	return nil, hypervisor.ErrNotImplemented
+// Events is the libvirt lifecycle stream the reconciler consumes as a hint
+// (docs/design/04-libvirt-integration.md §7).
+//
+// The subscription is registered on the current connection and re-registered
+// when that connection drops, which is the "re-register events" half of the
+// reconnect behavior §1 asks for: go-libvirt closes the event channel when the
+// socket goes, and a stream that simply ended would silently downgrade Kumo to
+// timer-only reconciles for the rest of the process's life.
+//
+// Events are a hint, so this never fails after the first subscription: a
+// reconnect that cannot be made is retried until ctx is done, and the periodic
+// pass covers the gap meanwhile. Only the initial registration reports an error,
+// so a caller learns at startup whether it has a stream at all.
+func (c *Client) Events(ctx context.Context) (<-chan hypervisor.DomainEvent, error) {
+	stream, err := c.lifecycleStream(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(chan hypervisor.DomainEvent, eventChannelBuffer)
+
+	go func() {
+		defer close(out)
+
+		for {
+			if !c.forwardLifecycle(ctx, stream, out) {
+				return
+			}
+
+			// The stream ended without ctx being done, which means the
+			// connection went. Re-dial and register again; withConnection
+			// cannot do this for us because a subscription outlives one call.
+			for {
+				if !sleepCtx(ctx, eventResubscribeDelay) {
+					return
+				}
+				next, err := c.lifecycleStream(ctx)
+				if err != nil {
+					c.logger.DebugContext(ctx, "libvirt: could not re-register for lifecycle events",
+						"error", err)
+					continue
+				}
+				c.logger.InfoContext(ctx, "libvirt: re-registered for lifecycle events")
+				stream = next
+				break
+			}
+		}
+	}()
+
+	return out, nil
+}
+
+// lifecycleStream registers for domain lifecycle events on a live connection.
+func (c *Client) lifecycleStream(ctx context.Context) (<-chan golibvirt.DomainEventLifecycleMsg, error) {
+	conn, err := c.reconnector.ensureConnected(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("connect for lifecycle events: %w", err)
+	}
+
+	stream, err := conn.LifecycleEvents(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("register for lifecycle events: %w", err)
+	}
+	return stream, nil
+}
+
+// forwardLifecycle translates one subscription's messages until it ends.
+// It reports whether the caller should re-subscribe, which is false once ctx is
+// done.
+//
+// A message for a domain whose name is not a Kumo instance id is dropped here:
+// the host may run guests Kumo did not create, and the reconciler has no row to
+// bring in line for them.
+func (c *Client) forwardLifecycle(
+	ctx context.Context,
+	stream <-chan golibvirt.DomainEventLifecycleMsg,
+	out chan<- hypervisor.DomainEvent,
+) bool {
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case msg, ok := <-stream:
+			if !ok {
+				return ctx.Err() == nil
+			}
+
+			action, mapped := lifecycleAction(golibvirt.DomainEventType(msg.Event))
+			if !mapped {
+				continue
+			}
+
+			event := hypervisor.DomainEvent{
+				ID:     msg.Dom.Name,
+				Action: action,
+				State:  actionState(action),
+			}
+			select {
+			case out <- event:
+			case <-ctx.Done():
+				return false
+			default:
+				// A consumer that has fallen behind loses the hint rather than
+				// stalling the stream; the periodic pass still covers it.
+				c.logger.DebugContext(ctx, "libvirt: dropped a lifecycle event",
+					"domain_name", msg.Dom.Name, "action", action)
+			}
+		}
+	}
+}
+
+// lifecycleAction maps libvirt's lifecycle event type onto the interface's
+// vocabulary. ok is false for an event the reconciler has nothing to do with
+// (a suspend or a resume moves no instance state Kumo models), so the stream
+// does not wake a pass for it.
+func lifecycleAction(event golibvirt.DomainEventType) (hypervisor.DomainEventAction, bool) {
+	switch event {
+	case golibvirt.DomainEventDefined:
+		return hypervisor.ActionDefined, true
+	case golibvirt.DomainEventUndefined:
+		return hypervisor.ActionUndefine, true
+	case golibvirt.DomainEventStarted:
+		return hypervisor.ActionStarted, true
+	case golibvirt.DomainEventShutdown:
+		return hypervisor.ActionShutdown, true
+	case golibvirt.DomainEventStopped:
+		return hypervisor.ActionStopped, true
+	case golibvirt.DomainEventCrashed:
+		return hypervisor.ActionCrashed, true
+	default:
+		return "", false
+	}
+}
+
+// actionState is the domain state an action implies, so a consumer that only
+// reads the state does not have to know the action vocabulary. It is a hint
+// either way: the reconciler reads the domain back before writing a row.
+func actionState(action hypervisor.DomainEventAction) hypervisor.DomainState {
+	switch action {
+	case hypervisor.ActionStarted, hypervisor.ActionReboot:
+		return hypervisor.DomainStateRunning
+	case hypervisor.ActionCrashed:
+		return hypervisor.DomainStateCrashed
+	default:
+		return hypervisor.DomainStateShutoff
+	}
+}
+
+// sleepCtx waits for d and reports whether the wait completed rather than ctx
+// being canceled.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
