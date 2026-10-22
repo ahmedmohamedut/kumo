@@ -1,0 +1,190 @@
+# Kumo's continuous integration: the checks AGENTS.md asks a contributor to run
+# before calling a task done ("run `make lint test` before declaring any task
+# done"), run again on every push and pull request so nobody has to be trusted
+# to remember.
+#
+# The jobs call the Makefile rather than reimplementing it. A workflow that
+# spelled the commands out itself would drift from what a developer runs
+# locally, and the first thing anybody would learn is that green here means
+# nothing about their machine.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch makes the first one's result irrelevant, so
+# it is cancelled rather than left to finish. main is exempt: its runs are the
+# record of what that commit did.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# The workflow only ever reads the repository.
+permissions:
+  contents: read
+
+env:
+  # The console is not pinned by the repository, so it is pinned here. Node 20
+  # is the floor the README states; 22 is the active LTS the lockfile was
+  # resolved against.
+  NODE_VERSION: "22"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          # go.mod is the single source of the toolchain version, so a bump
+          # there moves CI with it.
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: make deps
+
+      # golangci-lint, oxlint, prettier --check and tsc, which is what
+      # `make lint` is. Prettier is in there deliberately: an unformatted file
+      # has reached main before.
+      - name: make lint
+        run: make lint
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: make deps
+
+      # internal/webui asserts that a console is embedded, which only holds
+      # once the frontend has been staged, so a clean checkout has to build it
+      # before the Go tests run. A developer's tree usually has it from an
+      # earlier `make build`, which is why `make test` appears to stand alone
+      # locally and does not here.
+      - name: make web-build
+        run: make web-build
+
+      # `go test -race` needs cgo, which is why this is the one place Kumo is
+      # not built with CGO_ENABLED=0 (see the Makefile). ubuntu-latest ships a
+      # toolchain, so there is nothing to install.
+      #
+      # No libvirt is involved: the unit tests run against the in-memory fake
+      # and a temporary SQLite file, which is the rule in AGENTS.md. The
+      # libvirt-tagged integration tests are not run here, because a hosted
+      # runner has no KVM to run a guest on.
+      - name: make test
+        run: make test
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # `make build` stamps the binary with `git describe`, which needs the
+          # tags and the history a shallow checkout leaves out.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: make deps
+
+      # The production artifact: the console built, embedded and linked into
+      # one CGO_ENABLED=0 binary. Building it here is what proves the embed and
+      # the single-binary promise still hold.
+      - name: make build
+        run: make build
+
+      - name: Check the console was embedded
+        run: |
+          if [ ! -s internal/webui/dist/index.html ]; then
+            echo "::error::make build produced no embedded console"
+            exit 1
+          fi
+          ./bin/kumod version
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kumod-linux-amd64
+          path: bin/kumod
+          # Long enough to download from a pull request that is under review,
+          # short enough not to accumulate.
+          retention-days: 14
+
+  generated:
+    name: Generated code is current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: make deps
+
+      # Two files in the tree are generated, and both are easy to forget: the
+      # sqlc code after editing a query, and the console's API types after
+      # editing the OpenAPI document. Regenerating and diffing is the only way
+      # to catch a commit that changed the source and not the output — the kind
+      # of drift that turns into a confusing failure three branches later.
+      - name: make sqlc
+        run: make sqlc
+
+      - name: make openapi
+        run: make openapi
+
+      # Only the generated paths are asserted on. `make openapi` runs prettier
+      # over the whole tree, because openapi-typescript's output is not
+      # formatted the way the repository is; letting that widen this check
+      # would report a hand-written file somebody forgot to format as "stale
+      # generated code". Formatting has an owner already — `make lint` runs
+      # `prettier --check` and says so plainly.
+      - name: Check nothing changed
+        run: |
+          if ! git diff --exit-code -- internal/store/sqlc web/src/types/api.ts; then
+            echo "::error::generated code is stale - run 'make sqlc openapi' and commit the result"
+            exit 1
+          fi
