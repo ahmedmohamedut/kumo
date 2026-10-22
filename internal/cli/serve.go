@@ -150,12 +150,21 @@ func serve(ctx context.Context, stdout io.Writer) error {
 	// its default subnet) has to exist before the worker starts. Bootstrap is
 	// deliberately not a task: it runs in-band, because the worker that would
 	// run it is not started yet (docs/design/00-architecture.md §7, step 3).
+	// A range the LAN already uses is not fatal: the node starts without a
+	// default VPC and the operator creates one in the console.
+	instanceNetwork := cfg.Network
 	defaultVPC, err := vpcs.Bootstrap(ctx, cfg.Network)
-	if err != nil {
+	switch {
+	case errors.Is(err, vpc.ErrDefaultSkipped):
+		logger.WarnContext(ctx, "no default VPC: create one in the console before launching instances",
+			"reason", err.Error())
+	case err != nil:
 		return fmt.Errorf("bootstrap the default VPC: %w", err)
+	default:
+		instanceNetwork = defaultVPC.LibvirtNetwork
+		logger.InfoContext(ctx, "default VPC is ready",
+			"vpc_id", defaultVPC.ID, "network", defaultVPC.LibvirtNetwork, "bridge", defaultVPC.BridgeName)
 	}
-	logger.InfoContext(ctx, "default VPC is ready",
-		"vpc_id", defaultVPC.ID, "network", defaultVPC.LibvirtNetwork, "bridge", defaultVPC.BridgeName)
 
 	// The staging directory holds a download until it becomes a volume, so it
 	// has to exist before the worker runs; putting it under the data directory
@@ -204,7 +213,7 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		InstancesPool: cfg.PoolInstances,
 		ImagesPool:    cfg.PoolImages,
 		ConsoleDir:    consoleDir(cfg.DataDir),
-		Network:       defaultVPC.LibvirtNetwork,
+		Network:       instanceNetwork,
 		SubnetLocks:   subnetLocks,
 		StopTimeout:   cfg.StopTimeout,
 		Limits: capacity.Limits{

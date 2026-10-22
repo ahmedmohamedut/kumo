@@ -3,7 +3,14 @@ import { screen, within } from '@testing-library/react'
 import { Route, Routes } from 'react-router-dom'
 
 import { DashboardPage } from '@/features/dashboard/DashboardPage'
-import { mockInstances, setMockCapacity, setMockInstances, setMockTasks } from '@/mocks/handlers'
+import {
+  mockInstances,
+  mockVPCs,
+  setMockCapacity,
+  setMockInstances,
+  setMockTasks,
+  setMockVPCs,
+} from '@/mocks/handlers'
 import { renderWithProviders, signInAs } from '@/test/utils'
 
 function Pages() {
@@ -54,6 +61,23 @@ describe('DashboardPage', () => {
     // watching a boot.
     expect(await screen.findByTestId('tally-stopped')).toHaveTextContent('0')
     expect(screen.getByText('Stopped')).toBeInTheDocument()
+  })
+
+  it('warns when the node has no default VPC', async () => {
+    setMockVPCs(mockVPCs().map((vpc) => ({ ...vpc, is_default: false })))
+    await signInAs()
+    renderWithProviders(<Pages />, { route: '/' })
+
+    expect(await screen.findByText('No default VPC')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Create a VPC' })).toBeInTheDocument()
+  })
+
+  it('stays quiet when a default VPC exists', async () => {
+    await signInAs()
+    renderWithProviders(<Pages />, { route: '/' })
+
+    await screen.findByTestId('tally-total')
+    expect(screen.queryByText('No default VPC')).not.toBeInTheDocument()
   })
 
   it('offers a launch on a node with no instances', async () => {

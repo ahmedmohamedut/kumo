@@ -1042,8 +1042,54 @@ func TestConsoleOutputOfAnInstanceWithoutADomainIsNotFound(t *testing.T) {
 	if err := h.hv.Undefine(t.Context(), running.ID); err != nil {
 		t.Fatalf("Undefine(): %v", err)
 	}
+	if err := os.Remove(filepath.Join(h.console, running.ID+".log")); err != nil {
+		t.Fatalf("remove the console log: %v", err)
+	}
 	if _, err := h.svc.ConsoleOutput(t.Context(), running.ID, 0); !errors.Is(err, service.ErrNotFound) {
 		t.Fatalf("ConsoleOutput() = %v, want ErrNotFound", err)
+	}
+}
+
+// TestLaunchCreatesAReadableConsoleLog covers the packaged install: libvirt's
+// virtlogd would create the log as root with mode 0600, which the unprivileged
+// service could never read, so the launch creates it first, 0644.
+func TestLaunchCreatesAReadableConsoleLog(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	running := h.runningInstance(t, "web")
+
+	info, err := os.Stat(filepath.Join(h.console, running.ID+".log"))
+	if err != nil {
+		t.Fatalf("the launch left no console log: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Errorf("console log mode = %o, want 644", got)
+	}
+}
+
+// TestConsoleOutputOfARolledBackInstanceServesTheLogFromDisk is the failed
+// launch: the domain is gone, and the log is the only record of why.
+func TestConsoleOutputOfARolledBackInstanceServesTheLogFromDisk(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	running := h.runningInstance(t, "web")
+
+	logPath := filepath.Join(h.console, running.ID+".log")
+	if err := os.WriteFile(logPath, []byte("kernel panic - not syncing\n"), 0o644); err != nil {
+		t.Fatalf("write the console log: %v", err)
+	}
+	if err := h.hv.Undefine(t.Context(), running.ID); err != nil {
+		t.Fatalf("Undefine(): %v", err)
+	}
+
+	out, err := h.svc.ConsoleOutput(t.Context(), running.ID, 0)
+	if err != nil {
+		t.Fatalf("ConsoleOutput(): %v", err)
+	}
+	if !strings.Contains(out.Output, "kernel panic") {
+		t.Errorf("the output is not the log on disk:\n%s", out.Output)
 	}
 }
 

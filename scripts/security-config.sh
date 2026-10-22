@@ -24,12 +24,15 @@
 #
 # Overrides:
 #   KUMO_DATA_DIR  where Kumo keeps its state (default /var/lib/kumo)
+#   KUMO_SERVICE_USER  the account kumod runs as (default kumo); it is given the
+#                  pool and console directories, skipped when it does not exist
 #   MAC            auto | apparmor | selinux | none   (default auto-detect)
 #   AA_DIR         AppArmor profiles root (default /etc/apparmor.d)
 set -euo pipefail
 export LC_ALL=C
 
 DATA_DIR="${KUMO_DATA_DIR:-/var/lib/kumo}"
+SERVICE_USER="${KUMO_SERVICE_USER:-kumo}"
 AA_DIR="${AA_DIR:-/etc/apparmor.d}"
 AA_QEMU_LOCAL="$AA_DIR/local/abstractions/libvirt-qemu"
 AA_HELPER_LOCAL="$AA_DIR/local/usr.lib.libvirt.virt-aa-helper"
@@ -210,6 +213,24 @@ ensure_traversal() {
 		if [[ "$(stat -c %a -- "$d")" != *[1357] ]]; then
 			chmod o+x -- "$d"
 			log "permissions: added search (o+x) on $d"
+		fi
+	done
+	own_trees
+}
+
+# This script runs as root, so the directories it creates are root's, and an
+# unprivileged kumod could neither import an image into pools/images nor write a
+# seed disk or a console log. Hand the directories (not their contents, which
+# libvirt and qemu own) to the service account. Skipped when there is none, e.g.
+# a developer running kumod as themselves.
+own_trees() {
+	local group d
+	id -u "$SERVICE_USER" >/dev/null 2>&1 || return 0
+	group="$(id -gn "$SERVICE_USER")"
+	for d in "$DATA_DIR/pools" "$DATA_DIR/pools/images" "$DATA_DIR/pools/instances" "$DATA_DIR/console"; do
+		if [[ "$(stat -c %U:%G -- "$d")" != "$SERVICE_USER:$group" ]]; then
+			chown "$SERVICE_USER:$group" -- "$d"
+			log "permissions: gave $d to $SERVICE_USER:$group"
 		fi
 	done
 }

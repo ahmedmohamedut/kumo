@@ -199,7 +199,7 @@ fi
 say ""
 say "Kumo $TAG is installed. Next:"
 say ""
-say "  sudo kumod doctor                      check this host can run guests"
+say "  sudo -u kumo kumod doctor                      check this host can run guests"
 say "  sudo systemctl enable --now kumod      start it"
 say ""
 say "Then open http://$(hostname -I 2>/dev/null | awk '{print $1}'):8080 and create the administrator."

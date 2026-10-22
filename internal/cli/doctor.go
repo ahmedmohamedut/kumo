@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
 	"os"
 	"os/exec"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/hypervisor"
 	"github.com/ahmedmohamedut/kumo/internal/hypervisor/libvirt"
 	"github.com/ahmedmohamedut/kumo/internal/logging"
+	"github.com/ahmedmohamedut/kumo/internal/network"
 	"github.com/ahmedmohamedut/kumo/internal/store"
 )
 
@@ -50,6 +52,7 @@ func runDoctor(ctx context.Context, out io.Writer) error {
 		checkDataDir(cfg.DataDir),
 		checkDiskSpace(cfg.DataDir),
 		checkDatabase(ctx, cfg),
+		checkDefaultVPC(ctx, cfg),
 		checkSigningKey(cfg),
 		checkHypervisor(cfg),
 	}
@@ -145,6 +148,43 @@ func checkDatabase(ctx context.Context, cfg *config.Config) check {
 	}
 
 	return check{name: "database", ok: true, note: fmt.Sprintf("%s (%s)", cfg.DBPath, state)}
+}
+
+// checkDefaultVPC warns when the first start would not create a default VPC
+// because its range is already routed on this host. It is a warning, not a
+// failure: the service starts anyway, and the operator creates a VPC in the
+// console (or sets KUMO_DEFAULT_VPC_CIDR).
+func checkDefaultVPC(ctx context.Context, cfg *config.Config) check {
+	const name = "default VPC"
+
+	db, err := store.Open(ctx, cfg.DBPath)
+	if err != nil {
+		return check{name: name, ok: true, warn: true, note: "not checked: " + err.Error()}
+	}
+	defer db.Close() //nolint:errcheck // a failed close does not change the verdict
+
+	if existing, err := db.GetDefaultVPC(ctx); err == nil {
+		return check{name: name, ok: true, note: fmt.Sprintf("%s (%s)", existing.Name, existing.Cidr)}
+	}
+
+	prefix, err := netip.ParsePrefix(cfg.DefaultVPCCIDR)
+	if err != nil {
+		return check{name: name, ok: false, note: err.Error()}
+	}
+	collision, err := network.HostCollision(prefix)
+	switch {
+	case err != nil:
+		return check{name: name, ok: true, warn: true, note: "could not scan the host routes: " + err.Error()}
+	case collision != "":
+		return check{
+			name: name,
+			ok:   true,
+			warn: true,
+			note: fmt.Sprintf("%s overlaps %s, so none will be created on start; "+
+				"create a VPC in the console, or set KUMO_DEFAULT_VPC_CIDR", prefix, collision),
+		}
+	}
+	return check{name: name, ok: true, note: fmt.Sprintf("%s will be created on first start", prefix)}
 }
 
 // checkSigningKey reports whether the key exists and is private, generating it

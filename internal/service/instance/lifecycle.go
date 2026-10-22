@@ -310,11 +310,17 @@ func (s *Service) ConsoleOutput(ctx context.Context, instanceID string, tailKiB 
 	}
 
 	out, err := s.hv.ConsoleOutput(ctx, instanceID, tailKiB*1024)
-	if err != nil {
-		if errors.Is(err, hypervisor.ErrNotFound) {
-			return ConsoleOutput{}, fmt.Errorf("%w: instance %q has no console log",
-				service.ErrNotFound, instanceID)
+	if err != nil && errors.Is(err, hypervisor.ErrNotFound) {
+		// No domain, or one that wrote nothing yet. The log file outlives a
+		// launch that was rolled back, and it is the only record of why the
+		// guest never came up.
+		if fromDisk, readErr := s.readConsoleLog(instanceID, tailKiB*1024); readErr == nil {
+			return ConsoleOutput{InstanceID: instanceID, Output: string(fromDisk)}, nil
 		}
+		return ConsoleOutput{}, fmt.Errorf("%w: instance %q has no console log",
+			service.ErrNotFound, instanceID)
+	}
+	if err != nil {
 		return ConsoleOutput{}, fmt.Errorf("read the console of instance %q: %w", instanceID, err)
 	}
 

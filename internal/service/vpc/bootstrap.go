@@ -21,6 +21,12 @@ import (
 // by re-reading the winner's row.
 var errDefaultTaken = errors.New("vpc: the default VPC was created by another process")
 
+// ErrDefaultSkipped means Bootstrap did not create a default VPC because its
+// range is taken on this host. It is not a failure: the node runs without a
+// default VPC, and the first VPC an operator creates becomes the default
+// (Create). The caller logs it and carries on.
+var ErrDefaultSkipped = errors.New("vpc: no default VPC was created")
+
 // defaultVPCName is the row name of a fresh default VPC and of its default
 // subnet: the label the console shows and, for the VPC, the DNS domain.
 const defaultVPCName = "default"
@@ -140,11 +146,11 @@ func (s *Service) createDefault(ctx context.Context) (VPC, error) {
 		return VPC{}, fmt.Errorf("scan the host routes for overlapping networks: %w", err)
 	}
 	if collision != "" {
-		// The operator's LAN owns this block. The message spells the way out,
-		// because a block that cannot be reclaimed is not something the row
-		// should half-create and roll back: it hints at KUMO_DEFAULT_VPC_CIDR.
-		return VPC{}, fmt.Errorf("%w: the default VPC CIDR %s overlaps %s; set KUMO_DEFAULT_VPC_CIDR to a free RFC 1918 range (e.g. 172.31.0.0/16)",
-			service.ErrConflict, prefix, collision)
+		// The operator's LAN owns this block. Nothing is half-created: the node
+		// starts without a default VPC and the operator makes one in the console
+		// on a range that suits their network (or sets KUMO_DEFAULT_VPC_CIDR).
+		return VPC{}, fmt.Errorf("%w: the default VPC CIDR %s overlaps %s; create a VPC in the console, or set KUMO_DEFAULT_VPC_CIDR to a free RFC 1918 range (e.g. 172.31.0.0/16)",
+			ErrDefaultSkipped, prefix, collision)
 	}
 
 	now := formatTime(s.now())

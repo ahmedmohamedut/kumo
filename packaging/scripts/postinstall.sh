@@ -46,7 +46,7 @@ done
 # create` are run by an operator before the first start, so it has to exist now.
 mkdir -p "$KUMO_HOME"
 chown "$KUMO_USER":"$KUMO_GROUP" "$KUMO_HOME"
-chmod 0750 "$KUMO_HOME"
+chmod 0751 "$KUMO_HOME" # qemu must be able to search it
 
 # --- mandatory access control ------------------------------------------------
 # AppArmor and SELinux both deny a confined qemu access to a fresh directory
@@ -72,7 +72,7 @@ cat <<'EOF'
 
 Kumo is installed. Two steps left:
 
-  1. sudo kumod doctor          check this host can run guests
+  1. sudo -u kumo kumod doctor          check this host can run guests
   2. sudo systemctl enable --now kumod
 
 Then open http://<this-host>:8080 and create the administrator.

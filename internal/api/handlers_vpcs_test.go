@@ -257,8 +257,8 @@ func TestCreateVPCQueuesTheNetworkTask(t *testing.T) {
 	if created.Name != vpcProd || created.CIDR != cidrProd || created.Mode != "nat" {
 		t.Errorf("body = %+v, want the stored name, cidr and nat mode", created)
 	}
-	if created.IsDefault {
-		t.Error("is_default = true for a plain create")
+	if !created.IsDefault {
+		t.Error("is_default = false for the first VPC on a node with no default")
 	}
 	if created.GatewayIP != "10.200.0.1" || created.Netmask != "255.255.0.0" {
 		t.Errorf("gateway/netmask = %q/%q, want 10.200.0.1/255.255.0.0",

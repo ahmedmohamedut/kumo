@@ -7,6 +7,14 @@
 # operator's instances with it.
 set -e
 
+# An upgrade runs this too: rpm passes the number of copies that will remain
+# (0 on a real removal, 1 or more on an upgrade) and dpkg passes a word. Only a
+# removal stops and disables the service; an upgrade must leave it running.
+case "${1:-}" in
+0 | remove | purge | deconfigure) ;;
+*) exit 0 ;;
+esac
+
 if command -v systemctl >/dev/null 2>&1; then
 	systemctl stop kumod >/dev/null 2>&1 || true
 	systemctl disable kumod >/dev/null 2>&1 || true
