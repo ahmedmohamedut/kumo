@@ -6,7 +6,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -545,6 +547,56 @@ func (s *Service) consoleLogPath(instanceID string) string {
 // show up as a domain that boots with no console.
 func (s *Service) ensureConsoleDir() error {
 	return ensureDir(s.consoleDir, 0o755)
+}
+
+// ensureConsoleLog creates the serial log before the domain starts. libvirt's
+// virtlogd would create it itself, but as root with mode 0600, and the service
+// runs unprivileged: it could never read the file to serve the console-output
+// endpoint. A file that exists is only appended to by virtlogd, so its owner and
+// mode stay the ones set here. The chmod is explicit because the service's umask
+// is stricter than 0644.
+func (s *Service) ensureConsoleLog(instanceID string) error {
+	path := s.consoleLogPath(instanceID)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("create the console log %s: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close the console log %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		return fmt.Errorf("chmod the console log %s: %w", path, err)
+	}
+	return nil
+}
+
+// readConsoleLog returns the last maxBytes of an instance's console log file
+// straight from disk. It is the answer for an instance with no domain: a launch
+// that failed has been rolled back, but the guest's last words are still here.
+func (s *Service) readConsoleLog(instanceID string, maxBytes int) ([]byte, error) {
+	file, err := os.Open(s.consoleLogPath(instanceID))
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close() //nolint:errcheck // a read-only handle has nothing to flush
+
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	size := info.Size()
+	if size > int64(maxBytes) {
+		if _, err := file.Seek(-int64(maxBytes), io.SeekEnd); err != nil {
+			return nil, err
+		}
+		size = int64(maxBytes)
+	}
+	buf := make([]byte, size)
+	n, err := io.ReadFull(file, buf)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return nil, err
+	}
+	return buf[:n], nil
 }
 
 // deref renders a nullable string for a log line.

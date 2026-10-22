@@ -351,6 +351,9 @@ func (s *Service) startDomain(
 	if err := s.ensureConsoleDir(); err != nil {
 		return hypervisor.DomainInfo{}, err
 	}
+	if err := s.ensureConsoleLog(row.ID); err != nil {
+		return hypervisor.DomainInfo{}, err
+	}
 
 	spec := hypervisor.DomainSpec{
 		ID:           row.ID,
