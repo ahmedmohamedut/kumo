@@ -206,6 +206,25 @@ test.describe.serial('the console against a real kumod', () => {
     await expect(row).toContainText(IMAGE)
   })
 
+  test('the dashboard counts the running instance and its capacity', async ({ page }) => {
+    await signIn(page)
+    await page.goto('/')
+
+    // The dashboard reads the same three endpoints the API serves, so this is
+    // the one place the counts, the capacity meters and a real instance meet.
+    await expect(page.getByTestId('tally-total')).toHaveText('1')
+    await expect(page.getByTestId('tally-running')).toHaveText('1')
+    await expect(page.getByTestId('tally-error')).toHaveText('0')
+
+    // kumo.nano is 1 vCPU, so the node has exactly one handed out.
+    await expect(page.getByText(/^1 of \d+ allocated$/)).toBeVisible()
+
+    // The launch is the newest task, and it succeeded.
+    const tasks = page.getByTestId('recent-tasks')
+    await expect(tasks.getByText('instance.launch')).toBeVisible()
+    await expect(tasks.getByText('Succeeded').first()).toBeVisible()
+  })
+
   test('the instance stops and starts again', async ({ page }) => {
     await signIn(page)
     await page.goto('/instances')
