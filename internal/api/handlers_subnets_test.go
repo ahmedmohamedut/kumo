@@ -219,8 +219,8 @@ func TestCreateSubnetReturnsCounts(t *testing.T) {
 	if body.TotalIPs != 256 || body.UsableIPs != 253 || body.AllocatedIPs != 0 {
 		t.Errorf("counts = %d/%d/%d, want 256/253/0", body.TotalIPs, body.UsableIPs, body.AllocatedIPs)
 	}
-	if body.IsDefault {
-		t.Error("is_default = true for a plain create")
+	if !body.IsDefault {
+		t.Error("is_default = false for the first subnet of the default VPC")
 	}
 	if body.Tags[tagEnv] != vpcProd {
 		t.Errorf("Tags = %v, want %s=%s", body.Tags, tagEnv, vpcProd)

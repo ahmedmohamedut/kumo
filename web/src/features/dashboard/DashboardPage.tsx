@@ -1,3 +1,4 @@
+import Alert from '@cloudscape-design/components/alert'
 import Box from '@cloudscape-design/components/box'
 import ColumnLayout from '@cloudscape-design/components/column-layout'
 import Container from '@cloudscape-design/components/container'
@@ -18,6 +19,7 @@ import {
   type Instance,
   type InstanceState,
 } from '@/features/instances/api'
+import { useListVPCsQuery } from '@/features/vpcs/api'
 import { useSystemCapacityQuery, type CapacityMetric } from '@/features/system/api'
 import {
   pollInterval as taskPollInterval,
@@ -102,6 +104,12 @@ export function DashboardPage() {
     pollingInterval: instancePollInterval(cachedInstances.data?.items),
   })
 
+  // A node whose default range was taken by the LAN boots without a default
+  // VPC; the first VPC created becomes the default. Say so rather than letting
+  // the first launch fail with a conflict.
+  const { data: vpcData } = useListVPCsQuery()
+  const noDefaultVPC = vpcData !== undefined && !vpcData.items.some((vpc) => vpc.is_default)
+
   const instances = instanceData?.items ?? []
   const tasks = (taskData?.items ?? []).slice(0, RECENT_TASKS)
 
@@ -114,6 +122,20 @@ export function DashboardPage() {
       }
     >
       <SpaceBetween size="l">
+        {noDefaultVPC && (
+          <Alert
+            type="warning"
+            header="No default VPC"
+            action={
+              <Link href="/vpcs/create" variant="primary">
+                Create a VPC
+              </Link>
+            }
+          >
+            The default range overlaps a network this host already uses, so none was created. Create
+            a VPC on a free range; the first one becomes the default that instances launch into.
+          </Alert>
+        )}
         <Container
           header={
             <Header

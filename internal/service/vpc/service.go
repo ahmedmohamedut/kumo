@@ -275,6 +275,16 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Created, error) {
 			}
 		}
 
+		// With no default VPC (a node whose default range was taken by the
+		// LAN), the first VPC an operator creates becomes the default, so a
+		// launch that names no subnet has somewhere to go.
+		isDefault := int64(0)
+		if _, err := tx.GetDefaultVPC(ctx); errors.Is(err, sql.ErrNoRows) {
+			isDefault = 1
+		} else if err != nil {
+			return fmt.Errorf("look for the default VPC: %w", err)
+		}
+
 		vpcID := id.VPC()
 		now := formatTime(s.now())
 		row, err := tx.CreateVPC(ctx, sqlc.CreateVPCParams{
@@ -286,7 +296,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Created, error) {
 			Netmask:        network.Netmask(prefix),
 			BridgeName:     hypervisor.BridgeName(vpcID),
 			LibvirtNetwork: vpcID,
-			IsDefault:      0,
+			IsDefault:      isDefault,
 			CreatedBy:      nullable(in.CreatedBy),
 			CreatedAt:      now,
 			UpdatedAt:      now,

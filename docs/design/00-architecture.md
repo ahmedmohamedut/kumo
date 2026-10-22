@@ -128,7 +128,7 @@ memory- or disk-bound nodes; the endpoint reports that rather than hiding it.
 
 1. Load config, open SQLite (WAL, `busy_timeout=5000`, `foreign_keys=ON`), run embedded goose migrations.
 2. Ensure JWT key exists.
-3. Connect to hypervisor; **bootstrap**: ensure storage pools exist (dir pools under `$DATA_DIR/pools/*`). Ensure default VPC and subnet exist in DB and libvirt; if an existing `kumo-default` network is found, adopt it (storing its existing network and bridge names); otherwise create the default VPC network (`kmb` + 8 hex ID) with collision validation against host routes/interfaces.
+3. Connect to hypervisor; **bootstrap**: ensure storage pools exist (dir pools under `$DATA_DIR/pools/*`). Ensure default VPC and subnet exist in DB and libvirt; if an existing `kumo-default` network is found, adopt it (storing its existing network and bridge names); otherwise create the default VPC network (`kmb` + 8 hex ID) with collision validation against host routes/interfaces. A collision is **not fatal**: the boot logs a warning and continues with no default VPC (`vpc.ErrDefaultSkipped`); the first VPC an operator creates then becomes the default and its first subnet the default subnet, and `kumod doctor` and the console dashboard warn about the missing default.
 4. Create the staging directory (`$KUMO_IMAGE_TEMP_DIR`), where image downloads land before they become volumes.
 5. Seed the `kumo.*` `instance_types` presets. Seeding is idempotent (`INSERT OR IGNORE`), so a preset an operator tuned on the node survives a restart.
 6. Start worker + reconciler. The worker first *recovers* tasks left `running` by a previous process (back to `pending`, attempts preserved) and only then starts claiming.

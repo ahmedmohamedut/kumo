@@ -218,8 +218,8 @@ func TestCreateQueuesTheNetworkTask(t *testing.T) {
 	if created.LibvirtNetwork != created.ID {
 		t.Errorf("LibvirtNetwork = %q, want the VPC id as the network name", created.LibvirtNetwork)
 	}
-	if created.IsDefault {
-		t.Error("IsDefault = true for a plain create")
+	if !created.IsDefault {
+		t.Error("IsDefault = false for the first VPC on a node with no default")
 	}
 	if !created.CreatedAt.Equal(testClock()) {
 		t.Errorf("CreatedAt = %v, want %v", created.CreatedAt, testClock())
@@ -653,5 +653,24 @@ func TestDeleteRefusesWhileInstancesExist(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "instance") {
 		t.Errorf("the conflict message does not mention the instance: %v", err)
+	}
+}
+
+func TestCreateMakesTheFirstVPCTheDefaultOnly(t *testing.T) {
+	h := newHarness(t)
+
+	first, err := h.svc.Create(context.Background(), CreateInput{Name: "first", CIDR: "10.1.0.0/16"})
+	if err != nil {
+		t.Fatalf("first Create() error = %v", err)
+	}
+	second, err := h.svc.Create(context.Background(), CreateInput{Name: "second", CIDR: "10.2.0.0/16"})
+	if err != nil {
+		t.Fatalf("second Create() error = %v", err)
+	}
+	if !first.IsDefault {
+		t.Error("the first VPC on a node with no default is not the default")
+	}
+	if second.IsDefault {
+		t.Error("a second VPC took the default from the first")
 	}
 }

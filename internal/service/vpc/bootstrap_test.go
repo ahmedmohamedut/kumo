@@ -295,7 +295,7 @@ func TestBootstrapRejectsAnUnparsableAdoptedCIDR(t *testing.T) {
 	}
 }
 
-func TestBootstrapFreshCreateRejectsAHostCollision(t *testing.T) {
+func TestBootstrapFreshCreateSkipsOnAHostCollision(t *testing.T) {
 	db := storetest.New(t)
 	h := newBootstrapHarnessOn(t, db, wiredSubnets(t, db))
 	overrideHostCollision(t, func(netip.Prefix) (string, error) {
@@ -303,8 +303,8 @@ func TestBootstrapFreshCreateRejectsAHostCollision(t *testing.T) {
 	})
 
 	_, err := h.svc.Bootstrap(context.Background(), "kumo-default")
-	if !errors.Is(err, service.ErrConflict) {
-		t.Fatalf("Bootstrap() error = %v, want ErrConflict on a host collision", err)
+	if !errors.Is(err, ErrDefaultSkipped) {
+		t.Fatalf("Bootstrap() error = %v, want ErrDefaultSkipped on a host collision", err)
 	}
 	if !strings.Contains(err.Error(), "192.168.100.0/24") {
 		t.Errorf("the collision message does not name the default CIDR: %v", err)
@@ -313,7 +313,17 @@ func TestBootstrapFreshCreateRejectsAHostCollision(t *testing.T) {
 		t.Errorf("the collision message does not hint at KUMO_DEFAULT_VPC_CIDR: %v", err)
 	}
 	if countVPCs(t, h) != 0 {
-		t.Error("the refused boot wrote a row")
+		t.Error("the skipped boot wrote a row")
+	}
+
+	// The operator's first VPC, on a range that is free, becomes the default.
+	overrideHostCollision(t, func(netip.Prefix) (string, error) { return "", nil })
+	created, err := h.svc.Create(context.Background(), CreateInput{Name: "main", CIDR: "172.31.0.0/16"})
+	if err != nil {
+		t.Fatalf("Create() after a skipped bootstrap: %v", err)
+	}
+	if !created.IsDefault {
+		t.Error("the first VPC created on a node without a default is not the default")
 	}
 }
 

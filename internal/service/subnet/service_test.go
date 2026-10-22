@@ -598,3 +598,28 @@ func TestDeleteRefusesWhileTheLockIsHeld(t *testing.T) {
 		t.Errorf("the refusal does not name the holder: %v", err)
 	}
 }
+
+func TestCreateMakesTheFirstSubnetOfTheDefaultVPCTheDefault(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	seedVPC(t, h, "vpc-00000000000000001", "prod", "10.0.0.0/16", "10.0.0.1")
+	if _, err := h.store.Exec(context.Background(),
+		`UPDATE vpcs SET is_default = 1 WHERE id = 'vpc-00000000000000001'`); err != nil {
+		t.Fatalf("mark the VPC default: %v", err)
+	}
+
+	first, err := h.svc.Create(context.Background(), subnet.CreateInput{
+		VPCID: "vpc-00000000000000001", Name: "a", CIDR: "10.0.0.0/24"})
+	if err != nil {
+		t.Fatalf("first Create() error = %v", err)
+	}
+	second, err := h.svc.Create(context.Background(), subnet.CreateInput{
+		VPCID: "vpc-00000000000000001", Name: "b", CIDR: "10.0.1.0/24"})
+	if err != nil {
+		t.Fatalf("second Create() error = %v", err)
+	}
+	if !first.IsDefault || second.IsDefault {
+		t.Errorf("IsDefault = %v/%v, want true/false: only the first subnet of the default VPC", first.IsDefault, second.IsDefault)
+	}
+}

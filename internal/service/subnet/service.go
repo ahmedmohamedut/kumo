@@ -210,13 +210,26 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Subnet, error) {
 			}
 		}
 
+		// The first subnet of the default VPC is its default subnet, so a VPC
+		// the operator made as the default is launchable without more setup.
+		isDefault := in.IsDefault
+		if vpcRow.IsDefault != 0 && !isDefault {
+			isDefault = true
+			for _, sibling := range siblings {
+				if sibling.IsDefault != 0 {
+					isDefault = false
+					break
+				}
+			}
+		}
+
 		now := formatTime(s.now())
 		row, err := tx.CreateSubnet(ctx, sqlc.CreateSubnetParams{
 			ID:        id.Subnet(),
 			VpcID:     vpcRow.ID,
 			Name:      in.Name,
 			Cidr:      prefix.String(),
-			IsDefault: boolToInt(in.IsDefault),
+			IsDefault: boolToInt(isDefault),
 			CreatedBy: nullable(in.CreatedBy),
 			CreatedAt: now,
 			UpdatedAt: now,
