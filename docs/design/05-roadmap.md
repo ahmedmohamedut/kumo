@@ -94,6 +94,8 @@ Work through tasks **in order**, one per PR. Each task lists acceptance criteria
 - [ ] TLS: built-in self-signed cert generation or `KUMO_TLS_CERT/KEY`
 - [ ] Install script + systemd unit + `.deb`/`.rpm` via goreleaser; `docs/install.md` (the 15-minute path)
 - [ ] Playwright E2E on fake hypervisor; GitHub Actions CI (lint, test, build, release)
+  Done: GitHub Actions runs `lint`, `test`, `build`, `e2e` and a generated-code check on every push and pull request (`.github/workflows/ci.yml`), each job calling the Makefile so green there means what green on a developer's machine means. The Playwright suite (`web/e2e/console.spec.ts`, `make e2e`) drives a browser through the console `make build` embeds, against the real API, database and task worker with `KUMO_HYPERVISOR=fake`: first-run administrator, sign-in refusal, key pair with its one-time private key, image import from a loopback mirror serving a generated tiny qcow2, launch, the address allocated from the default subnet, stop, start, terminate, image delete and sign-out. 11 tests, serial and cumulative, about 30 s.
+  Open: `release` has nothing to release yet — it waits on the goreleaser config of the install item below. The suite covers the instances, images and key pairs journey; the VPC and subnet pages are only touched through the launch form.
 - [ ] `CONTRIBUTING.md`, `SECURITY.md`, issue templates
 
 ## Post-v0.1 backlog (do not start without approval)
