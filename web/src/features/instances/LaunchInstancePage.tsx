@@ -368,7 +368,7 @@ export function LaunchInstancePage() {
                         description:
                           preset.description ??
                           `${preset.vcpus} vCPU · ${formatGiB(
-                            Math.round(preset.memory_mib / 1024)
+                            Math.round(preset.memory_mib / 1024),
                           )}`,
                       }))
                       const selected = options.find((o) => o.value === instanceType)
@@ -376,7 +376,9 @@ export function LaunchInstancePage() {
                       return (
                         <Select
                           selectedOption={selected ?? null}
-                          onChange={({ detail }) => setInstanceType(detail.selectedOption?.value ?? '')}
+                          onChange={({ detail }) =>
+                            setInstanceType(detail.selectedOption?.value ?? '')
+                          }
                           options={options}
                           placeholder="Choose an instance type"
                           ariaLabel="Instance type"
