@@ -56,8 +56,12 @@ web-build: ## Build the frontend and stage it for embedding in the binary
 	cp -R $(WEB)/dist/. $(EMBED)/
 	touch $(EMBED)/.gitkeep
 
+# test stages the console first because internal/webui asserts that one is
+# embedded. Without the dependency the target passes on a tree that happens to
+# hold a build from earlier and fails on a fresh clone, which is the order the
+# README sends a new contributor through (`make deps`, then `make test`).
 .PHONY: test
-test: ## Run Go and frontend tests
+test: web-build ## Run Go and frontend tests
 	$(GO) test $(PKGS) -race -count=1
 	$(NPM) --prefix $(WEB) run test --if-present
 

@@ -80,14 +80,9 @@ jobs:
       - name: Install dependencies
         run: make deps
 
-      # internal/webui asserts that a console is embedded, which only holds
-      # once the frontend has been staged, so a clean checkout has to build it
-      # before the Go tests run. A developer's tree usually has it from an
-      # earlier `make build`, which is why `make test` appears to stand alone
-      # locally and does not here.
-      - name: make web-build
-        run: make web-build
-
+      # `make test` stages the console itself, because internal/webui asserts
+      # that one is embedded.
+      #
       # `go test -race` needs cgo, which is why this is the one place Kumo is
       # not built with CGO_ENABLED=0 (see the Makefile). ubuntu-latest ships a
       # toolchain, so there is nothing to install.
