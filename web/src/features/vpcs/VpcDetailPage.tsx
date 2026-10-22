@@ -26,6 +26,7 @@ import {
   useListTasksQuery,
   type Task,
 } from '@/features/tasks/api'
+import { taskIndicatorType, taskLabel } from '@/features/tasks/state'
 import { notify } from '@/features/notifications/notificationsSlice'
 import { errorMessage, fieldErrors, type ApiError } from '@/lib/apiError'
 import { formatAbsoluteTime, formatRelativeTime } from '@/lib/format'
@@ -397,32 +398,4 @@ function TaskRow({ task }: { task: Task }) {
       </Box>
     </SpaceBetween>
   )
-}
-
-/** taskIndicatorType maps a task state onto a StatusIndicator type. */
-function taskIndicatorType(state: Task['state']): 'pending' | 'in-progress' | 'success' | 'error' {
-  switch (state) {
-    case 'pending':
-      return 'pending'
-    case 'running':
-      return 'in-progress'
-    case 'succeeded':
-      return 'success'
-    case 'failed':
-      return 'error'
-  }
-}
-
-/** taskLabel is the human name of a task state. */
-function taskLabel(state: Task['state']): string {
-  switch (state) {
-    case 'pending':
-      return 'Queued'
-    case 'running':
-      return 'Running'
-    case 'succeeded':
-      return 'Succeeded'
-    case 'failed':
-      return 'Failed'
-  }
 }

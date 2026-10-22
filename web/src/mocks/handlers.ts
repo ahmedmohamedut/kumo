@@ -617,6 +617,11 @@ export function mockTasks(): Task[] {
   return tasks
 }
 
+/** setMockTasks replaces the task table, e.g. for a node that has run nothing. */
+export function setMockTasks(next: Task[]): void {
+  tasks = next
+}
+
 /** setMockImages replaces the fixture table, e.g. to start from an empty list. */
 export function setMockImages(next: MockImage[]): void {
   images = next
@@ -652,6 +657,27 @@ function stripImage({ referenced_by: _referencedBy, ...image }: MockImage): Imag
  * same-numbered token issued by a later one — sessions leaking across tests, at
  * random. Token ids therefore stay unique for the life of the process.
  */
+/**
+ * The node the capacity report describes: 8 vCPUs over a 4x overcommit, 16 GiB
+ * of memory and a 200 GiB instances pool, with one small instance's worth
+ * already handed out. The numbers are deliberately unround so a test asserting
+ * a formatted figure cannot pass on a coincidence.
+ */
+function freshCapacity(): components['schemas']['SystemCapacity'] {
+  return {
+    vcpus: { total: 32, allocated: 3 },
+    memory_bytes: { total: 17179869184, allocated: 3221225472 },
+    disk_bytes: { total: 214748364800, allocated: 32212254720 },
+  }
+}
+
+let capacity = freshCapacity()
+
+/** setMockCapacity replaces the capacity report, for the over-allocated case. */
+export function setMockCapacity(next: components['schemas']['SystemCapacity']): void {
+  capacity = next
+}
+
 export function resetMockState(): void {
   refreshTokens = new Map()
   accessTokens = new Map()
@@ -662,6 +688,7 @@ export function resetMockState(): void {
   instances = freshInstances()
   vpcs = freshVPCs()
   subnets = freshSubnets()
+  capacity = freshCapacity()
 }
 
 /** mockInstances reads the instance fixtures, e.g. to assert a state change. */
@@ -1003,6 +1030,11 @@ export const handlers = [
   }),
 
   http.get('/api/v1/system/info', () => HttpResponse.json(info)),
+
+  http.get('/api/v1/system/capacity', ({ request }) => {
+    const user = requireUser(request)
+    return user === null ? unauthenticated() : HttpResponse.json(capacity)
+  }),
 
   http.get('/api/v1/key-pairs', ({ request }) => {
     const user = requireUser(request)

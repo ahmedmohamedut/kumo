@@ -88,7 +88,10 @@ Work through tasks **in order**, one per PR. Each task lists acceptance criteria
 ## M5 — Polish for first release (v0.1)
 
 - [ ] VNC web console (WebSocket proxy to `127.0.0.1:<vnc>`, noVNC in UI)
-- [ ] Dashboard page (state counts, capacity, recent tasks)
+- [x] Dashboard page (state counts, capacity, recent tasks)
+  Done: `/` is the real page 03-frontend.md section 6 describes. Five fixed instance tallies (total, running, stopped, in progress, error), three capacity meters over `GET /system/capacity`, and the five newest tasks with their outcome. The tallies are a fixed row rather than derived from the data, so the row does not reflow under an operator watching a boot and "nothing is in error" reads as a zero; `terminated` rows are left out, because a terminate deletes the row now and counting a leftover would put the total above the sum of the tiles. Over-allocation is reported rather than hidden: `allocated > total` is legal by design on a vCPU-overcommitted node, the meter cannot draw past full, so it clamps and the figure carries the overflow. Capacity gained its first RTK Query endpoint (`features/system/api.ts`, untagged — it is derived from the instances, so there is no entity to invalidate, and the page polls on the instance interval instead). The task state to StatusIndicator mapping moved to `features/tasks/state.ts`, which removes the copy the images and VPC pages each carried.
+  Deliberately not a chart: the state counts are five numbers an operator reads individually and capacity is three magnitudes against a known total, which is what a meter is for. Status colours stay reserved and always ship with their icon and word.
+  Verified: 10 component tests (counts by state, a terminated row excluded, a zero shown rather than hidden, the empty-node launch prompt, capacity as allocated-of-total with the derived remainder, the over-allocated case, the recent list scoped to its own panel, a failed task showing its error instead of its age, the no-tasks state and the link to the table), plus an end-to-end test that reads the tallies, a capacity meter and the launch task off a real node.
 - [ ] SSE `/events` + UI subscription (fallback polling)
 - [ ] Tags editor everywhere; viewer role enforced in UI (hide/disable actions)
 - [ ] TLS: built-in self-signed cert generation or `KUMO_TLS_CERT/KEY`
