@@ -37,8 +37,8 @@ Stack: React 18, TypeScript (strict), Vite, Redux Toolkit + RTK Query, React Rou
 
 | Path | Page | Notes |
 |---|---|---|
-| `/login` | LoginPage | Public. Redirect to `?next=` after login |
-| `/setup` | SetupPage | Only when `needs_setup` |
+| `/login` | LoginPage | Public. Redirect to `?next=` after login, or to `/setup` while `needs_setup` |
+| `/setup` | SetupPage | Only when `needs_setup`; redirects to `/login` once the node has a user |
 | `/` | Dashboard | Counts of instances by state, recent tasks, capacity bars |
 | `/instances` | InstancesList | Table, actions, filters |
 | `/instances/launch` | LaunchWizard | Single-page form (v1), `Wizard` later |

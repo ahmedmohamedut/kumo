@@ -65,6 +65,15 @@ test: web-build ## Run Go and frontend tests
 	$(GO) test $(PKGS) -race -count=1
 	$(NPM) --prefix $(WEB) run test --if-present
 
+# e2e drives a browser against the real binary: the console make build embeds,
+# the real API and the task worker, with the in-memory hypervisor standing in
+# for KVM. It depends on build because the suite starts bin/kumod itself, and
+# it is a separate target from test because it needs a browser installed
+# (npm --prefix web exec playwright install chromium).
+.PHONY: e2e
+e2e: build ## Run the Playwright end-to-end suite against bin/kumod
+	$(NPM) --prefix $(WEB) run e2e
+
 .PHONY: test-libvirt
 test-libvirt: ## Run the opt-in integration tests against a real libvirtd
 	$(GO) test -tags libvirt $(PKGS) -count=1 -timeout 30m

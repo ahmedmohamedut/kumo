@@ -140,6 +140,46 @@ jobs:
           # short enough not to accumulate.
           retention-days: 14
 
+  e2e:
+    name: End-to-end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: make deps
+
+      # Only chromium, and only its own dependencies: the suite runs one
+      # project, and installing three browsers would be most of this job.
+      - name: Install the browser
+        run: npm --prefix web exec -- playwright install --with-deps chromium
+
+      # `make e2e` builds bin/kumod first and the suite starts it itself, with
+      # the in-memory hypervisor. No libvirt and no /dev/kvm are involved,
+      # which is what makes this runnable on a hosted runner at all.
+      - name: make e2e
+        run: make e2e
+
+      # The report carries the trace, screenshot and video of anything that
+      # failed, which is the only way to debug a browser run nobody watched.
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          retention-days: 14
+
   generated:
     name: Generated code is current
     runs-on: ubuntu-latest
