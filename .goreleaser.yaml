@@ -1,0 +1,171 @@
+# GoReleaser builds the artifacts a release is made of: the binary, the archives
+# and the .deb/.rpm packages (05-roadmap.md, M5).
+#
+# Run it without a tag to check the whole thing locally:
+#   make release-snapshot
+#
+# The version the binary reports comes from the git tag through ldflags, the same
+# three variables the Makefile stamps, so `kumod version` says the same thing
+# whichever way it was built.
+version: 2
+
+project_name: kumo
+
+before:
+  hooks:
+    # The console is embedded with go:embed, so it has to exist on disk before
+    # the build. internal/webui/dist is gitignored, which means a fresh clone
+    # (every CI runner) would otherwise link a binary that serves nothing.
+    - make web-build
+
+builds:
+  - id: kumod
+    main: ./cmd/kumod
+    binary: kumod
+    # Architecture rule 7: Kumo is pure Go and must link without cgo.
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    # Linux only, and only where KVM runs. There is no point shipping a darwin
+    # build of a control plane that talks to a local libvirtd.
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/ahmedmohamedut/kumo/internal/version.Version={{ .Version }}
+      - -X github.com/ahmedmohamedut/kumo/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/ahmedmohamedut/kumo/internal/version.Date={{ .CommitDate }}
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+archives:
+  - id: kumod
+    ids: [kumod]
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE
+      - docs/install.md
+      # Each needs its own destination path: pointed at the same directory,
+      # the first one claims the name and the rest are dropped with a warning.
+      - src: packaging/systemd/kumod.service
+        dst: packaging/kumod.service
+      - src: packaging/kumod.env
+        dst: packaging/kumod.env
+      - src: scripts/security-config.sh
+        dst: packaging/security-config.sh
+
+nfpms:
+  - id: kumod
+    ids: [kumod]
+    package_name: kumo
+    vendor: Kumo
+    homepage: https://github.com/ahmedmohamedut/kumo
+    maintainer: Kumo maintainers <noreply@example.com>
+    description: |-
+      AWS-style private cloud on KVM.
+      Kumo is a single-binary control plane for KVM/libvirt: instances, images
+      and key pairs through a web console and a REST API, with SQLite for its
+      metadata and no other moving parts.
+    license: Apache-2.0
+    formats: [deb, rpm]
+    # Pinned, not defaulted: scripts/install.sh builds this exact name to fetch
+    # the asset, so the two have to agree or every install 404s.
+    # ConventionalFileName is each format's own convention —
+    # kumo_1.2.3_linux_amd64.deb and kumo-1.2.3.x86_64.rpm.
+    file_name_template: '{{ .ConventionalFileName }}'
+    # The rpm release number, which ConventionalFileName puts in the name as
+    # "-1". Pinned so the name install.sh builds cannot drift with a default.
+    release: '1'
+    # The console is embedded in the binary, so /usr/bin/kumod is the whole
+    # program; everything else here is what a service needs around it.
+    bindir: /usr/bin
+
+    # Named per format because the distributions do not agree. These are the
+    # packages that provide libvirtd and qemu-kvm; Kumo talks to the daemon
+    # rather than linking anything, so they are runtime dependencies only.
+    overrides:
+      deb:
+        dependencies:
+          - libvirt-daemon-system
+          - qemu-system-x86
+      rpm:
+        dependencies:
+          - libvirt-daemon-kvm
+          - qemu-kvm
+
+    contents:
+      - src: packaging/systemd/kumod.service
+        dst: /usr/lib/systemd/system/kumod.service
+
+      # Marked as configuration, so an operator's edits survive an upgrade and
+      # the new default arrives beside them rather than on top of them.
+      - src: packaging/kumod.env
+        dst: /etc/kumo/kumod.env
+        type: config|noreplace
+
+      # Shipped executable because the postinstall runs it, and an operator has
+      # to be able to run it again after moving the data directory.
+      - src: scripts/security-config.sh
+        dst: /usr/libexec/kumo/security-config.sh
+        file_info:
+          mode: 0755
+
+      - src: docs/install.md
+        dst: /usr/share/doc/kumo/install.md
+      - src: README.md
+        dst: /usr/share/doc/kumo/README.md
+      - src: LICENSE
+        dst: /usr/share/doc/kumo/LICENSE
+
+      # Created empty and owned by the service user. systemd's StateDirectory
+      # would make it on start, but `kumod doctor` and `kumod admin create` are
+      # run before that first start.
+      - dst: /var/lib/kumo
+        type: dir
+        file_info:
+          mode: 0750
+          owner: kumo
+          group: kumo
+
+    scripts:
+      postinstall: packaging/scripts/postinstall.sh
+      preremove: packaging/scripts/preremove.sh
+      postremove: packaging/scripts/postremove.sh
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: '{{ incpatch .Version }}-snapshot-{{ .ShortCommit }}'
+
+changelog:
+  # The log is the changelog. Merge commits are the task boundaries and would
+  # repeat what the commits under them already say.
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+      - '^style:'
+      - Merge branch
+      - Merge pull request
+
+release:
+  draft: true
+  prerelease: auto
+  header: |
+    ## Install
+
+    See [docs/install.md](https://github.com/ahmedmohamedut/kumo/blob/main/docs/install.md).
+
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/ahmedmohamedut/kumo/main/scripts/install.sh | sudo bash
+    ```
+  footer: |
+    This release serves plain HTTP. Treat the console as a LAN service until
+    TLS lands; `docs/install.md` says what that means in practice.

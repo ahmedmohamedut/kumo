@@ -25,3 +25,6 @@ coverage.out
 web/playwright-report/
 web/test-results/
 web/blob-report/
+
+# GoReleaser output
+dist/

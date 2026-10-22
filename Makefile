@@ -109,6 +109,21 @@ openapi: ## Validate api/openapi.yaml and regenerate the TypeScript types
 	# the generated file is formatted before the tree is checked again.
 	$(NPM) --prefix $(WEB) run format --if-present
 
+# GoReleaser is pinned here rather than added to go.mod's tool directives: it
+# pulls in a dependency tree the size of Kubernetes and would drag the module's
+# own Go requirement up with it. `go run pkg@version` builds it outside this
+# module, so go.mod and go.sum stay untouched.
+GORELEASER ?= github.com/goreleaser/goreleaser/v2@v2.18.3
+
+.PHONY: release-snapshot
+release-snapshot: ## Build the release artifacts locally, without publishing
+	$(GO) run $(GORELEASER) release --snapshot --clean --skip=publish
+	@echo "artifacts in dist/"
+
+.PHONY: release-check
+release-check: ## Validate .goreleaser.yaml
+	$(GO) run $(GORELEASER) check
+
 .PHONY: security-config
 security-config: ## Configure AppArmor/SELinux for Kumo's pools (run as root)
 	./scripts/security-config.sh
