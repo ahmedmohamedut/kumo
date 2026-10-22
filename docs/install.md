@@ -83,8 +83,14 @@ service — that is the next step, and it is yours.
 ## 3. Check, then start
 
 ```bash
-sudo kumod doctor
+sudo -u kumo kumod doctor
 ```
+
+Run it as the `kumo` user, not as root: it creates the database, the signing
+key and the pool directories, and files root creates there are files the service
+cannot write. (Symptom: `attempt to write a readonly database` on every start;
+fix with `sudo chown -R kumo:kumo /var/lib/kumo`.) The same goes for
+`kumod admin` below.
 
 `doctor` is the five minutes you save later. It checks `/dev/kvm`, that the
 `kumo` user can reach the libvirt socket, that QEMU is installed, that the pools
@@ -105,8 +111,8 @@ characters.
 Prefer the command line, or locked out later:
 
 ```bash
-sudo kumod admin create
-sudo kumod admin reset-password
+sudo -u kumo kumod admin create
+sudo -u kumo kumod admin reset-password
 ```
 
 Neither reads a password from an argument — arguments are visible to every
@@ -147,9 +153,12 @@ knowing on day one:
 
 `systemctl restart kumod` after editing.
 
-**Set `KUMO_DEFAULT_VPC_CIDR` before the first start** if it collides with a
-route this host already has. The default VPC is created once, on the first boot,
-and changing the range afterwards means deleting it.
+If the default range collides with a route this host already has, Kumo starts
+anyway **without** a default VPC and logs a warning; `kumod doctor` and the
+dashboard say so too. Either create a VPC in the console on a free range (the
+first one you create becomes the default) or set `KUMO_DEFAULT_VPC_CIDR` before
+the first start. The default VPC is created once, on the first boot, and
+changing the range afterwards means deleting it.
 
 ## Security of this release
 
@@ -195,9 +204,11 @@ install. Re-run the rules:
 sudo /usr/libexec/kumo/security-config.sh
 ```
 
-**The default VPC overlaps a host route.** Kumo refuses to create a NAT network
-that would shadow a network you already use. Set `KUMO_DEFAULT_VPC_CIDR` to a
-free RFC 1918 range and restart.
+**No default VPC.** The default range overlaps a host route, and Kumo will not
+create a NAT network that would shadow a network you already use. The service
+runs; the dashboard shows a warning. Create a VPC on a free RFC 1918 range
+(Console → VPCs → Create): the first one becomes the default. Or set
+`KUMO_DEFAULT_VPC_CIDR` and restart on a fresh database.
 
 **An image import fails.** The reason is on the image's page. A `403` or `404`
 is usually the vendor having moved the file; paste a current URL into the import
@@ -222,17 +233,16 @@ sudo systemctl disable --now kumod
 sudo apt remove kumo     # or: sudo dnf remove kumo
 ```
 
-`/var/lib/kumo` and the `kumo` user are left behind on purpose — removing the
-package is not a request to destroy your guests. The instances are still defined
-in libvirt and still running. To take everything with it:
+Removing the package removes **everything** Kumo made, and it does not ask:
 
-```bash
-virsh list --all            # the domains named i-...
-virsh destroy  <domain>
-virsh undefine <domain> --remove-all-storage
-sudo rm -rf /var/lib/kumo
-sudo userdel kumo
-```
+- every instance (libvirt domains named `i-…`), stopped and undefined
+- the `kumo-images` and `kumo-instances` pools, every VPC's libvirt network and its
+  `kmb…` bridge (and the `kumo-default` network, if you adopted one)
+- `/var/lib/kumo` (database, signing key, images, root disks) and `/etc/kumo`
+- the SELinux/AppArmor rules Kumo added, and the `kumo` user and group
+
+An upgrade does none of this. To keep your data, don't remove the package; back
+up `/var/lib/kumo` first.
 
 ## Running from source
 

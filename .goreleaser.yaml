@@ -117,6 +117,8 @@ nfpms:
         dst: /usr/share/doc/kumo/install.md
       - src: README.md
         dst: /usr/share/doc/kumo/README.md
+        file_info:
+          mode: 0644
       - src: LICENSE
         dst: /usr/share/doc/kumo/LICENSE
 
@@ -126,7 +128,7 @@ nfpms:
       - dst: /var/lib/kumo
         type: dir
         file_info:
-          mode: 0750
+          mode: 0751
           owner: kumo
           group: kumo
 

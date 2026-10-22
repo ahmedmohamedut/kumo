@@ -26,7 +26,12 @@ RestartSec=5s
 # The state directory is created and chowned by systemd, so a package that is
 # removed and reinstalled does not inherit the wrong owner.
 StateDirectory=kumo
-StateDirectoryMode=0750
+# 0751, not 0750: libvirt runs qemu as its own user (neither kumo nor in its
+# group), which has to walk down /var/lib/kumo to reach the pools. Search without
+# read lets it do that without listing the directory. The umask keeps every file
+# kumod creates (the database, the signing key) private to the service.
+StateDirectoryMode=0751
+UMask=0077
 ConfigurationDirectory=kumo
 
 # Hardening. Kumo writes only to its state directory, and the qcow2 overlays and
@@ -47,8 +52,9 @@ RestrictNamespaces=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 # AF_UNIX reaches libvirt; AF_INET and AF_INET6 serve the console and fetch the
-# images an operator imports.
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# images an operator imports; AF_NETLINK is how the default VPC bootstrap reads
+# the host routes to avoid a range that is already in use.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
