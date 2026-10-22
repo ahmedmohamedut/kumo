@@ -320,13 +320,18 @@ func Build(spec hypervisor.DomainSpec) ([]byte, error) {
 					Target: target{Dev: "vda", Bus: "virtio"},
 				},
 				{
-					Type:   "file",
-					Device: "cdrom",
+					Type: "file",
+					// A virtio disk, not a SATA CD-ROM: Debian's cloud kernel has no
+					// AHCI/SATA driver, so a guest on it never saw the seed, skipped
+					// cloud-init and came up with no address. virtio_blk is in every
+					// cloud kernel, and NoCloud finds the "cidata" volume on any
+					// block device.
+					Device: "disk",
 					Driver: driver{Name: "qemu", Type: "raw"},
 					Source: diskSource{File: spec.SeedISOPath},
-					Target: target{Dev: "sda", Bus: "sata"},
+					Target: target{Dev: "vdb", Bus: "virtio"},
 					// The seed is read once at boot. A writable seed is a seed a
-					// guest can corrupt with a write to its CD-ROM.
+					// guest can corrupt with a write to its disk.
 					ReadOnly: &emptyStruct{},
 				},
 			},

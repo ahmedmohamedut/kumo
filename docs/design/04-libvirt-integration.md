@@ -222,10 +222,10 @@ Build via Go structs/`text/template` with escaped values (names/ids are validate
       <source file='{{.RootDiskPath}}'/>
       <target dev='vda' bus='virtio'/>
     </disk>
-    <disk type='file' device='cdrom'>
+    <disk type='file' device='disk'>
       <driver name='qemu' type='raw'/>
       <source file='{{.SeedISOPath}}'/>
-      <target dev='sda' bus='sata'/>
+      <target dev='vdb' bus='virtio'/>
       <readonly/>
     </disk>
     <interface type='network'>
@@ -252,6 +252,7 @@ Build via Go structs/`text/template` with escaped values (names/ids are validate
 
 Implementation notes:
 - Omit `<emulator>`; libvirt resolves it. Remove the comment above when implementing.
+- **The seed is a read-only virtio disk (`vdb`), not a SATA CD-ROM.** Debian's `-cloud` kernel has no AHCI/SATA driver, so a guest on it never saw a `sda` seed, skipped cloud-init and booted with no address (found on a real host; Ubuntu's kernel has AHCI, which hid it). `virtio_blk` is in every cloud kernel, and NoCloud finds the `cidata` volume on any block device.
 - The `<serial type='file'>` + `<console>` duplication above is illustrative. **Choice taken: `<serial type='pty'>` with `<log file=… append='on'/>`, plus `<console type='pty'>` on the same port.** A pty is what `virsh console` needs to attach, and the log file is what the console-output endpoint reads, so one device serves both without a guest ever blocking on a full file. `<log>` is a child of `<serial>` since libvirt 1.3, which is well below any host Kumo supports. When `ConsoleLogPath` is empty the `<log>` element is left out rather than emitted with an empty path.
 - The XML is produced by `internal/hypervisor/libvirt/domainxml` from `encoding/xml` structs, never by formatting a template, so operator input is escaped by the encoder. Golden files live in `internal/hypervisor/libvirt/domainxml/testdata`; run `go test ./internal/hypervisor/libvirt/domainxml -update` after an intentional change.
 - `<graphics>` binds to `127.0.0.1`; `<channel type='unix'>` is the qemu-guest-agent socket that IP discovery reads.

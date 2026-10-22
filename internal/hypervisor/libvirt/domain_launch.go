@@ -177,7 +177,9 @@ func (c *Client) ListDomains(ctx context.Context) ([]hypervisor.DomainInfo, erro
 	var out []hypervisor.DomainInfo
 
 	err := c.withConnection(ctx, func(conn *golibvirt.Libvirt) error {
-		domains, _, err := conn.ConnectListAllDomains(0, 0)
+		// The first argument is need_results: with 0 libvirt answers with the
+		// count alone and returns no domains, so every instance would look gone.
+		domains, _, err := conn.ConnectListAllDomains(1, 0)
 		if err != nil {
 			return fmt.Errorf("list the domains: %w", err)
 		}

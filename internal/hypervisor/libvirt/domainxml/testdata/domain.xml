@@ -28,10 +28,10 @@
       <source file="/var/lib/kumo/pools/kumo-instances/i-0a1b2c3d4e5f60718-root.qcow2"></source>
       <target dev="vda" bus="virtio"></target>
     </disk>
-    <disk type="file" device="cdrom">
+    <disk type="file" device="disk">
       <driver name="qemu" type="raw"></driver>
       <source file="/var/lib/kumo/pools/kumo-instances/i-0a1b2c3d4e5f60718-seed.iso"></source>
-      <target dev="sda" bus="sata"></target>
+      <target dev="vdb" bus="virtio"></target>
       <readonly></readonly>
     </disk>
     <interface type="network">
