@@ -9,7 +9,7 @@ import Input from '@cloudscape-design/components/input'
 import SpaceBetween from '@cloudscape-design/components/space-between'
 
 import { AuthPage } from '@/features/auth/AuthPage'
-import { useLoginMutation } from '@/features/auth/api'
+import { useLoginMutation, useSystemInfoQuery } from '@/features/auth/api'
 import { selectUser } from '@/features/auth/authSlice'
 import { useAppSelector } from '@/app/store'
 import { errorMessage, fieldErrors } from '@/lib/apiError'
@@ -26,11 +26,19 @@ function nextPath(search: URLSearchParams): string {
  * LoginPage signs an operator in. The password never leaves this form except in
  * the request body; the refresh token arrives as an HttpOnly cookie and the
  * access token lives in the auth slice (03-frontend.md §4).
+ *
+ * On a node that has no users yet it sends the operator to `/setup` instead.
+ * That is the mirror of the guard on SetupPage, which sends them here once the
+ * node has one, and it is what makes first-run work from any entry point:
+ * RequireAuth funnels every anonymous route through this page, so a fresh node
+ * can no longer greet its operator with a sign-in form for an account that does
+ * not exist (00-architecture.md §7).
  */
 export function LoginPage() {
   const user = useAppSelector(selectUser)
   const navigate = useNavigate()
   const [search] = useSearchParams()
+  const info = useSystemInfoQuery()
   const [login, { isLoading, error }] = useLoginMutation()
 
   const [username, setUsername] = useState('')
@@ -38,6 +46,14 @@ export function LoginPage() {
 
   if (user !== null) {
     return <Navigate replace to={nextPath(search)} />
+  }
+
+  // Only once the answer is in: redirecting on a still-loading query would send
+  // every operator through /setup for a moment on every sign-in. The `next`
+  // parameter is dropped on purpose — a node with no users has no page worth
+  // returning to.
+  if (!info.isLoading && info.data !== undefined && info.data.needs_setup) {
+    return <Navigate replace to="/setup" />
   }
 
   // Cloudscape's Form renders no <form> of its own, so the page supplies one;

@@ -75,4 +75,25 @@ describe('SetupPage', () => {
 
     expect(await screen.findByRole('heading', { name: 'Sign in to Kumo' })).toBeInTheDocument()
   })
+
+  it('sends an operator from the login form to first-run while the node has no users', async () => {
+    setMockNeedsSetup(true)
+    renderWithProviders(<Console />, { route: '/login' })
+
+    // The mirror of the guard above. Without it a fresh node answers its
+    // operator with a sign-in form for an account that does not exist yet.
+    expect(await screen.findByRole('button', { name: 'Create administrator' })).toBeInTheDocument()
+  })
+
+  it('sends an operator from a console route to first-run on a fresh node', async () => {
+    setMockNeedsSetup(true)
+    renderWithProviders(<Console />, { route: '/' })
+
+    // The whole path an operator takes after the install: RequireAuth sees an
+    // anonymous session and hands off to the login form, which sees that the
+    // node has no users and hands off to first-run. 00-architecture.md section 7
+    // promises the UI shows first-run admin creation, and this is what makes
+    // that true from the address an operator actually opens.
+    expect(await screen.findByRole('button', { name: 'Create administrator' })).toBeInTheDocument()
+  })
 })

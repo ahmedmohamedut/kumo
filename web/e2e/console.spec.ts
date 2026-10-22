@@ -81,17 +81,12 @@ async function instanceAction(page: Page, label: string) {
 
 test.describe.serial('the console against a real kumod', () => {
   test('a fresh node asks for an administrator and signs them in', async ({ page }) => {
-    // Straight to the first-run screen, because nothing routes an operator
-    // there: RequireAuth sends every unauthenticated route to /login without
-    // consulting needs_setup, so a fresh node shows a sign-in form to somebody
-    // who has no account yet. 00-architecture.md section 7 says the UI shows
-    // first-run admin creation, and the page exists — only the routing to it
-    // does not. Asserted below so the suite records the gap rather than hiding
-    // it.
+    // The address an operator opens after the install, and nothing else. A
+    // fresh node has to route them to first-run by itself: RequireAuth hands
+    // an anonymous session to the login form, which sees that the node has no
+    // users and hands off to /setup (00-architecture.md section 7).
     await page.goto('/')
-    await expect(page).toHaveURL(/\/login/)
-
-    await page.goto('/setup')
+    await expect(page).toHaveURL(/\/setup$/)
 
     await page.getByLabel('Username').fill(ADMIN)
     await page.getByLabel('Password', { exact: true }).fill(PASSWORD)
