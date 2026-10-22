@@ -12,6 +12,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 # A second push to the same branch makes the first one's result irrelevant, so
@@ -21,7 +22,8 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-# The workflow only ever reads the repository.
+# Read by default. The release job raises its own to contents: write, which is
+# what publishing a release needs and what nothing else should have.
 permissions:
   contents: read
 
@@ -223,3 +225,44 @@ jobs:
             echo "::error::generated code is stale - run 'make sqlc openapi' and commit the result"
             exit 1
           fi
+
+  # Tags only. A release is the one job here that writes anything, so it waits
+  # for the checks rather than racing them: a tag that cannot pass lint, the
+  # tests and the end-to-end suite should not become a download.
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [lint, test, build, e2e, generated]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # GoReleaser builds the changelog from the log and the version from
+          # the tag, so it needs the history and the tags, not a shallow copy.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # The console is embedded into the binary, and .goreleaser.yaml's before
+      # hook runs `make web-build` to put it on disk, so node is needed here
+      # even though nothing in this job looks like a frontend build.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: make deps
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,60 @@
+[Unit]
+Description=Kumo control plane
+Documentation=https://github.com/ahmedmohamedut/kumo/blob/main/docs/install.md
+# Kumo talks to libvirt over its unix socket and cannot do anything useful
+# without it. Wants rather than Requires: a libvirtd that is restarted should
+# not take Kumo down with it, because the reconciler is built to find the
+# runtime state again on its next pass (00-architecture.md section 4).
+After=network-online.target libvirtd.service
+Wants=network-online.target libvirtd.service
+
+[Service]
+Type=simple
+User=kumo
+Group=kumo
+# libvirt's socket is group-owned, so membership is how an unprivileged Kumo
+# reaches it. The package's postinstall adds the user to whichever group the
+# distribution uses (libvirt on Debian and Fedora, libvirtd on some others).
+SupplementaryGroups=libvirt kvm
+
+EnvironmentFile=/etc/kumo/kumod.env
+ExecStart=/usr/bin/kumod serve
+
+Restart=on-failure
+RestartSec=5s
+
+# The state directory is created and chowned by systemd, so a package that is
+# removed and reinstalled does not inherit the wrong owner.
+StateDirectory=kumo
+StateDirectoryMode=0750
+ConfigurationDirectory=kumo
+
+# Hardening. Kumo writes only to its state directory, and the qcow2 overlays and
+# seed images it creates there are handed to qemu by libvirt rather than mapped
+# here, so it needs no device access of its own.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+# AF_UNIX reaches libvirt; AF_INET and AF_INET6 serve the console and fetch the
+# images an operator imports.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# ProtectSystem=strict makes everything read-only except what is listed here.
+ReadWritePaths=/var/lib/kumo
+
+[Install]
+WantedBy=multi-user.target
