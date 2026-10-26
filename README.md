@@ -4,7 +4,7 @@
 
 Kumo is an open-source, AWS-style private cloud for teams that find OpenStack too heavy and Proxmox too low-level. One Go binary, one web console, one SQLite file. No message bus cluster, no dozen microservices.
 
-> **Status:** early design phase. Nothing here is production-ready yet. See the [roadmap](docs/design/05-roadmap.md).
+> **Status:** v0.2.0, early. Compute, networking and object storage work on a single node; there is no TLS yet, so keep it on a network you trust. See the [roadmap](docs/design/05-roadmap.md) and the [install guide](docs/install.md).
 > "Kumo" (雲, "cloud") is a working name.
 
 ## Why Kumo?
@@ -16,40 +16,48 @@ Kumo is an open-source, AWS-style private cloud for teams that find OpenStack to
 | Moving parts | 10+ services + MQ + DB | Monolith | **1 binary + SQLite + libvirt** |
 | Target | Large operators | Sysadmins | **Small/mid teams** |
 
-## Planned services
+## Services
 
 | Kumo service | AWS analogue | Backed by | Status |
 |---|---|---|---|
-| Instances | EC2 | KVM / libvirt | 🚧 MVP (in design) |
-| Images | AMI | qcow2 cloud images | 🚧 MVP |
-| Key Pairs | EC2 Key Pairs | SSH keys | 🚧 MVP |
-| Object Storage | S3 | RustFS | 📝 planned |
+| Instances, instance types | EC2 | KVM / libvirt | ✅ v0.1 |
+| Images | AMI | qcow2 cloud images | ✅ v0.1 |
+| Key Pairs | EC2 Key Pairs | SSH keys | ✅ v0.1 |
+| VPCs, subnets | VPC | libvirt networks | ✅ v0.1 |
+| Object Storage (buckets, objects, access keys) | S3, IAM access keys | [RustFS](https://rustfs.com), optional | ✅ v0.2 |
 | Databases | RDS | PostgreSQL, MySQL | 📝 planned |
 | Cache | ElastiCache | Redis | 📝 planned |
 | Messaging / Streaming | SQS / SNS / Kinesis | ActiveMQ, NATS | 📝 planned |
 | Secrets | Secrets Manager | OpenBao | 📝 planned |
 | Kubernetes | EKS | k3s / kubeadm | 📝 planned |
 
-The first milestone covers only the **EC2-like trio: Instances, Images, Key Pairs**.
+Object storage is optional: Kumo manages a RustFS server you run, and stays a single binary with no outside services until you turn it on. The bytes of uploads and downloads go between the browser and RustFS directly; Kumo hands out short-lived signed links. See [object storage in the install guide](docs/install.md#object-storage-optional).
 
 ## Tech stack
 
 - **Frontend:** React, Redux Toolkit (RTK Query), Vite, TypeScript, [Cloudscape Design System](https://cloudscape.design)
-- **Backend:** Go, Gin, [digitalocean/go-libvirt](https://github.com/digitalocean/go-libvirt), SQLite, JWT
+- **Backend:** Go, Gin, [digitalocean/go-libvirt](https://github.com/digitalocean/go-libvirt), SQLite, JWT, [aws-sdk-go-v2](https://github.com/aws/aws-sdk-go-v2) (S3 client)
 - **Hypervisor:** KVM via libvirt (QEMU)
+- **Object storage:** [RustFS](https://rustfs.com) (S3-compatible), optional
 
 ## Requirements
 
-- Linux host with hardware virtualization (Intel VT-x / AMD-V; check `egrep -c '(vmx|svm)' /proc/cpuinfo`)
+- Linux host (x86-64 or arm64) with hardware virtualization (Intel VT-x / AMD-V; check `grep -cE '(vmx|svm)' /proc/cpuinfo`)
 - `libvirtd` + QEMU/KVM installed and running
-- Go 1.23+ and Node.js 20+ (development only)
+- About 20 GiB free under `/var/lib` for images and root disks
+- **For object storage (optional):** RustFS 1.0.4 or later, whose S3 port (default `:9000`) kumod and the console's browsers can reach, its admin keys, and clocks in sync (NTP). Setup: [install guide](docs/install.md#object-storage-optional)
+- Go 1.26+ and Node.js 22+ (development only)
 
-## Quick start (target experience)
+## Quick start
 
 ```bash
-curl -fsSL https://get.kumo.example/install.sh | sudo bash
-# open https://<host>:8443  -> create the admin account -> launch your first instance
+curl -fsSL https://raw.githubusercontent.com/ahmedmohamedut/kumo/main/scripts/install.sh | sudo bash
+sudo -u kumo kumod doctor          # check the host
+sudo systemctl enable --now kumod
+# open http://<host>:8080 -> create the admin account -> launch your first instance
 ```
+
+The script installs the `.deb` or `.rpm` of the latest release after checking its checksum. [`docs/install.md`](docs/install.md) is the full 15-minute path, including turning on object storage.
 
 ## Development
 
@@ -67,11 +75,13 @@ Developing without KVM (macOS, CI)? Run the backend with the in-memory fake hype
 KUMO_HYPERVISOR=fake make dev
 ```
 
+No RustFS either? `KUMO_OBJECTSTORE=fake` adds an in-memory object store, so the Storage pages work too. With a RustFS at hand, `make test-rustfs` runs the object store tests against it (`KUMO_TEST_S3_ENDPOINT`, `KUMO_TEST_S3_ACCESS_KEY`, `KUMO_TEST_S3_SECRET_KEY`).
+
 ## Repository layout
 
 ```
 cmd/kumod/        Backend entrypoint
-internal/         Backend packages (api, auth, service, hypervisor, store, ...)
+internal/         Backend packages (api, auth, service, hypervisor, objectstore, store, ...)
 web/              React console
 docs/design/      Architecture and design docs (start here)
 AGENTS.md         Instructions for AI coding agents
@@ -79,16 +89,21 @@ AGENTS.md         Instructions for AI coding agents
 
 ## Documentation
 
+- [Installing Kumo](docs/install.md) (including RustFS for object storage)
+
+Design:
+
 1. [Architecture](docs/design/00-architecture.md)
 2. [REST API](docs/design/01-api.md)
 3. [Data model](docs/design/02-data-model.md)
 4. [Frontend](docs/design/03-frontend.md)
 5. [libvirt integration](docs/design/04-libvirt-integration.md)
 6. [Roadmap & milestones](docs/design/05-roadmap.md)
+7. [Object storage](docs/design/06-object-storage.md)
 
 ## Contributing
 
-Issues and PRs are welcome once the scaffold lands. Read `AGENTS.md` for conventions (they apply to humans too).
+Issues and PRs are welcome. Read `AGENTS.md` for conventions (they apply to humans too).
 
 ## License
 

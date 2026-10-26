@@ -8,10 +8,34 @@ the "modules registered under `/api/v1/<service>`" extension point of
 
 Approved as milestone M6 (`05-roadmap.md`), ahead of the open M5 items.
 
+## 0. Status
+
+**Shipped in v0.2.0.** Buckets, the object browser and access keys are done,
+in the API and the console, and verified against RustFS 1.0.4: the shared
+`storetest` suite and the access key enforcement test (`make test-rustfs`), plus
+an end-to-end run of kumod against RustFS over its HTTP API (`05-roadmap.md`
+§M6). Still open in M6: Playwright coverage of the Storage pages and a CI job
+that runs `make test-rustfs` against a RustFS container.
+
+Installing and configuring RustFS for Kumo is in
+[`docs/install.md`](../install.md#object-storage-optional). In short, RustFS must:
+- be 1.0.4 or later;
+- have its S3 port reachable from kumod and from the console's browsers;
+- give Kumo its admin keys, in a file only `kumo` can read;
+- keep its clock in sync, because SigV4 refuses skew of more than about 15 minutes;
+- be Kumo's to manage.
+
+**Known limits of this version:**
+- **Upload size:** one presigned `PUT` per file, so browser uploads are capped at 5 GiB, the S3 single-request limit. Multipart uploads from the console are not built; applications using an access key can use multipart as usual.
+- **Not built:** public or anonymous buckets, bucket policies beyond the access key grants, lifecycle rules, quotas and object-level tags.
+- **Other users:** RustFS users made with other tools are not listed as access keys. A grant keeps a deleted bucket's name and reaches nothing until a bucket of that name exists again.
+- **Usage figures:** a bucket's size and object count are not shown; listing them would mean walking every object.
+- **Plain HTTP:** the TLS caveat of §6 applies until the M5 TLS task lands.
+
 ## 1. Shape
 
 ```
- console ──/api/v1/s3/*──▶ kumod ── service/bucket, service/s3key
+ console ──/api/v1/s3/*──▶ kumod ── service/bucket, service/accesskey
                                       │
                                       ├─ store (SQLite: bucket metadata, tags, key records — never secrets)
                                       └─ objectstore.ObjectStore (interface)

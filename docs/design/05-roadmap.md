@@ -114,7 +114,7 @@ Work through tasks **in order**, one per PR. Each task lists acceptance criteria
 
 ## M6 — Object storage (S3-compatible, RustFS)
 
-Approved 2026-10-26, ahead of the open M5 items. Design: `06-object-storage.md`. Decisions: aws-sdk-go-v2 as the S3 client; console uploads and downloads through presigned URLs; Kumo manages every bucket in the RustFS it is pointed at; buckets, objects and access keys in the first version; plain HTTP accepted with a console warning until the M5 TLS task.
+Approved 2026-10-26, ahead of the open M5 items. **Shipped in v0.2.0** (all but the E2E item). Design: `06-object-storage.md`; RustFS requirements and setup: `docs/install.md` §Object storage. Decisions: aws-sdk-go-v2 as the S3 client; console uploads and downloads through presigned URLs; Kumo manages every bucket in the RustFS it is pointed at; buckets, objects and access keys in the first version; plain HTTP accepted with a console warning until the M5 TLS task.
 
 - [x] **Foundation**: `internal/objectstore` interface, RustFS client, in-memory fake, the `KUMO_OBJECTSTORE`/`KUMO_S3_*` configuration, `object_storage` in `/system/info`, `kumod doctor` checks.
   Done: `objectstore.ObjectStore` (buckets, versioning, CORS, listing, objects, presigned `GET`/`PUT`, `EmptyBucket`) with the RustFS implementation over aws-sdk-go-v2 (path-style, checksums only when required, one retry, separate clients for the API endpoint and the public URL presigned URLs are signed for) and a fake that keeps the S3 rules the services rely on. The credentials file is refused when group or others can read it. The module is off by default; a server that is down at boot is logged and reported, not fatal.

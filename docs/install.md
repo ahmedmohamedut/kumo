@@ -160,6 +160,150 @@ first one you create becomes the default) or set `KUMO_DEFAULT_VPC_CIDR` before
 the first start. The default VPC is created once, on the first boot, and
 changing the range afterwards means deleting it.
 
+## Object storage (optional)
+
+Kumo can manage an S3-compatible object store: buckets, an object browser and
+access keys for applications, all in the console. The data lives in
+[RustFS](https://rustfs.com), which **you install and run**; Kumo is the
+control plane in front of it. Object storage is off by default, and nothing
+above this section needs it. The design is in
+[`06-object-storage.md`](design/06-object-storage.md).
+
+### What RustFS needs to be
+
+| Requirement | Why |
+|---|---|
+| RustFS **1.0.4** or later (1.0.4 is what Kumo is tested against) | Kumo uses its S3 API and its MinIO-compatible admin API (`/minio/admin/v3`), which ship enabled |
+| The S3 port (default `:9000`) reachable **from kumod** | bucket and key management, and the object listings |
+| The same port reachable **from the browsers** that open the console | uploads and downloads go from the browser straight to RustFS through short-lived signed links, never through kumod |
+| RustFS's **admin (root) access key and secret** | creating buckets, users and policies needs them; Kumo keeps them in a file only it can read |
+| Clocks in sync on the RustFS host, the Kumo host and the users' machines (NTP) | every request is signed with SigV4, which RustFS refuses when the clocks are more than about 15 minutes apart |
+| A RustFS that is yours to manage | Kumo lists and can delete **every** bucket on it, including ones made with other tools |
+
+The RustFS console (`:9001` by default) is not used by Kumo and can stay off.
+
+### Install RustFS
+
+Follow the [RustFS documentation](https://rustfs.com/docs/) for your
+distribution. A single-node install has the shape Kumo was tested on:
+
+- a `rustfs` system user, the binary at `/usr/bin/rustfs`, and a
+  `rustfs.service` systemd unit with `EnvironmentFile=/etc/default/rustfs`;
+- `/etc/default/rustfs` with at least:
+
+  ```bash
+  RUSTFS_ACCESS_KEY="<admin access key>"
+  RUSTFS_SECRET_KEY="<a long random secret>"
+  RUSTFS_VOLUMES="/data"          # where objects are stored
+  RUSTFS_ADDRESS=":9000"          # the S3 API
+  RUSTFS_CONSOLE_ENABLE=false     # Kumo does not need the RustFS console
+  ```
+
+Pick a real secret (`openssl rand -base64 30`), not a default. Then **make
+`/etc/default/rustfs` readable by root only**: it holds the keys that own every
+bucket, and systemd reads it as root before starting the service.
+
+```bash
+sudo chmod 600 /etc/default/rustfs
+sudo systemctl enable --now rustfs
+curl -s http://127.0.0.1:9000/health     # {"status":"ok","version":"1.0.4",...}
+```
+
+### Point Kumo at it
+
+1. Put the same admin keys in Kumo's credentials file, owned by `kumo` and
+   readable by nobody else. kumod refuses to start with a file that group or
+   others can read.
+
+   ```bash
+   sudo install -o kumo -g kumo -m 600 /dev/null /var/lib/kumo/s3.credentials
+   sudoedit /var/lib/kumo/s3.credentials
+   ```
+
+   ```bash
+   access_key=<admin access key>
+   secret_key=<admin secret>
+   ```
+
+   The `RUSTFS_ACCESS_KEY=`/`RUSTFS_SECRET_KEY=` names are accepted too, so a
+   copy of `/etc/default/rustfs` works as it is (the other lines are ignored).
+
+2. Turn the module on in `/etc/kumo/kumod.env`:
+
+   ```bash
+   KUMO_OBJECTSTORE=rustfs
+   KUMO_S3_ENDPOINT=http://127.0.0.1:9000
+   # Every address you open the console at, scheme and port included:
+   KUMO_S3_CORS_ORIGINS=http://kumo.example.lan:8080,http://127.0.0.1:8080
+   # Only when browsers reach RustFS at another address than kumod does:
+   # KUMO_S3_PUBLIC_URL=http://kumo.example.lan:9000
+   ```
+
+3. Check, then restart:
+
+   ```bash
+   sudo -u kumo kumod doctor      # expect: ok    object store  http://127.0.0.1:9000 answers ...
+   sudo systemctl restart kumod
+   ```
+
+**Storage → Buckets** and **Storage → Access keys** then appear in the
+console's side navigation.
+
+| Variable | Default | Set it to |
+|---|---|---|
+| `KUMO_OBJECTSTORE` | `none` | `rustfs` to turn object storage on |
+| `KUMO_S3_ENDPOINT` | *(none)* | where kumod reaches RustFS, usually `http://127.0.0.1:9000` |
+| `KUMO_S3_PUBLIC_URL` | the endpoint | where browsers reach RustFS, when that differs (a LAN name instead of loopback) |
+| `KUMO_S3_CORS_ORIGINS` | *(empty)* | the console's origins; without them browsers refuse uploads |
+| `KUMO_S3_CREDENTIALS_FILE` | `/var/lib/kumo/s3.credentials` | another path, if you keep secrets elsewhere |
+| `KUMO_S3_REGION` | `us-east-1` | rarely: RustFS accepts any region |
+| `KUMO_S3_PRESIGN_TTL` | `15m` | how long an upload or download link stays valid (at most `168h`) |
+
+### How applications connect
+
+Create an access key in the console (**Storage → Access keys**), choose its
+buckets and whether it may write. The secret is shown **once**: copy the
+`AWS_*` lines the dialog offers into the application's environment. Any S3
+client works with path-style addressing:
+
+```bash
+aws --endpoint-url http://kumo.example.lan:9000 s3 ls s3://my-bucket/
+```
+
+A key never creates, deletes or reconfigures a bucket; that stays in Kumo.
+
+### When object storage complains
+
+**`FAIL  object store ... unusable credentials file ... chmod 600`.** The file
+is readable by group or others. `sudo chmod 600 /var/lib/kumo/s3.credentials`.
+
+**`FAIL  object store ... must set access_key and secret_key`.** The two lines
+are missing or misnamed; see the format above.
+
+**`FAIL  object store ... connection refused` or `InvalidAccessKeyId`.** RustFS
+is not listening at `KUMO_S3_ENDPOINT`, or the keys differ from
+`/etc/default/rustfs`. `systemctl status rustfs`, then compare the keys.
+
+**The Storage pages say "not configured".** `KUMO_OBJECTSTORE` is unset or
+kumod was not restarted after setting it. `curl -s localhost:8080/api/v1/system/info`
+shows `"object_storage":{"backend":"rustfs","ok":true}` when it is on.
+
+**Uploads fail in the browser with "could not be reached ... CORS".** The
+console's address, with its port, is missing from `KUMO_S3_CORS_ORIGINS`
+(`http://127.0.0.1` does not cover `http://127.0.0.1:8080`), or the browser
+cannot reach `KUMO_S3_PUBLIC_URL`. Fix it and restart kumod; existing buckets
+get the new rule on their next upload.
+
+**Uploads fail with `403`.** The clocks are out of sync, or the signed link
+expired before the upload started (`KUMO_S3_PRESIGN_TTL`).
+
+### What Kumo does not do to RustFS
+
+Removing the Kumo package deletes `/var/lib/kumo`, including the credentials
+file, but **leaves RustFS and its data alone**: buckets, objects and the
+access keys Kumo issued stay on RustFS. Delete the keys in the console first if
+they should stop working.
+
 ## Security of this release
 
 Worth being plain about, because it decides where you put this node.
@@ -177,6 +321,11 @@ Worth being plain about, because it decides where you put this node.
 - **Private keys are never stored.** A generated key pair's private half is
   returned once, in the create response, and is not written to the database.
 - **Console access is host-local.** VNC and serial consoles bind to `127.0.0.1`.
+- **Object storage over HTTP.** With object storage on, signed upload and
+  download links, and the one-time display of an access key's secret, cross the
+  network unencrypted too; the console's Objects tab says so. Access key
+  secrets are never stored, and the RustFS admin keys stay in a file only the
+  `kumo` user can read.
 
 Until TLS lands: bind to a trusted interface, or terminate HTTPS in a reverse
 proxy and set `KUMO_COOKIE_SECURE=true` behind it.
@@ -222,7 +371,9 @@ sudo dnf upgrade ./kumo-<new-version>-1.x86_64.rpm
 ```
 
 Your `/etc/kumo/kumod.env` is kept and the new default arrives beside it as
-`.dpkg-dist` or `.rpmnew`. Database migrations run on start. Running instances
+`.dpkg-dist` or `.rpmnew`. Database migrations run on start. Object storage
+arrived in v0.2.0 and stays off after an upgrade until you set
+`KUMO_OBJECTSTORE`; see [Object storage](#object-storage-optional). Running instances
 are untouched: they are libvirt domains, and a kumod restart re-reads their
 state rather than recreating them.
 
@@ -240,6 +391,9 @@ Removing the package removes **everything** Kumo made, and it does not ask:
   `kmb…` bridge (and the `kumo-default` network, if you adopted one)
 - `/var/lib/kumo` (database, signing key, images, root disks) and `/etc/kumo`
 - the SELinux/AppArmor rules Kumo added, and the `kumo` user and group
+
+It does **not** touch RustFS: buckets, objects and issued access keys stay
+there (see [Object storage](#object-storage-optional)).
 
 An upgrade does none of this. To keep your data, don't remove the package; back
 up `/var/lib/kumo` first.
