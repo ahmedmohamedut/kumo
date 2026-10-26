@@ -60,6 +60,10 @@ describe('ImportImagePage', () => {
     await userEvent.click(screen.getByRole('button', { name: /Choose an image/ }))
     await userEvent.click(await screen.findByRole('option', { name: /Debian 12/ }))
 
+    // The picker shows what was picked instead of going back to blank.
+    expect(screen.getByTestId('import-catalog')).toHaveTextContent(/Debian 12/)
+    expect(screen.queryByRole('button', { name: /Choose an image/ })).not.toBeInTheDocument()
+
     // The catalog knows the URL, the OS and the disk size; asking the operator
     // to retype them only invites a typo that shows up at boot. The name comes
     // from the catalog id, because a picker label cannot be an image name.
