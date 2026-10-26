@@ -45,6 +45,9 @@ func TestLoadDefaults(t *testing.T) {
 		StopTimeout:      config.DefaultStopTimeout,
 		MemoryReserveMiB: config.DefaultMemoryReserveMiB,
 		VCPUOvercommit:   config.DefaultVCPUOvercommit,
+		ObjectStore:      config.ObjectStoreNone,
+		S3Region:         "us-east-1",
+		S3PresignTTL:     15 * time.Minute,
 	}
 
 	if !reflect.DeepEqual(*cfg, want) {
@@ -330,6 +333,30 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		{name: "default vpc cidr too large", env: map[string]string{"KUMO_DEFAULT_VPC_CIDR": "172.31.0.0/15"}},
 		{name: "default vpc cidr has host bits", env: map[string]string{"KUMO_DEFAULT_VPC_CIDR": "172.31.0.5/16"}},
 		{name: "unknown log level", env: map[string]string{"KUMO_LOG_LEVEL": "trace"}},
+		{name: "unknown object store", env: map[string]string{"KUMO_OBJECTSTORE": "minio"}},
+		{name: "rustfs without an endpoint", env: map[string]string{"KUMO_OBJECTSTORE": "rustfs"}},
+		{name: "rustfs endpoint without a scheme", env: map[string]string{
+			"KUMO_OBJECTSTORE": "rustfs", "KUMO_S3_ENDPOINT": "127.0.0.1:9000",
+		}},
+		{name: "rustfs endpoint with credentials", env: map[string]string{
+			"KUMO_OBJECTSTORE": "rustfs", "KUMO_S3_ENDPOINT": "http://admin:secret@127.0.0.1:9000",
+		}},
+		{name: "rustfs bad public url", env: map[string]string{
+			"KUMO_OBJECTSTORE": "rustfs", "KUMO_S3_ENDPOINT": "http://127.0.0.1:9000", "KUMO_S3_PUBLIC_URL": "s3.lan",
+		}},
+		{name: "rustfs empty region", env: map[string]string{
+			"KUMO_OBJECTSTORE": "rustfs", "KUMO_S3_ENDPOINT": "http://127.0.0.1:9000", "KUMO_S3_REGION": " ",
+		}},
+		{name: "presign ttl not a duration", env: map[string]string{
+			"KUMO_OBJECTSTORE": "rustfs", "KUMO_S3_ENDPOINT": "http://127.0.0.1:9000", "KUMO_S3_PRESIGN_TTL": "soon",
+		}},
+		{name: "presign ttl over the sigv4 limit", env: map[string]string{
+			"KUMO_OBJECTSTORE": "rustfs", "KUMO_S3_ENDPOINT": "http://127.0.0.1:9000", "KUMO_S3_PRESIGN_TTL": "169h",
+		}},
+		{name: "cors origin with a path", env: map[string]string{
+			"KUMO_OBJECTSTORE": "rustfs", "KUMO_S3_ENDPOINT": "http://127.0.0.1:9000",
+			"KUMO_S3_CORS_ORIGINS": "https://kumo.lan/console",
+		}},
 	}
 
 	for _, tt := range tests {
@@ -344,6 +371,75 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLoadObjectStore(t *testing.T) {
+	t.Run("rustfs with defaults", func(t *testing.T) {
+		clearKumoEnv(t)
+		t.Setenv("KUMO_DATA_DIR", "/srv/kumo")
+		t.Setenv("KUMO_OBJECTSTORE", "rustfs")
+		t.Setenv("KUMO_S3_ENDPOINT", "http://127.0.0.1:9000/")
+
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.S3Endpoint != "http://127.0.0.1:9000" || cfg.S3PublicURL != cfg.S3Endpoint {
+			t.Errorf("endpoint %q, public URL %q: want the trimmed endpoint for both", cfg.S3Endpoint, cfg.S3PublicURL)
+		}
+		if cfg.S3CredentialsFile != "/srv/kumo/s3.credentials" {
+			t.Errorf("S3CredentialsFile = %q, want derived from KUMO_DATA_DIR", cfg.S3CredentialsFile)
+		}
+		if cfg.S3Region != "us-east-1" || cfg.S3PresignTTL != 15*time.Minute || cfg.S3CORSOrigins != nil {
+			t.Errorf("defaults: region %q, ttl %s, origins %v", cfg.S3Region, cfg.S3PresignTTL, cfg.S3CORSOrigins)
+		}
+	})
+
+	t.Run("rustfs with every variable", func(t *testing.T) {
+		clearKumoEnv(t)
+		t.Setenv("KUMO_OBJECTSTORE", "rustfs")
+		t.Setenv("KUMO_S3_ENDPOINT", "http://127.0.0.1:9000")
+		t.Setenv("KUMO_S3_PUBLIC_URL", "https://s3.kumo.lan")
+		t.Setenv("KUMO_S3_REGION", "kumo-1")
+		t.Setenv("KUMO_S3_CREDENTIALS_FILE", "/etc/kumo/s3.credentials")
+		t.Setenv("KUMO_S3_CORS_ORIGINS", " https://kumo.lan/ , http://localhost:5173,*")
+		t.Setenv("KUMO_S3_PRESIGN_TTL", "1h")
+
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		want := []string{"https://kumo.lan", "http://localhost:5173", "*"}
+		if !reflect.DeepEqual(cfg.S3CORSOrigins, want) {
+			t.Errorf("S3CORSOrigins = %v, want %v", cfg.S3CORSOrigins, want)
+		}
+		if cfg.S3PublicURL != "https://s3.kumo.lan" || cfg.S3Region != "kumo-1" ||
+			cfg.S3CredentialsFile != "/etc/kumo/s3.credentials" || cfg.S3PresignTTL != time.Hour {
+			t.Errorf("Load() = %+v", cfg)
+		}
+	})
+
+	t.Run("off ignores a half-written configuration", func(t *testing.T) {
+		clearKumoEnv(t)
+		t.Setenv("KUMO_S3_ENDPOINT", "not a url")
+		t.Setenv("KUMO_S3_PRESIGN_TTL", "999h")
+
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v, want the module off and the rest loaded", err)
+		}
+		if cfg.ObjectStore != config.ObjectStoreNone || cfg.S3CredentialsFile != "" {
+			t.Errorf("ObjectStore %q, credentials %q: want none and unset", cfg.ObjectStore, cfg.S3CredentialsFile)
+		}
+	})
+
+	t.Run("fake needs no endpoint", func(t *testing.T) {
+		clearKumoEnv(t)
+		t.Setenv("KUMO_OBJECTSTORE", "fake")
+		if _, err := config.Load(); err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+	})
 }
 
 // The capacity package carries its own defaults so it can be used without the

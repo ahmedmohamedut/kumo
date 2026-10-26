@@ -97,6 +97,15 @@
 | `KUMO_MEMORY_RESERVE_MIB` | `1024` | host memory kept out of the pool of allocatable RAM |
 | `KUMO_VCPU_OVERCOMMIT` | `4` | vCPUs offered per host vCPU in `GET /system/capacity` and the launch check |
 | `KUMO_LOG_LEVEL` | `info` | `debug|info|warn|error` |
+| `KUMO_OBJECTSTORE` | `none` | object storage module: `none`, `rustfs` or `fake`; the `KUMO_S3_*` variables below apply only when it is on |
+| `KUMO_S3_ENDPOINT` | *(required with `rustfs`)* | where kumod reaches the S3 API |
+| `KUMO_S3_PUBLIC_URL` | `$KUMO_S3_ENDPOINT` | where browsers reach it; presigned URLs are signed for this host |
+| `KUMO_S3_REGION` | `us-east-1` | signed into every S3 request |
+| `KUMO_S3_CREDENTIALS_FILE` | `$KUMO_DATA_DIR/s3.credentials` | RustFS admin keys, mode `0600` or stricter |
+| `KUMO_S3_CORS_ORIGINS` | *(empty)* | console origins allowed to use presigned URLs |
+| `KUMO_S3_PRESIGN_TTL` | `15m` | presigned URL lifetime, at most `168h` |
+
+The object storage variables are explained in `06-object-storage.md` §2.
 
 ## 6. Capacity accounting
 
@@ -146,5 +155,5 @@ Domain errors in `service` map to HTTP: `ErrInvalid→400/422`, `ErrUnauthorized
 ## 10. Future-proofing (don't build now, don't preclude)
 
 - Multi-host: `hosts` table, `Hypervisor` per host, scheduler picks host.
-- Other services (S3, RDS, …) as modules registered under `/api/v1/<service>` and nav groups in the console.
+- Other services (S3, RDS, …) as modules registered under `/api/v1/<service>` and nav groups in the console. Object storage is the first (`06-object-storage.md`).
 - Tags on every resource, via the generic `tags` table.

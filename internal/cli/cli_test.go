@@ -467,6 +467,51 @@ func TestDoctorFailsOnAMissingDataDirectory(t *testing.T) {
 	}
 }
 
+func TestDoctorObjectStore(t *testing.T) {
+	t.Run("off", func(t *testing.T) {
+		testDir(t)
+		_, stdout, _ := runCLI(t, "", "doctor")
+		if !strings.Contains(stdout, "ok    object store") || !strings.Contains(stdout, "off") {
+			t.Errorf("stdout = %q, want a passing line saying the module is off", stdout)
+		}
+	})
+
+	t.Run("unsafe credentials file", func(t *testing.T) {
+		dir := testDir(t)
+		path := filepath.Join(dir, "s3.credentials")
+		if err := os.WriteFile(path, []byte("access_key=a\nsecret_key=topsecret\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("KUMO_OBJECTSTORE", "rustfs")
+		t.Setenv("KUMO_S3_ENDPOINT", "http://127.0.0.1:1")
+
+		code, stdout, _ := runCLI(t, "", "doctor")
+		if code != cli.ExitError || !strings.Contains(stdout, "FAIL  object store") || !strings.Contains(stdout, "chmod 600") {
+			t.Errorf("exit %d, stdout = %q, want a failing line asking for chmod 600", code, stdout)
+		}
+		if strings.Contains(stdout, "topsecret") {
+			t.Errorf("stdout quotes the secret: %q", stdout)
+		}
+	})
+
+	t.Run("unreachable server", func(t *testing.T) {
+		dir := testDir(t)
+		if err := os.WriteFile(filepath.Join(dir, "s3.credentials"), []byte("access_key=a\nsecret_key=b\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("KUMO_OBJECTSTORE", "rustfs")
+		t.Setenv("KUMO_S3_ENDPOINT", "http://127.0.0.1:1")
+
+		code, stdout, _ := runCLI(t, "", "doctor")
+		if code != cli.ExitError || !strings.Contains(stdout, "FAIL  object store") {
+			t.Errorf("exit %d, stdout = %q, want a failing object store line", code, stdout)
+		}
+	})
+}
+
 func TestDoctorRejectsABadConfiguration(t *testing.T) {
 	t.Setenv("KUMO_WORKERS", "0")
 

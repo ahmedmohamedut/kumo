@@ -112,9 +112,22 @@ Work through tasks **in order**, one per PR. Each task lists acceptance criteria
   Verified: 17 component tests (Vitest + Testing Library + MSW) — the list in size order with formatted memory, viewer gating on the list and the form, Edit/Delete enabled by selection, delete of an unused type, a blocked delete naming its instances and linking to them, a cancelled delete, the empty and no-match states, create with a generated description, local validation sending nothing, a taken name from the API, the edit form starting from stored values with the name read only, a partial `PATCH` regenerating the description, "Nothing to save", and an edit of a deleted type; plus `formatMemoryMiB` and navigation cases. `npm run lint`, `format:check`, `typecheck`, `build` and the whole frontend suite (232 tests) pass.
   Not run here: the Playwright suite (`make e2e`) does not cover this page yet and was not run.
 
+## M6 — Object storage (S3-compatible, RustFS)
+
+Approved 2026-10-26, ahead of the open M5 items. Design: `06-object-storage.md`. Decisions: aws-sdk-go-v2 as the S3 client; console uploads and downloads through presigned URLs; Kumo manages every bucket in the RustFS it is pointed at; buckets, objects and access keys in the first version; plain HTTP accepted with a console warning until the M5 TLS task.
+
+- [x] **Foundation**: `internal/objectstore` interface, RustFS client, in-memory fake, the `KUMO_OBJECTSTORE`/`KUMO_S3_*` configuration, `object_storage` in `/system/info`, `kumod doctor` checks.
+  Done: `objectstore.ObjectStore` (buckets, versioning, CORS, listing, objects, presigned `GET`/`PUT`, `EmptyBucket`) with the RustFS implementation over aws-sdk-go-v2 (path-style, checksums only when required, one retry, separate clients for the API endpoint and the public URL presigned URLs are signed for) and a fake that keeps the S3 rules the services rely on. The credentials file is refused when group or others can read it. The module is off by default; a server that is down at boot is logged and reported, not fatal.
+  Verified: `storetest`, one suite run by the fake in `go test` and by the RustFS client in `make test-rustfs` against RustFS 1.0.4 — duplicate create, missing buckets, versioning on/suspended, CORS preflights with and without a rule, folder listing and paging, `HeadObject`, a real presigned upload and download and a `403` for a different `Content-Type`, delete of a non-empty bucket, and `EmptyBucket` clearing the versions and delete markers a versioned bucket keeps. Plus a check that `SetCORS` keeps an operator's own rule, unit tests for option validation, presigned URLs signed for the public host with no checksum parameters, S3 error mapping and an unreachable server, credentials-file parsing and refusals, configuration loading and refusals, `/system/info`, and the doctor lines.
+- [ ] **Buckets API**: list/create/detail/versioning/delete (force delete as a task), tags in SQLite, the `kumo-console` CORS rule applied on create.
+- [ ] **Buckets UI**: Storage nav group, buckets table, create form, detail page, delete modal; hidden when `object_storage.backend` is `none`.
+- [ ] **Objects API + UI**: folder browser, presigned upload/download, create folder, delete objects; plain-HTTP warning.
+- [ ] **Access keys API + UI**: RustFS service accounts scoped to buckets, read-only or read-write, secret shown once.
+- [ ] **E2E**: Playwright on `KUMO_OBJECTSTORE=fake`; CI job running `make test-rustfs` against a RustFS container.
+
 ## Post-v0.1 backlog (do not start without approval)
 
-Volumes & snapshots · security groups (nwfilter) · bridged/VLAN networks · SSH-key rotation · instance resize · multi-host · S3 (RustFS) · RDS-like (Postgres/MySQL) · Redis · NATS/ActiveMQ · OpenBao secrets · Kubernetes clusters · metrics (Prometheus) · audit log · OIDC login.
+Volumes & snapshots · security groups (nwfilter) · bridged/VLAN networks · SSH-key rotation · instance resize · multi-host · ~~S3 (RustFS)~~ (now M6) · RDS-like (Postgres/MySQL) · Redis · NATS/ActiveMQ · OpenBao secrets · Kubernetes clusters · metrics (Prometheus) · audit log · OIDC login.
 
 ## Open questions
 
