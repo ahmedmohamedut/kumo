@@ -55,6 +55,7 @@ let info: SystemInfo = {
   version: 'test',
   needs_setup: false,
   hypervisor: { type: 'fake', ok: true },
+  object_storage: { backend: 'none', ok: false },
 }
 
 export const MOCK_ADMIN = users[0] as AuthUser

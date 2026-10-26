@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/ahmedmohamedut/kumo/internal/auth"
 	"github.com/ahmedmohamedut/kumo/internal/config"
@@ -59,6 +60,7 @@ func runDoctor(ctx context.Context, out io.Writer) error {
 	if cfg.Hypervisor == config.HypervisorLibvirt {
 		checks = append(checks, checkLibvirt(ctx, cfg)...)
 	}
+	checks = append(checks, checkObjectStore(ctx, cfg)...)
 
 	failed := 0
 	for _, c := range checks {
@@ -217,6 +219,38 @@ func checkHypervisor(cfg *config.Config) check {
 			note: fmt.Sprintf("%q names no known backend", cfg.Hypervisor),
 		}
 	}
+}
+
+// checkObjectStore reports the optional object storage module. Off is one
+// passing line; on, an unreachable server or an unsafe credentials file
+// fails, because the operator asked for the module and it would not work.
+func checkObjectStore(ctx context.Context, cfg *config.Config) []check {
+	const name = "object store"
+	switch cfg.ObjectStore {
+	case config.ObjectStoreNone:
+		return []check{{name: name, ok: true, note: "off (set KUMO_OBJECTSTORE=rustfs to enable)"}}
+	case config.ObjectStoreFake:
+		return []check{{name: name, ok: true, note: "fake (in-memory, for development only)"}}
+	}
+
+	store, err := newObjectStore(cfg)
+	if err != nil {
+		return []check{{name: name, ok: false, note: err.Error()}}
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := store.Ping(pingCtx); err != nil {
+		return []check{{name: name, ok: false, note: fmt.Sprintf("%s: %v", cfg.S3Endpoint, err)}}
+	}
+
+	checks := []check{{name: name, ok: true, note: cfg.S3Endpoint + " answers with the configured keys"}}
+	if len(cfg.S3CORSOrigins) == 0 {
+		checks = append(checks, check{
+			name: "s3 cors origins", ok: true, warn: true,
+			note: "KUMO_S3_CORS_ORIGINS is empty: browsers will refuse console uploads",
+		})
+	}
+	return checks
 }
 
 func gib(bytes uint64) float64 { return float64(bytes) / (1 << 30) }

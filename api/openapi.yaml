@@ -1473,7 +1473,7 @@ components:
           type: integer
     SystemInfo:
       type: object
-      required: [version, needs_setup, hypervisor]
+      required: [version, needs_setup, hypervisor, object_storage]
       properties:
         version:
           type: string
@@ -1496,6 +1496,20 @@ components:
                 Whether `/dev/kvm` is usable. False means the control plane runs
                 but no instance can boot; launches fail as `unavailable`.
               nullable: true
+        object_storage:
+          type: object
+          description: >-
+            The optional object storage module (06-object-storage.md). `none`
+            means it is off and the console hides the Storage pages; `ok` is
+            whether the server answered Kumo's credentials. The endpoint is not
+            here because this payload needs no token.
+          required: [backend, ok]
+          properties:
+            backend:
+              type: string
+              enum: [none, rustfs, fake]
+            ok:
+              type: boolean
     SystemCapacity:
       type: object
       description: >-

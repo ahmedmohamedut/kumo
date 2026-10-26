@@ -78,6 +78,13 @@ e2e: build ## Run the Playwright end-to-end suite against bin/kumod
 test-libvirt: ## Run the opt-in integration tests against a real libvirtd
 	$(GO) test -tags libvirt $(PKGS) -count=1 -timeout 30m
 
+.PHONY: test-rustfs
+test-rustfs: ## Run the opt-in object storage tests against a real RustFS (or any S3 server)
+	$(GO) test -tags rustfs ./internal/objectstore/... -count=1 -timeout 5m
+
+# test-rustfs needs KUMO_TEST_S3_ENDPOINT, KUMO_TEST_S3_ACCESS_KEY and
+# KUMO_TEST_S3_SECRET_KEY. It creates kumo-test-<random> buckets and removes them.
+
 # TestLaunchBootsCirrOS downloads and boots a guest, so it is opt-in: point
 # KUMO_TEST_CIRROS_URL at a CirrOS cloud image (the 0.6.x qcow2 files) to run it.
 # KUMO_TEST_LIBVIRT_URI and KUMO_TEST_LIBVIRT_SOCKET override the daemon it uses.

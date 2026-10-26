@@ -20,6 +20,9 @@ import (
 	libvirt "github.com/ahmedmohamedut/kumo/internal/hypervisor/libvirt"
 	"github.com/ahmedmohamedut/kumo/internal/imagefetch"
 	"github.com/ahmedmohamedut/kumo/internal/logging"
+	"github.com/ahmedmohamedut/kumo/internal/objectstore"
+	objectfake "github.com/ahmedmohamedut/kumo/internal/objectstore/fake"
+	"github.com/ahmedmohamedut/kumo/internal/objectstore/rustfs"
 	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
 	"github.com/ahmedmohamedut/kumo/internal/service/capacity"
 	"github.com/ahmedmohamedut/kumo/internal/service/image"
@@ -85,6 +88,28 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		MemoryReserveMiB: cfg.MemoryReserveMiB,
 		VCPUOvercommit:   cfg.VCPUOvercommit,
 	})
+
+	// Object storage is an optional module (docs/design/06-object-storage.md).
+	// A server that is down at boot is not fatal: compute does not depend on
+	// it, and /system/info reports it until it answers.
+	objects, err := newObjectStore(cfg)
+	if err != nil {
+		return fmt.Errorf("build the object store client: %w", err)
+	}
+	if objects != nil {
+		systemService.SetObjectStore(cfg.ObjectStore, objects)
+		if err := objects.Ping(ctx); err != nil {
+			logger.WarnContext(ctx, "the object store is not reachable; the Storage pages will say so",
+				"backend", cfg.ObjectStore, "endpoint", cfg.S3Endpoint, "error", err)
+		} else {
+			logger.InfoContext(ctx, "object storage is ready",
+				"backend", cfg.ObjectStore, "endpoint", cfg.S3Endpoint, "public_url", cfg.S3PublicURL)
+		}
+		if len(cfg.S3CORSOrigins) == 0 && cfg.ObjectStore == config.ObjectStoreRustFS {
+			logger.WarnContext(ctx, "KUMO_S3_CORS_ORIGINS is empty: console uploads will be refused by the browser",
+				"hint", "set it to the address you open the console at, e.g. https://kumo.example:8080")
+		}
+	}
 
 	// The kumo.* presets are seeded once by migration 0003; from then on an
 	// administrator manages the set through the API.
@@ -351,6 +376,31 @@ func newHypervisor(cfg *config.Config) (hypervisor.Hypervisor, error) {
 		return libvirt.New(logging.New(cfg.LogLevel, os.Stdout), cfg.LibvirtURI)
 	default:
 		return nil, fmt.Errorf("%w: %q", config.ErrInvalidHypervisor, cfg.Hypervisor)
+	}
+}
+
+// newObjectStore builds the backend selected by KUMO_OBJECTSTORE, or returns
+// nil when the module is off.
+func newObjectStore(cfg *config.Config) (objectstore.ObjectStore, error) {
+	switch cfg.ObjectStore {
+	case config.ObjectStoreNone:
+		return nil, nil
+	case config.ObjectStoreFake:
+		return objectfake.New(), nil
+	case config.ObjectStoreRustFS:
+		creds, err := rustfs.ReadCredentials(cfg.S3CredentialsFile)
+		if err != nil {
+			return nil, err
+		}
+		return rustfs.New(rustfs.Options{
+			Endpoint:  cfg.S3Endpoint,
+			PublicURL: cfg.S3PublicURL,
+			Region:    cfg.S3Region,
+			AccessKey: creds.AccessKey,
+			SecretKey: creds.SecretKey,
+		})
+	default:
+		return nil, fmt.Errorf("%w: %q", config.ErrInvalidObjectStore, cfg.ObjectStore)
 	}
 }
 

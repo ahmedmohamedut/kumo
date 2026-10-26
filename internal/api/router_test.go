@@ -138,9 +138,10 @@ func TestSystemInfo(t *testing.T) {
 			t.Fatalf("decode body: %v", err)
 		}
 		want := system.Info{
-			Version:    "test",
-			NeedsSetup: false,
-			Hypervisor: system.HypervisorInfo{Type: "fake", OK: false},
+			Version:       "test",
+			NeedsSetup:    false,
+			Hypervisor:    system.HypervisorInfo{Type: "fake", OK: false},
+			ObjectStorage: system.ObjectStorageInfo{Backend: "none", OK: false},
 		}
 		if body != want {
 			t.Errorf("body = %+v, want %+v", body, want)

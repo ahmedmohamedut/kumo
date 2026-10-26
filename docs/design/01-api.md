@@ -36,7 +36,7 @@ Access JWT claims: `sub` (user id), `role`, `iat`, `exp`, `jti`. Password policy
 | Method | Path | Description |
 |---|---|---|
 | GET | `/healthz`, `/readyz` | (no auth, outside `/api/v1`) |
-| GET | `/api/v1/system/info` | (no auth) `{version, needs_setup, hypervisor: {type, ok, kvm}}` (`kvm` is null when the backend cannot answer) |
+| GET | `/api/v1/system/info` | (no auth) `{version, needs_setup, hypervisor: {type, ok, kvm}, object_storage: {backend, ok}}` (`kvm` is null when the backend cannot answer; `backend` is `none` when object storage is off, see `06-object-storage.md`) |
 | GET | `/api/v1/system/capacity` | Host CPU/memory/disk totals vs allocated; see `00-architecture.md` §6 |
 | GET | `/api/v1/system/orphans` | (admin) Domains running under an instance id that no row claims, from the last reconcile pass; see `00-architecture.md` §4.3. Reported, never removed |
 

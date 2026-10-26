@@ -150,6 +150,45 @@ func TestInfo(t *testing.T) {
 	}
 }
 
+var errRefused = errors.New("connection refused")
+
+func TestInfoReportsObjectStorage(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		backend string
+		pin     system.HypervisorChecker
+		want    system.ObjectStorageInfo
+	}{
+		{name: "off", backend: "none", want: system.ObjectStorageInfo{Backend: "none"}},
+		{name: "reachable", backend: "rustfs", pin: stubHypervisor{}, want: system.ObjectStorageInfo{Backend: "rustfs", OK: true}},
+		{
+			name: "unreachable", backend: "rustfs", pin: stubHypervisor{err: errRefused},
+			want: system.ObjectStorageInfo{Backend: "rustfs", OK: false},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			svc := system.New(logging.Discard(), "v0.0.1", "fake", nil, stubHypervisor{}, nil)
+			if tt.backend != "none" {
+				svc.SetObjectStore(tt.backend, tt.pin)
+			}
+			got, err := svc.Info(context.Background())
+			if err != nil {
+				t.Fatalf("Info() error = %v", err)
+			}
+			if got.ObjectStorage != tt.want {
+				t.Errorf("ObjectStorage = %+v, want %+v", got.ObjectStorage, tt.want)
+			}
+			if !got.Hypervisor.OK {
+				t.Error("an object store problem changed the hypervisor status")
+			}
+		})
+	}
+}
+
 func TestInfoPropagatesStoreErrors(t *testing.T) {
 	t.Parallel()
 

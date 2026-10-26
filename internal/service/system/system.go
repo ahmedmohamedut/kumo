@@ -1,6 +1,7 @@
 // Package system answers questions about the control plane itself: which
 // build is running, whether it still needs first-run setup, whether the
-// hypervisor is reachable and how much of the host is spoken for.
+// hypervisor and the object store are reachable and how much of the host is
+// spoken for.
 package system
 
 import (
@@ -49,6 +50,17 @@ type Info struct {
 	Version    string         `json:"version"`
 	NeedsSetup bool           `json:"needs_setup"`
 	Hypervisor HypervisorInfo `json:"hypervisor"`
+	// ObjectStorage tells the console whether to offer the Storage pages.
+	ObjectStorage ObjectStorageInfo `json:"object_storage"`
+}
+
+// ObjectStorageInfo describes the object storage module. Backend "none" means
+// the module is off; OK is whether the server answered Kumo's credentials.
+// The endpoint is left out on purpose: this payload is served without a
+// token, and the address belongs to the signed-in pages.
+type ObjectStorageInfo struct {
+	Backend string `json:"backend"`
+	OK      bool   `json:"ok"`
 }
 
 // HypervisorInfo describes the hypervisor backend. KVM is nil when the backend
@@ -68,6 +80,8 @@ type Service struct {
 	hypervisorPin HypervisorChecker
 	allocator     Allocator
 	limits        capacity.Limits
+	objectBackend string
+	objectPin     HypervisorChecker
 }
 
 // New builds the service. users, hypervisorPin and allocator may be nil, which
@@ -89,7 +103,15 @@ func New(
 		hypervisorPin: hypervisorPin,
 		allocator:     allocator,
 		limits:        capacity.DefaultLimits(),
+		objectBackend: "none",
 	}
+}
+
+// SetObjectStore reports the object storage module in Info. pin is nil when
+// the module is off.
+func (s *Service) SetObjectStore(backend string, pin HypervisorChecker) {
+	s.objectBackend = backend
+	s.objectPin = pin
 }
 
 // SetLimits applies the configured reserve and overcommit ratio. The launch check
@@ -100,9 +122,10 @@ func (s *Service) SetLimits(limits capacity.Limits) { s.limits = limits }
 // Info collects the current control plane status.
 func (s *Service) Info(ctx context.Context) (Info, error) {
 	info := Info{
-		Version:    s.version,
-		NeedsSetup: false,
-		Hypervisor: HypervisorInfo{Type: s.hypervisor, OK: false},
+		Version:       s.version,
+		NeedsSetup:    false,
+		Hypervisor:    HypervisorInfo{Type: s.hypervisor, OK: false},
+		ObjectStorage: ObjectStorageInfo{Backend: s.objectBackend, OK: false},
 	}
 
 	if s.users != nil {
@@ -119,6 +142,15 @@ func (s *Service) Info(ctx context.Context) (Info, error) {
 				"hypervisor", s.hypervisor, "error", err)
 		} else {
 			info.Hypervisor.OK = true
+		}
+	}
+
+	if s.objectPin != nil {
+		if err := s.objectPin.Ping(ctx); err != nil {
+			s.logger.WarnContext(ctx, "the object store is not reachable",
+				"backend", s.objectBackend, "error", err)
+		} else {
+			info.ObjectStorage.OK = true
 		}
 	}
 

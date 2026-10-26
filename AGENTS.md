@@ -14,16 +14,17 @@ Before writing code, read the relevant files in `docs/design/`:
 | `03-frontend.md` | Touching `web/` |
 | `04-libvirt-integration.md` | Touching `internal/hypervisor` or instance/image lifecycle |
 | `05-roadmap.md` | Picking the next task. Work **one milestone task at a time**, in order |
+| `06-object-storage.md` | Touching `internal/objectstore`, the S3 services, or the Storage pages |
 
 If code and design docs disagree, **stop and flag it**. Do not silently diverge. If a design change is justified, update the doc in the same PR.
 
 ## Project summary
 
 - Monorepo: Go backend in repo root (`cmd/`, `internal/`), React console in `web/`.
-- Backend: Go, Gin, `github.com/digitalocean/go-libvirt`, SQLite (`modernc.org/sqlite`, pure Go, no CGO), JWT.
+- Backend: Go, Gin, `github.com/digitalocean/go-libvirt`, SQLite (`modernc.org/sqlite`, pure Go, no CGO), JWT, `github.com/aws/aws-sdk-go-v2/service/s3` (object storage only, inside `internal/objectstore/rustfs`).
 - Frontend: React + Redux Toolkit (RTK Query) + Vite + TypeScript + Cloudscape Design System.
 - Production artifact: a single binary `bin/kumod` with the built frontend embedded via `go:embed`.
-- Scope of the current phase: **Instances, Images, Key Pairs, Auth**. Do not implement S3, databases, Redis, queues, secrets or Kubernetes yet.
+- Scope of the current phase: **Instances, Images, Key Pairs, Auth**, plus **object storage (S3 via RustFS, M6)**. Do not implement databases, Redis, queues, secrets or Kubernetes yet.
 
 ## Commands
 
@@ -54,6 +55,7 @@ internal/
   auth/                     password hashing, JWT issue/verify, refresh tokens
   service/                  business logic (instances, images, keypairs, users, tasks)
   hypervisor/               Hypervisor interface + libvirt impl + fake impl
+  objectstore/              ObjectStore interface + RustFS impl (aws-sdk-go-v2) + fake impl
   store/                    sqlc queries, migrations (embed), transactions
     migrations/
     queries/

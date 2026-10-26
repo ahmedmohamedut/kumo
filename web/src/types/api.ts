@@ -808,6 +808,12 @@ export interface components {
          */
         kvm?: boolean | null
       }
+      /** @description The optional object storage module (06-object-storage.md). `none` means it is off and the console hides the Storage pages; `ok` is whether the server answered Kumo's credentials. The endpoint is not here because this payload needs no token. */
+      object_storage: {
+        /** @enum {string} */
+        backend: 'none' | 'rustfs' | 'fake'
+        ok: boolean
+      }
     }
     /** @description Host totals versus what is already allocated. `total` is measured by the hypervisor (node vCPUs multiplied by the configured overcommit ratio, node memory, and the size of the instances pool); `allocated` is summed from the instances table, counting every instance that is not `terminated`. A terminate deletes the row, so a terminated instance stops being counted as soon as it is gone, and rows left in `terminated` by an earlier release hold nothing. The capacity rules are documented in `00-architecture.md` §6. */
     SystemCapacity: {
