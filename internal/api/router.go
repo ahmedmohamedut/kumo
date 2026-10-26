@@ -12,6 +12,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/api/middleware"
 	"github.com/ahmedmohamedut/kumo/internal/auth"
 	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
+	"github.com/ahmedmohamedut/kumo/internal/service/bucket"
 	"github.com/ahmedmohamedut/kumo/internal/service/image"
 	"github.com/ahmedmohamedut/kumo/internal/service/instance"
 	"github.com/ahmedmohamedut/kumo/internal/service/instancetype"
@@ -51,6 +52,9 @@ type Options struct {
 	VPCs *vpc.Service
 	// Subnets answers the /api/v1/subnets endpoints.
 	Subnets *subnet.Service
+	// Buckets answers the /api/v1/s3/buckets endpoints. Nil means object
+	// storage is off, and every /s3 route answers 503.
+	Buckets *bucket.Service
 	// Tasks answers the /api/v1/tasks endpoints, which is where the Location
 	// header of an asynchronous image operation points.
 	Tasks *task.Service
@@ -82,6 +86,7 @@ type Handler struct {
 	instances      *instance.Service
 	vpcs           *vpc.Service
 	subnets        *subnet.Service
+	buckets        *bucket.Service
 	tasks          *task.Service
 	signer         *auth.Signer
 	refreshTTL     time.Duration
@@ -104,6 +109,7 @@ func NewHandler(opts Options) *Handler {
 		instances:      opts.Instances,
 		vpcs:           opts.VPCs,
 		subnets:        opts.Subnets,
+		buckets:        opts.Buckets,
 		tasks:          opts.Tasks,
 		signer:         opts.Signer,
 		refreshTTL:     opts.RefreshTTL,
@@ -228,6 +234,22 @@ func (h *Handler) Router() *gin.Engine {
 		write.POST("/subnets", h.createSubnet)
 		write.PATCH("/subnets/:id", h.updateSubnet)
 		write.DELETE("/subnets/:id", h.deleteSubnet)
+	}
+
+	// Object storage (docs/design/06-object-storage.md). The routes exist on
+	// every node, so a node with the module off answers 503 and says why
+	// instead of a 404 that reads like a typo. Reads are open to both roles;
+	// writes are admin only.
+	s3 := secured.Group("/s3")
+	if h.buckets == nil {
+		s3.Any("/*path", h.objectStorageOff)
+	} else {
+		s3.GET("/buckets", h.listBuckets)
+		s3.GET("/buckets/:name", h.getBucket)
+		write := s3.Group("", middleware.RequireRole(auth.RoleAdmin))
+		write.POST("/buckets", h.createBucket)
+		write.PATCH("/buckets/:name", h.updateBucket)
+		write.DELETE("/buckets/:name", h.deleteBucket)
 	}
 
 	// Host capacity. A launch form shows it next to the instance type, so both

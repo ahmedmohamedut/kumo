@@ -24,6 +24,7 @@ import (
 	objectfake "github.com/ahmedmohamedut/kumo/internal/objectstore/fake"
 	"github.com/ahmedmohamedut/kumo/internal/objectstore/rustfs"
 	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
+	"github.com/ahmedmohamedut/kumo/internal/service/bucket"
 	"github.com/ahmedmohamedut/kumo/internal/service/capacity"
 	"github.com/ahmedmohamedut/kumo/internal/service/image"
 	"github.com/ahmedmohamedut/kumo/internal/service/instance"
@@ -247,12 +248,34 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		return fmt.Errorf("build the instance service: %w", err)
 	}
 
+	// Object storage is wired only when the module is on; a nil service makes
+	// every /s3 route answer 503.
+	var buckets *bucket.Service
+	if objects != nil {
+		buckets, err = bucket.New(bucket.Options{
+			Logger:      logger,
+			Store:       db,
+			Objects:     objects,
+			Tasks:       tasks,
+			PublicURL:   cfg.S3PublicURL,
+			Region:      cfg.S3Region,
+			CORSOrigins: cfg.S3CORSOrigins,
+		})
+		if err != nil {
+			return fmt.Errorf("build the bucket service: %w", err)
+		}
+	}
+	handlers := []worker.Registry{images.Handler(), instances.Handler(), vpcs.Handler()}
+	if buckets != nil {
+		handlers = append(handlers, buckets.Handler())
+	}
+
 	// The worker drains the tasks table. Recover runs before the first claim, so
 	// a task the last process was interrupted on is retried instead of stranded.
 	taskPool := worker.New(worker.Options{
 		Logger:   logger,
 		Store:    db,
-		Registry: mergeHandlers(images.Handler(), instances.Handler(), vpcs.Handler()),
+		Registry: mergeHandlers(handlers...),
 		Workers:  cfg.Workers,
 	})
 	if err := taskPool.Start(ctx); err != nil {
@@ -325,6 +348,7 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		Instances:     instances,
 		VPCs:          vpcs,
 		Subnets:       subnets,
+		Buckets:       buckets,
 		Tasks:         tasks,
 		Signer:        signer,
 		ReadyChecks: []api.Check{

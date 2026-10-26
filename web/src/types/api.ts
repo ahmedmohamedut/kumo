@@ -722,6 +722,67 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/s3/buckets': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * List buckets
+     * @description Every bucket on the object storage server, by name, including buckets
+     *     made with another client. Not paged: the server returns them at once.
+     */
+    get: operations['listBuckets']
+    put?: never
+    /**
+     * Create a bucket
+     * @description Creates the bucket, enables versioning when asked, and sets the
+     *     console's CORS rule. A failure after the bucket exists removes it
+     *     again.
+     */
+    post: operations['createBucket']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/s3/buckets/{name}': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Bucket name. */
+        name: components['parameters']['BucketName']
+      }
+      cookie?: never
+    }
+    /** Bucket detail */
+    get: operations['getBucket']
+    put?: never
+    post?: never
+    /**
+     * Delete a bucket
+     * @description Without `force`, deletes an empty bucket (`204`) and refuses one that
+     *     holds objects, old versions or delete markers (`409`). With
+     *     `force=true`, marks the bucket `deleting` and answers `202` with a
+     *     `bucket.delete` task that empties it and then deletes it.
+     */
+    delete: operations['deleteBucket']
+    options?: never
+    head?: never
+    /**
+     * Change versioning or tags
+     * @description The name is immutable. `versioning: false` suspends versioning on a
+     *     bucket that had it and leaves a never-versioned bucket alone. An absent
+     *     `tags` keeps the tags; `{}` drops them. `409` while the bucket is being
+     *     deleted.
+     */
+    patch: operations['updateBucket']
+    trace?: never
+  }
 }
 export type webhooks = Record<string, never>
 export interface components {
@@ -1155,6 +1216,49 @@ export interface components {
       /** @description Absent on the last page. */
       next_page_token?: string | null
     }
+    /** @enum {string} */
+    BucketState: 'available' | 'deleting'
+    Bucket: {
+      name: string
+      state: components['schemas']['BucketState']
+      /**
+       * Format: date-time
+       * @description When the object storage server created it.
+       */
+      created_at: string
+      /** @description Username of the creator; null for a bucket made outside Kumo. */
+      created_by: string | null
+      tags: components['schemas']['TagMap']
+    }
+    BucketDetail: components['schemas']['Bucket'] & {
+      /** @enum {string} */
+      versioning: 'off' | 'enabled' | 'suspended'
+      /** @description The S3 endpoint clients connect to (KUMO_S3_PUBLIC_URL). */
+      endpoint: string
+      region: string
+    }
+    BucketList: {
+      items: components['schemas']['Bucket'][]
+    }
+    CreateBucketRequest: {
+      /**
+       * @description 3-63 lowercase letters, digits, '.' and '-', starting and ending with
+       *     a letter or digit, no '..', not an IP address, and none of the
+       *     reserved prefixes and suffixes of the S3 naming rules.
+       */
+      name: string
+      /** @default false */
+      versioning: boolean
+      tags?: components['schemas']['TagMap']
+    }
+    UpdateBucketRequest: {
+      versioning?: boolean
+      tags?: components['schemas']['TagMap']
+    }
+    BucketDeleted: {
+      bucket: components['schemas']['Bucket']
+      task_id: string
+    }
     /** @description Free-form tags. */
     TagMap: {
       [key: string]: string
@@ -1335,6 +1439,15 @@ export interface components {
         'application/json': components['schemas']['ErrorResponse']
       }
     }
+    /** @description A dependency cannot serve the request, or the module is off on this node. */
+    Unavailable: {
+      headers: {
+        [name: string]: unknown
+      }
+      content: {
+        'application/json': components['schemas']['ErrorResponse']
+      }
+    }
     /** @description The endpoint is documented but not implemented yet. */
     NotImplemented: {
       headers: {
@@ -1365,6 +1478,8 @@ export interface components {
     Query: string
     /** @description Take the destructive shortcut instead of the graceful path. */
     Force: boolean
+    /** @description Bucket name. */
+    BucketName: string
     /** @description The `HttpOnly; Secure; SameSite=Strict` refresh cookie. */
     RefreshCookie: string
     /** @description Instance type id. */
@@ -2714,6 +2829,157 @@ export interface operations {
       }
       401: components['responses']['Unauthorized']
       404: components['responses']['NotFound']
+    }
+  }
+  listBuckets: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The buckets. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['BucketList']
+        }
+      }
+      401: components['responses']['Unauthorized']
+      503: components['responses']['Unavailable']
+    }
+  }
+  createBucket: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CreateBucketRequest']
+      }
+    }
+    responses: {
+      /** @description The new bucket. */
+      201: {
+        headers: {
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['BucketDetail']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      409: components['responses']['Conflict']
+      503: components['responses']['Unavailable']
+    }
+  }
+  getBucket: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Bucket name. */
+        name: components['parameters']['BucketName']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The bucket with its versioning state and connection details. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['BucketDetail']
+        }
+      }
+      401: components['responses']['Unauthorized']
+      404: components['responses']['NotFound']
+      503: components['responses']['Unavailable']
+    }
+  }
+  deleteBucket: {
+    parameters: {
+      query?: {
+        /** @description Take the destructive shortcut instead of the graceful path. */
+        force?: components['parameters']['Force']
+      }
+      header?: never
+      path: {
+        /** @description Bucket name. */
+        name: components['parameters']['BucketName']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The deletion task was queued. */
+      202: {
+        headers: {
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['BucketDeleted']
+        }
+      }
+      /** @description The empty bucket was deleted. */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+      503: components['responses']['Unavailable']
+    }
+  }
+  updateBucket: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Bucket name. */
+        name: components['parameters']['BucketName']
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['UpdateBucketRequest']
+      }
+    }
+    responses: {
+      /** @description The updated bucket. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['BucketDetail']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+      503: components['responses']['Unavailable']
     }
   }
 }
