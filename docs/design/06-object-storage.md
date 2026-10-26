@@ -123,7 +123,7 @@ one suite run by the fake on every `go test`, and by the RustFS client under
 
 Reads are open to both roles; every write is `admin`. The endpoints arrive with
 their PRs and are specified in `01-api.md` and `api/openapi.yaml` as they land;
-the bucket endpoints are there now.
+the bucket and object endpoints are there now.
 
 | Method | Path | Notes |
 |---|---|---|
@@ -136,7 +136,7 @@ the bucket endpoints are there now.
 | POST | `/s3/buckets/{name}/uploads` | `{key, content_type}` → presigned `PUT` |
 | POST | `/s3/buckets/{name}/downloads` | `{key}` → presigned `GET` that saves under the key's base name |
 | POST | `/s3/buckets/{name}/folders` | `{prefix}` → a zero-byte `prefix/` marker |
-| POST | `/s3/buckets/{name}/objects/delete` | `{keys: [...]}`, at most 1000 |
+| POST | `/s3/buckets/{name}/objects/delete` | `{keys: [...]}`, at most 1000; a folder key removes only its marker, never what is below it |
 | GET/POST/DELETE | `/s3/access-keys` | RustFS service accounts with a policy scoped to chosen buckets, read-only or read-write; the secret is returned **once** and never stored or logged |
 
 Upload size: a single presigned `PUT` carries up to 5 GiB, the S3 limit.

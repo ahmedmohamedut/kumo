@@ -293,3 +293,104 @@ func TestObjectStoreDown(t *testing.T) {
 		t.Errorf("GET with the server down = %d, want 503 (body %s)", recorder.Code, recorder.Body)
 	}
 }
+
+type presignedBody struct {
+	URL       string            `json:"url"`
+	Method    string            `json:"method"`
+	Headers   map[string]string `json:"headers"`
+	ExpiresAt time.Time         `json:"expires_at"`
+}
+
+type listingBody struct {
+	Prefix  string   `json:"prefix"`
+	Folders []string `json:"folders"`
+	Objects []struct {
+		Key       string `json:"key"`
+		SizeBytes int64  `json:"size_bytes"`
+	} `json:"objects"`
+	NextCursor *string `json:"next_cursor"`
+}
+
+func TestObjectEndpoints(t *testing.T) {
+	t.Parallel()
+	objects := objectfake.New()
+	router, signer := newBucketRouter(t, objects)
+	login := setupUserAndLogin(t, router)
+	if recorder := doWithToken(t, router, http.MethodPost, "/api/v1/s3/buckets", `{"name":"media"}`, login.access); recorder.Code != http.StatusCreated {
+		t.Fatalf("setup: %d", recorder.Code)
+	}
+
+	recorder := doWithToken(t, router, http.MethodPost, "/api/v1/s3/buckets/media/folders", `{"prefix":"photos"}`, login.access)
+	if recorder.Code != http.StatusCreated || !strings.Contains(recorder.Body.String(), `"prefix":"photos/"`) {
+		t.Fatalf("POST folders = %d %s", recorder.Code, recorder.Body)
+	}
+	if err := objects.PutObject(context.Background(), "media", "photos/cat.jpg", bytes.NewReader([]byte("meow")), 4, "image/jpeg"); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder = doWithToken(t, router, http.MethodGet, "/api/v1/s3/buckets/media/objects?prefix=photos/", "", login.access)
+	var listing listingBody
+	decode(t, recorder, &listing)
+	if recorder.Code != http.StatusOK || listing.Prefix != "photos/" || len(listing.Objects) != 1 ||
+		listing.Objects[0].Key != "photos/cat.jpg" || listing.Objects[0].SizeBytes != 4 || listing.Folders == nil {
+		t.Errorf("GET objects = %d %+v", recorder.Code, listing)
+	}
+	if recorder := doWithToken(t, router, http.MethodGet, "/api/v1/s3/buckets/media/objects?limit=many", "", login.access); recorder.Code != http.StatusBadRequest {
+		t.Errorf("GET objects?limit=many = %d, want 400", recorder.Code)
+	}
+
+	recorder = doWithToken(t, router, http.MethodPost, "/api/v1/s3/buckets/media/uploads",
+		`{"key":"photos/dog.jpg","content_type":"image/jpeg"}`, login.access)
+	var up presignedBody
+	decode(t, recorder, &up)
+	if recorder.Code != http.StatusOK || up.Method != http.MethodPut || up.Headers["Content-Type"] != "image/jpeg" ||
+		!strings.HasPrefix(up.URL, objectfake.PublicURL) || up.ExpiresAt.IsZero() {
+		t.Errorf("POST uploads = %d %+v", recorder.Code, up)
+	}
+	recorder = doWithToken(t, router, http.MethodPost, "/api/v1/s3/buckets/media/uploads", `{"key":"dir/"}`, login.access)
+	if recorder.Code != http.StatusBadRequest {
+		t.Errorf("POST uploads for a folder key = %d, want 400", recorder.Code)
+	}
+
+	recorder = doWithToken(t, router, http.MethodPost, "/api/v1/s3/buckets/media/downloads", `{"key":"photos/cat.jpg"}`, login.access)
+	var down presignedBody
+	decode(t, recorder, &down)
+	if recorder.Code != http.StatusOK || down.Method != http.MethodGet {
+		t.Errorf("POST downloads = %d %+v", recorder.Code, down)
+	}
+	if recorder := doWithToken(t, router, http.MethodPost, "/api/v1/s3/buckets/media/downloads", `{"key":"nope"}`, login.access); recorder.Code != http.StatusNotFound {
+		t.Errorf("POST downloads of a missing key = %d, want 404", recorder.Code)
+	}
+
+	// A viewer reads and downloads, and writes nothing.
+	viewer, err := signer.IssueAccessToken("01J0000000000000000000000V", auth.RoleViewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recorder := doWithToken(t, router, http.MethodGet, "/api/v1/s3/buckets/media/objects", "", viewer.Token); recorder.Code != http.StatusOK {
+		t.Errorf("viewer GET objects = %d", recorder.Code)
+	}
+	if recorder := doWithToken(t, router, http.MethodPost, "/api/v1/s3/buckets/media/downloads", `{"key":"photos/cat.jpg"}`, viewer.Token); recorder.Code != http.StatusOK {
+		t.Errorf("viewer POST downloads = %d", recorder.Code)
+	}
+	for _, test := range []struct{ path, body string }{
+		{"/api/v1/s3/buckets/media/uploads", `{"key":"x"}`},
+		{"/api/v1/s3/buckets/media/folders", `{"prefix":"x"}`},
+		{"/api/v1/s3/buckets/media/objects/delete", `{"keys":["photos/cat.jpg"]}`},
+	} {
+		if recorder := doWithToken(t, router, http.MethodPost, test.path, test.body, viewer.Token); recorder.Code != http.StatusForbidden {
+			t.Errorf("viewer POST %s = %d, want 403", test.path, recorder.Code)
+		}
+	}
+
+	recorder = doWithToken(t, router, http.MethodPost, "/api/v1/s3/buckets/media/objects/delete", `{"keys":["photos/cat.jpg"]}`, login.access)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("POST objects/delete = %d %s", recorder.Code, recorder.Body)
+	}
+	if _, err := objects.HeadObject(context.Background(), "media", "photos/cat.jpg"); err == nil {
+		t.Error("the object survived its delete")
+	}
+	if recorder := doWithToken(t, router, http.MethodPost, "/api/v1/s3/buckets/media/objects/delete", `{"keys":[]}`, login.access); recorder.Code != http.StatusBadRequest {
+		t.Errorf("POST objects/delete with no keys = %d, want 400", recorder.Code)
+	}
+}

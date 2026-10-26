@@ -154,6 +154,7 @@ describe('CreateBucketPage', () => {
     await userEvent.click(screen.getByTestId('submit-create-bucket'))
 
     expect(await screen.findByRole('heading', { name: 'media-uploads' })).toBeInTheDocument()
+    await openProperties()
     expect(await screen.findByTestId('bucket-versioning')).toHaveTextContent('Enabled')
     expect(bucketOf('media-uploads')?.versioning).toBe('enabled')
   })
@@ -181,10 +182,16 @@ describe('CreateBucketPage', () => {
   })
 })
 
+/** openProperties switches the bucket page to its Properties tab. */
+async function openProperties() {
+  await userEvent.click(await screen.findByRole('tab', { name: 'Properties' }))
+}
+
 describe('BucketDetailPage', () => {
   it('shows the details and how to connect', async () => {
     await signInAs()
     renderWithProviders(<Pages />, { route: '/buckets/app-logs' })
+    await openProperties()
 
     expect(await screen.findByTestId('bucket-versioning')).toHaveTextContent('Enabled')
     expect(screen.getByText('ada')).toBeInTheDocument()
@@ -199,6 +206,7 @@ describe('BucketDetailPage', () => {
   it('suspends and re-enables versioning', async () => {
     await signInAs()
     renderWithProviders(<Pages />, { route: '/buckets/app-logs' })
+    await openProperties()
 
     await screen.findByTestId('bucket-versioning')
     await userEvent.click(screen.getByRole('button', { name: 'Suspend' }))
@@ -214,6 +222,7 @@ describe('BucketDetailPage', () => {
   it('keeps a viewer read-only', async () => {
     await signInAs(MOCK_VIEWER)
     renderWithProviders(<Pages />, { route: '/buckets/app-logs' })
+    await openProperties()
 
     await screen.findByTestId('bucket-versioning')
     expect(screen.getByRole('button', { name: 'Suspend' })).toBeDisabled()

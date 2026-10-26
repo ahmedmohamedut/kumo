@@ -783,6 +783,128 @@ export interface paths {
     patch: operations['updateBucket']
     trace?: never
   }
+  '/s3/buckets/{name}/objects': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Bucket name. */
+        name: components['parameters']['BucketName']
+      }
+      cookie?: never
+    }
+    /**
+     * List one folder of a bucket
+     * @description The folders directly below `prefix` (common prefixes on `/`) and the
+     *     objects in it. The zero-byte marker of the folder being listed is not
+     *     an object. Paged with `cursor` and `next_cursor`.
+     */
+    get: operations['listObjects']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/s3/buckets/{name}/uploads': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Bucket name. */
+        name: components['parameters']['BucketName']
+      }
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Get a URL to upload one object
+     * @description A presigned `PUT` the browser sends the file to directly. The
+     *     `Content-Type` is signed into it and must be sent as given in
+     *     `headers`. Applies the console's CORS rule to the bucket first if
+     *     needed. `409` while the bucket is being deleted.
+     */
+    post: operations['presignUpload']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/s3/buckets/{name}/downloads': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Bucket name. */
+        name: components['parameters']['BucketName']
+      }
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Get a URL to download one object
+     * @description A presigned `GET` that saves the object under its base name. Open to
+     *     both roles, since it is a read. `404` for a key that does not exist.
+     */
+    post: operations['presignDownload']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/s3/buckets/{name}/folders': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Bucket name. */
+        name: components['parameters']['BucketName']
+      }
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Create a folder
+     * @description Writes the zero-byte `prefix/` marker S3 consoles use for an empty folder.
+     */
+    post: operations['createFolder']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/s3/buckets/{name}/objects/delete': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Bucket name. */
+        name: components['parameters']['BucketName']
+      }
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Delete objects
+     * @description Removes up to 1000 keys; a missing key is not an error. A folder key
+     *     (`photos/`) removes only its marker, never the objects below it.
+     */
+    post: operations['deleteObjects']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
 }
 export type webhooks = Record<string, never>
 export interface components {
@@ -1254,6 +1376,47 @@ export interface components {
     UpdateBucketRequest: {
       versioning?: boolean
       tags?: components['schemas']['TagMap']
+    }
+    ObjectListing: {
+      prefix: string
+      /** @description Common prefixes one level below, each ending in '/'. */
+      folders: string[]
+      objects: components['schemas']['StorageObject'][]
+      next_cursor: string | null
+    }
+    StorageObject: {
+      key: string
+      /** Format: int64 */
+      size_bytes: number
+      /** Format: date-time */
+      last_modified: string
+      etag: string
+    }
+    PresignUploadRequest: {
+      /** @description Full object key; must not start or end with '/'. */
+      key: string
+      /** @default application/octet-stream */
+      content_type: string
+    }
+    PresignDownloadRequest: {
+      key: string
+    }
+    CreateFolderRequest: {
+      prefix: string
+    }
+    DeleteObjectsRequest: {
+      keys: string[]
+    }
+    PresignedURL: {
+      url: string
+      /** @enum {string} */
+      method: 'GET' | 'PUT'
+      /** @description Headers the request must carry for the signature to match. */
+      headers: {
+        [key: string]: string
+      }
+      /** Format: date-time */
+      expires_at: string
     }
     BucketDeleted: {
       bucket: components['schemas']['Bucket']
@@ -2973,6 +3136,165 @@ export interface operations {
         content: {
           'application/json': components['schemas']['BucketDetail']
         }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+      503: components['responses']['Unavailable']
+    }
+  }
+  listObjects: {
+    parameters: {
+      query?: {
+        prefix?: string
+        cursor?: string
+        limit?: number
+      }
+      header?: never
+      path: {
+        /** @description Bucket name. */
+        name: components['parameters']['BucketName']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description One page of the folder. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ObjectListing']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      404: components['responses']['NotFound']
+      503: components['responses']['Unavailable']
+    }
+  }
+  presignUpload: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Bucket name. */
+        name: components['parameters']['BucketName']
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['PresignUploadRequest']
+      }
+    }
+    responses: {
+      /** @description The upload URL. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PresignedURL']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+      503: components['responses']['Unavailable']
+    }
+  }
+  presignDownload: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Bucket name. */
+        name: components['parameters']['BucketName']
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['PresignDownloadRequest']
+      }
+    }
+    responses: {
+      /** @description The download URL. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PresignedURL']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      404: components['responses']['NotFound']
+      503: components['responses']['Unavailable']
+    }
+  }
+  createFolder: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Bucket name. */
+        name: components['parameters']['BucketName']
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CreateFolderRequest']
+      }
+    }
+    responses: {
+      /** @description The folder, with its trailing slash. */
+      201: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CreateFolderRequest']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+      503: components['responses']['Unavailable']
+    }
+  }
+  deleteObjects: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Bucket name. */
+        name: components['parameters']['BucketName']
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['DeleteObjectsRequest']
+      }
+    }
+    responses: {
+      /** @description The keys are gone. */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
       }
       400: components['responses']['InvalidArgument']
       401: components['responses']['Unauthorized']

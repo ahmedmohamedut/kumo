@@ -309,6 +309,11 @@ The optional module of `06-object-storage.md`. Every `/s3` route answers `503 un
 | GET | `/s3/buckets/{name}` | Detail: the bucket plus `versioning` (`off`/`enabled`/`suspended`), `endpoint` and `region` |
 | PATCH | `/s3/buckets/{name}` | (admin) `versioning` and/or `tags`; the name is immutable |
 | DELETE | `/s3/buckets/{name}` | (admin) `204` when empty, `409` otherwise; `?force=true` → `202` with a `bucket.delete` task |
+| GET | `/s3/buckets/{name}/objects` | One folder: `?prefix=&cursor=&limit=` (1–1000, default 200) → `{prefix, folders, objects, next_cursor}` |
+| POST | `/s3/buckets/{name}/uploads` | (admin) `{key, content_type?}` → presigned `PUT` `{url, method, headers, expires_at}` |
+| POST | `/s3/buckets/{name}/downloads` | `{key}` → presigned `GET` that saves under the key's base name; `404` for a missing key |
+| POST | `/s3/buckets/{name}/folders` | (admin) `{prefix}` → `201 {prefix}` with a trailing `/`; writes the zero-byte marker |
+| POST | `/s3/buckets/{name}/objects/delete` | (admin) `{keys: [...]}`, 1–1000 → `204`; a folder key removes only its marker |
 
 ```json
 { "name": "app-logs", "state": "available", "created_at": "…", "created_by": "ada",
@@ -323,6 +328,13 @@ Names follow the S3 rules: 3–63 characters of lowercase letters, digits, `.` a
 Versioning: `false` suspends a bucket that had versioning and leaves a never-versioned bucket `off`, because S3 has no way back to `off`.
 
 Delete: a bucket that has had versioning keeps old versions and delete markers after its objects are deleted, so it can look empty and still be refused with `409`. `?force=true` marks it `deleting` and queues `bucket.delete`, which removes every version and delete marker and then the bucket. While a bucket is `deleting`, `PATCH` and a plain `DELETE` are `409`. Another forced delete queues the task again, which is how a failed one is retried. An upload that lands between the emptying and the delete fails the task and leaves the bucket `deleting`.
+
+Objects: the bytes of a console upload or download never pass through kumod. The console gets a presigned URL, valid for `KUMO_S3_PRESIGN_TTL`, and talks to RustFS at `KUMO_S3_PUBLIC_URL` directly.
+- An upload URL signs its `Content-Type`, and the browser must send the `headers` given with it.
+- The first upload to a bucket in a kumod process applies the console's CORS rule, because a bucket made outside Kumo has none.
+- A download is a read, so a viewer may have its URL. It is a `POST` so that a URL granting access is never cached or logged as the address of a page.
+- Keys are 1–1024 bytes of UTF-8, with no control characters and no leading `/`. An upload key must not end in `/`, which is a folder.
+- Uploads, folders and deletes are `409` while the bucket is `deleting`. Downloads stay open.
 
 ## Tasks
 
