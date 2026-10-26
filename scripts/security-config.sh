@@ -13,10 +13,12 @@
 #   - SELinux (RHEL/Fedora/SUSE): the same denial as an AVC, and virtlogd
 #     (virtlogd_t) is denied writing console/.
 #
-# This script is the idempotent fix. On AppArmor hosts it writes the two local
-# rule files under $AA_DIR/local/ (the mechanism the distro's libvirt
-# profiles already include) and reloads the profiles. On SELinux hosts it
-# records fcontext rules and relabels the trees:
+# This script is the idempotent fix. On AppArmor hosts it adds Kumo's rules to
+# the two local rule files under $AA_DIR/local/ (the mechanism the distro's
+# libvirt profiles already include) and reloads the profiles. Those files are
+# shared: libvirt creates them for the operator's own rules, so Kumo's lines
+# live in a marked block and everything outside it is left alone. On SELinux
+# hosts it records fcontext rules and relabels the trees:
 #   pools/images, pools/instances -> virt_image_t  (qemu / svirt_t read+write)
 #   console                       -> virt_log_t    (virtlogd_t creates logs)
 # Existing rules carrying a different type are corrected, not skipped.
@@ -43,19 +45,39 @@ die()  { printf 'security-config: error: %s\n' "$*" >&2; exit 1; }
 
 [[ "$(id -u)" -eq 0 ]] || die "must run as root (sudo $0)"
 
-# Write stdin to a file only when its content changed, so repeated runs are
-# quiet and never clobber an identical rule set.
-write_if_changed() {
-	local path="$1" tmp
+# The markers of Kumo's block in a shared AppArmor local file. postremove.sh
+# deletes the block by these exact lines, so change both together.
+AA_BEGIN="# BEGIN kumo -- managed by security-config.sh, edits are overwritten"
+AA_END="# END kumo"
+
+# Put the rules on stdin into Kumo's block of a shared local file, keeping
+# every other line. An earlier block is replaced, and the bare $DATA_DIR/ lines
+# releases before the block existed wrote are folded into it. The file is only
+# rewritten when its content changes, so repeated runs are quiet.
+write_aa_block() {
+	local path="$1" rules tmp
+	rules="$(cat)"
+	# No `trap ... RETURN` for the cleanup: in bash that trap is not local to
+	# the function, so it fired again on every later function return, where
+	# $tmp is out of scope, and `set -u` aborted the script with status 1.
 	tmp="$(mktemp)"
-	trap 'rm -f -- "$tmp"' RETURN
-	cat > "$tmp"
+	if [[ -f "$path" ]]; then
+		awk -v begin="$AA_BEGIN" -v end="$AA_END" -v legacy="$DATA_DIR/" '
+			$0 == begin { inside = 1; next }
+			$0 == end   { inside = 0; next }
+			inside      { next }
+			index($0, legacy) == 1 { next }
+			{ print }
+		' "$path" > "$tmp"
+	fi
+	printf '%s\n%s\n%s\n' "$AA_BEGIN" "$rules" "$AA_END" >> "$tmp"
 	if [[ -f "$path" ]] && cmp -s -- "$path" "$tmp"; then
 		log "unchanged: $path"
 	else
 		install -m 644 -- "$tmp" "$path"
-		log "wrote $path"
+		log "wrote Kumo's rules into $path"
 	fi
+	rm -f -- "$tmp"
 }
 
 apparmor_enabled() {
@@ -78,7 +100,9 @@ selinux_enabled() {
 
 # A rule file only bites when the profile or abstraction that should carry it
 # exists and actually includes the <local/...> file. Both hold on Debian and
-# Ubuntu; anything else gets a warning, never a failure.
+# Ubuntu; anything else gets a warning, never a failure. AppArmor accepts the
+# include with or without the leading '#', and with 'if exists' (Ubuntu 22.04
+# and later write `include if exists <local/...>`), so match all of them.
 require_local_include() {
 	local hostpath="$1" include="$2" short
 	short="${include#local/}"
@@ -86,7 +110,7 @@ require_local_include() {
 		warn "AppArmor: $hostpath is missing, so the Kumo rule file $short has nothing to attach to yet"
 		return 0
 	fi
-	grep -Fq "#include <$include>" "$hostpath" \
+	grep -Eq "^[[:space:]]*#?include([[:space:]]+if[[:space:]]+exists)?[[:space:]]+<${include//./\\.}>" "$hostpath" \
 		|| warn "AppArmor: $hostpath does not include <$include>; the Kumo rule file $short will not apply"
 	return 0
 }
@@ -113,13 +137,13 @@ configure_apparmor() {
 	# The libvirt-qemu abstraction confines the qemu processes that launch
 	# guests (and the virt-aa-helper that writes the per-guest profile):
 	# images are read-only, instance disks and the serial log are written.
-	write_if_changed "$AA_QEMU_LOCAL" <<EOF
+	write_aa_block "$AA_QEMU_LOCAL" <<EOF
 $DATA_DIR/pools/images/* rk,
 $DATA_DIR/pools/instances/* rwk,
 $DATA_DIR/console/* rw,
 EOF
 
-	write_if_changed "$AA_HELPER_LOCAL" <<EOF
+	write_aa_block "$AA_HELPER_LOCAL" <<EOF
 $DATA_DIR/pools/images/* rk,
 $DATA_DIR/pools/instances/* rk,
 EOF
