@@ -13,6 +13,8 @@ type InstanceType = components['schemas']['InstanceType']
 type LaunchInstanceRequest = components['schemas']['LaunchInstanceRequest']
 type VPC = components['schemas']['VPC']
 type Subnet = components['schemas']['Subnet']
+type Bucket = components['schemas']['Bucket']
+type BucketDetail = components['schemas']['BucketDetail']
 
 /**
  * MSW handlers for the auth and system endpoints (03-frontend.md §8). The auth
@@ -55,7 +57,88 @@ let info: SystemInfo = {
   version: 'test',
   needs_setup: false,
   hypervisor: { type: 'fake', ok: true },
-  object_storage: { backend: 'none', ok: false },
+  object_storage: { backend: 'fake', ok: true },
+}
+
+/** setMockObjectStorage switches the object storage module, e.g. to off. */
+export function setMockObjectStorage(objectStorage: SystemInfo['object_storage']): void {
+  info = { ...info, object_storage: objectStorage }
+}
+
+/**
+ * MockBucket is a bucket fixture plus what the server knows about it and the
+ * list endpoint does not return: its versioning state and how many objects it
+ * holds, which decides whether a plain delete is refused.
+ */
+export interface MockBucket {
+  bucket: Bucket
+  versioning: BucketDetail['versioning']
+  objects: number
+}
+
+const MOCK_S3_ENDPOINT = 'http://s3.kumo.test:9000'
+
+function freshBuckets(): MockBucket[] {
+  return [
+    {
+      bucket: {
+        name: 'app-logs',
+        state: 'available',
+        created_at: '2026-01-05T10:00:00Z',
+        created_by: 'ada',
+        tags: { env: 'prod' },
+      },
+      versioning: 'enabled',
+      objects: 12,
+    },
+    {
+      bucket: {
+        name: 'backups',
+        state: 'available',
+        created_at: '2026-01-04T08:30:00Z',
+        created_by: null,
+        tags: {},
+      },
+      versioning: 'off',
+      objects: 0,
+    },
+  ]
+}
+
+let buckets: MockBucket[] = freshBuckets()
+
+/** mockBuckets is the current bucket table, for assertions. */
+export function mockBuckets(): MockBucket[] {
+  return buckets
+}
+
+/** setMockBuckets replaces the bucket table, e.g. to start from an empty list. */
+export function setMockBuckets(next: MockBucket[]): void {
+  buckets = next
+}
+
+function bucketDetail(entry: MockBucket): BucketDetail {
+  return {
+    ...entry.bucket,
+    versioning: entry.versioning,
+    endpoint: MOCK_S3_ENDPOINT,
+    region: 'us-east-1',
+  }
+}
+
+/** objectStorageRefusal is the 503 every /s3 route answers with the module off or down. */
+function objectStorageRefusal() {
+  if (info.object_storage.backend === 'none') {
+    return apiError(
+      503,
+      'unavailable',
+      'unavailable: object storage is not configured on this node',
+    )
+  }
+  if (!info.object_storage.ok) {
+    return apiError(503, 'unavailable', 'unavailable: the object store: connection refused')
+  }
+  return null
 }
 
 export const MOCK_ADMIN = users[0] as AuthUser
@@ -709,6 +792,8 @@ export function resetMockState(): void {
   vpcs = freshVPCs()
   subnets = freshSubnets()
   capacity = freshCapacity()
+  buckets = freshBuckets()
+  info = { ...info, object_storage: { backend: 'fake', ok: true } }
 }
 
 /** mockInstances reads the instance fixtures, e.g. to assert a state change. */
@@ -1952,6 +2037,171 @@ export const handlers = [
     }
     subnets = subnets.filter((candidate) => candidate.id !== id)
     return new HttpResponse(null, { status: 204 })
+  }),
+
+  // --------------------------------------------------------------- buckets ---
+
+  http.get('/api/v1/s3/buckets', ({ request }) => {
+    if (requireUser(request) === undefined) {
+      return unauthenticated()
+    }
+    const refusal = objectStorageRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const items = [...buckets]
+      .map((entry) => entry.bucket)
+      .sort((a, b) => a.name.localeCompare(b.name))
+    return HttpResponse.json({ items })
+  }),
+
+  http.get('/api/v1/s3/buckets/:name', ({ request, params }) => {
+    if (requireUser(request) === undefined) {
+      return unauthenticated()
+    }
+    const refusal = objectStorageRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const entry = buckets.find((candidate) => candidate.bucket.name === String(params.name))
+    if (entry === undefined) {
+      return apiError(404, 'not_found', `no bucket "${String(params.name)}"`)
+    }
+    return HttpResponse.json(bucketDetail(entry))
+  }),
+
+  http.post('/api/v1/s3/buckets', async ({ request }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const refusal = objectStorageRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const body = (await request.json()) as {
+      name?: string
+      versioning?: boolean
+      tags?: Record<string, string>
+    }
+    const name = body.name ?? ''
+    if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(name) || name.includes('..')) {
+      return invalidArgument('name', 'must be 3-63 lowercase letters, digits, "." or "-"')
+    }
+    if (buckets.some((candidate) => candidate.bucket.name === name)) {
+      return apiError(
+        409,
+        'already_exists',
+        `already exists: a bucket named "${name}" already exists`,
+      )
+    }
+    const entry: MockBucket = {
+      bucket: {
+        name,
+        state: 'available',
+        created_at: '2026-01-06T09:00:00Z',
+        created_by: user.username,
+        tags: body.tags ?? {},
+      },
+      versioning: body.versioning === true ? 'enabled' : 'off',
+      objects: 0,
+    }
+    buckets = [...buckets, entry]
+    return HttpResponse.json(bucketDetail(entry), {
+      status: 201,
+      headers: { Location: `/api/v1/s3/buckets/${name}` },
+    })
+  }),
+
+  http.patch('/api/v1/s3/buckets/:name', async ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const refusal = objectStorageRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const current = buckets.find((candidate) => candidate.bucket.name === String(params.name))
+    if (current === undefined) {
+      return apiError(404, 'not_found', `no bucket "${String(params.name)}"`)
+    }
+    if (current.bucket.state === 'deleting') {
+      return apiError(409, 'conflict', `bucket "${current.bucket.name}" is being deleted`)
+    }
+    const body = (await request.json()) as { versioning?: boolean; tags?: Record<string, string> }
+    if (body.versioning === undefined && body.tags === undefined) {
+      return invalidArgument('body', 'must set versioning or tags')
+    }
+    // As in internal/service/bucket: off on a never-versioned bucket stays off.
+    let versioning = current.versioning
+    if (body.versioning === true) {
+      versioning = 'enabled'
+    } else if (body.versioning === false && current.versioning !== 'off') {
+      versioning = 'suspended'
+    }
+    const next: MockBucket = {
+      ...current,
+      versioning,
+      bucket: { ...current.bucket, tags: body.tags ?? current.bucket.tags },
+    }
+    buckets = buckets.map((candidate) => (candidate === current ? next : candidate))
+    return HttpResponse.json(bucketDetail(next))
+  }),
+
+  http.delete('/api/v1/s3/buckets/:name', ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const refusal = objectStorageRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const name = String(params.name)
+    const current = buckets.find((candidate) => candidate.bucket.name === name)
+    if (current === undefined) {
+      return apiError(404, 'not_found', `no bucket "${name}"`)
+    }
+    const force = new URL(request.url).searchParams.get('force') === 'true'
+    if (!force) {
+      if (current.bucket.state === 'deleting') {
+        return apiError(409, 'conflict', `bucket "${name}" is already being deleted`)
+      }
+      if (current.objects > 0) {
+        return apiError(
+          409,
+          'conflict',
+          `conflict: bucket "${name}" still holds objects or old versions; delete them first, or delete the bucket with force`,
+        )
+      }
+      buckets = buckets.filter((candidate) => candidate !== current)
+      return new HttpResponse(null, { status: 204 })
+    }
+    const task: Task = {
+      id: nextResourceID('task'),
+      type: 'bucket.delete',
+      resource_id: `bucket/${name}`,
+      state: 'pending',
+      created_at: '2026-01-06T09:00:00Z',
+      updated_at: '2026-01-06T09:00:00Z',
+    }
+    tasks = [task, ...tasks]
+    const deleting: MockBucket = { ...current, bucket: { ...current.bucket, state: 'deleting' } }
+    buckets = buckets.map((candidate) => (candidate === current ? deleting : candidate))
+    return HttpResponse.json(
+      { bucket: deleting.bucket, task_id: task.id },
+      { status: 202, headers: { Location: `/api/v1/tasks/${task.id}` } },
+    )
   }),
 
   // ----------------------------------------------------------------- tasks ---

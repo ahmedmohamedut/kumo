@@ -9,27 +9,48 @@ import type { TopNavigationProps } from '@cloudscape-design/components'
 import { useAppDispatch, useAppSelector } from '@/app/store'
 import { usePageMetaContext } from '@/app/pageMeta'
 import { toggleMode } from '@/app/theme'
-import { useLogoutMutation } from '@/features/auth/api'
+import { useLogoutMutation, useSystemInfoQuery } from '@/features/auth/api'
 import { selectUser } from '@/features/auth/authSlice'
 import { dismiss } from '@/features/notifications/notificationsSlice'
 import { useAutoDismiss } from '@/features/notifications/useAutoDismiss'
-import { activeHref, navigationItems } from './navigation'
+import { activeHref, navigationFor } from './navigation'
 
 type Utilities = NonNullable<TopNavigationProps['utilities']>
 
-const SERVICES_MENU: Utilities = [
-  {
-    type: 'menu-dropdown',
-    text: 'Services',
-    ariaLabel: 'Services',
-    items: [
-      { id: 'compute', text: 'Compute', description: 'Instances, images and key pairs' },
-      { id: 'storage', text: 'Storage', description: 'Coming soon', disabled: true },
-      { id: 'network', text: 'Network', description: 'Coming soon', disabled: true },
-    ],
-  },
-  { type: 'button', iconName: 'status-info', text: 'kumo-01', ariaLabel: 'This node' },
-]
+/** SERVICE_HOME is where a Services menu entry leads. */
+const SERVICE_HOME: Record<string, string> = {
+  compute: '/instances',
+  storage: '/buckets',
+  network: '/vpcs',
+}
+
+/**
+ * servicesMenu lists the service groups. Storage is live on a node with object
+ * storage on and marked "Not configured" otherwise.
+ */
+function servicesMenu(objectStorage: boolean, onOpen: (href: string) => void): Utilities {
+  return [
+    {
+      type: 'menu-dropdown',
+      text: 'Services',
+      ariaLabel: 'Services',
+      items: [
+        { id: 'compute', text: 'Compute', description: 'Instances, images and key pairs' },
+        objectStorage
+          ? { id: 'storage', text: 'Storage', description: 'S3-compatible buckets' }
+          : { id: 'storage', text: 'Storage', description: 'Not configured', disabled: true },
+        { id: 'network', text: 'Network', description: 'VPCs and subnets' },
+      ],
+      onItemClick: ({ detail }) => {
+        const href = SERVICE_HOME[detail.id]
+        if (href !== undefined) {
+          onOpen(href)
+        }
+      },
+    },
+    { type: 'button', iconName: 'status-info', text: 'kumo-01', ariaLabel: 'This node' },
+  ]
+}
 
 /** userMenu is the User menu: who is signed in, and the way out. */
 function userMenu(username: string, onSignOut: () => void): Utilities {
@@ -71,6 +92,9 @@ export function ConsoleLayout() {
   useAutoDismiss(notifications)
   const username = useAppSelector(selectUser)?.username ?? 'User'
   const [logout] = useLogoutMutation()
+  const { data: info } = useSystemInfoQuery()
+  const objectStorage = info !== undefined && info.object_storage.backend !== 'none'
+  const navigation = useMemo(() => navigationFor({ objectStorage }), [objectStorage])
 
   const [navigationOpen, setNavigationOpen] = useState(true)
 
@@ -86,8 +110,8 @@ export function ConsoleLayout() {
   // TopNavigation re-measures itself whenever `utilities` changes identity, so
   // the list has to be stable across renders.
   const utilities = useMemo(
-    () => [...SERVICES_MENU, ...userMenu(username, signOut)],
-    [username, signOut],
+    () => [...servicesMenu(objectStorage, navigate), ...userMenu(username, signOut)],
+    [objectStorage, navigate, username, signOut],
   )
 
   return (
@@ -109,7 +133,7 @@ export function ConsoleLayout() {
           <SideNavigation
             activeHref={activeHref(location.pathname)}
             header={{ href: '/', text: 'Kumo' }}
-            items={navigationItems}
+            items={navigation}
             onFollow={(event) => {
               if (event.detail.external || event.detail.href === undefined) {
                 return

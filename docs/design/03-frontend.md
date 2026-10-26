@@ -29,8 +29,8 @@ Stack: React 18, TypeScript (strict), Vite, Redux Toolkit + RTK Query, React Rou
 ```
 
 - `AppLayout` (navigation = `SideNavigation`, breadcrumbs, notifications = `Flashbar`, `toolsHide` for now, `headerSelector="#h"`, content type per page: `table`, `form`, `wizard`, `default`).
-- `TopNavigation`: logo + "Kumo", a **Services** utility menu listing available service groups (Compute active; others disabled with "Coming soon" badges), user menu (profile, theme toggle, sign out).
-- Side navigation items: **Dashboard**, **Compute** (section: Instances, Instance types, Images, Key pairs). Active item follows the route.
+- `TopNavigation`: logo + "Kumo", a **Services** utility menu listing the service groups, each opening its first page. Storage is disabled and marked "Not configured" on a node without object storage. User menu: profile, theme toggle, sign out.
+- Side navigation items: **Dashboard**, **Compute** (Instances, Instance types, Images, Key pairs), **Networking** (VPCs, Subnets) and **Storage** (Buckets). Storage appears only when `/system/info` reports `object_storage.backend` other than `none` (`navigationFor`). Active item follows the route.
 - Layout component: `components/layout/ConsoleLayout.tsx`; routes render inside via `<Outlet />`. Pages set breadcrumbs through a small context/hook (`usePageMeta({breadcrumbs})`).
 
 ## 3. Routes
@@ -52,6 +52,9 @@ Stack: React 18, TypeScript (strict), Vite, Redux Toolkit + RTK Query, React Rou
 | `/key-pairs` | KeyPairsList | Table + Create/Import |
 | `/key-pairs/create` | CreateKeyPair | Shows private key once in a modal with Download .pem + Copy |
 | `/key-pairs/import` | ImportKeyPair | |
+| `/buckets` | BucketsList | Table + Create/Delete (admin); behind the object storage gate |
+| `/buckets/create` | CreateBucket | Name, versioning, tags |
+| `/buckets/:name` | BucketDetail | Details, versioning toggle, Connect, tags, activity |
 | `*` | NotFound | |
 
 Protected routes wrapped by `RequireAuth`.
@@ -152,6 +155,33 @@ The write actions are disabled for a viewer (`selectIsAdmin`) and the row select
 Delete opens a `Modal` that first reads `GET /instance-types/{id}`. While `used_by` is non-empty it names those instances (links to their detail pages) and the Delete button stays disabled, because the API refuses the delete with `409` (any instance row blocks it, terminated ones included).
 
 Create/edit is one form (`InstanceTypeFormPage`): Name (read only on edit — instances reference it), vCPUs, Memory (MiB, with the formatted size under the label), optional Description ("generated from the size when empty"). Bounds are checked locally before a request. An edit sends **only the fields that changed**: an untouched description is left out so the API can regenerate a generated one for the new size; an edit with no change shows "Nothing to save" instead of sending an empty `PATCH`. The `InstanceType` tag is shared with the launch form's picker, so an edit there is offered on the next launch without a reload.
+
+### 6.7 Buckets (Storage)
+Every Storage page renders inside `ObjectStorageGate` (`features/buckets`). It reads `/system/info`:
+- With `object_storage.backend: "none"`, the page is an info alert explaining how to turn the module on (`KUMO_OBJECTSTORE`, `KUMO_S3_ENDPOINT`, the credentials file, `kumod doctor`) instead of a table whose every request answers `503`.
+- With `ok: false`, the page still renders, under a warning that the server is not answering.
+
+**List.**
+- Columns: Name (link), State (`available` → success "Available", `deleting` → in-progress "Deleting"), Created by ("Outside Kumo" for a bucket made with another S3 client), Created, Tags (a count).
+- There is no versioning column: the list endpoint does not carry it, and fetching it would cost one request per bucket.
+- Single selection, admin only. A `deleting` row cannot be selected. Header actions: Refresh, Delete, **Create bucket**.
+- The list polls at 5 s only while a bucket is `deleting`. Otherwise it does not poll: each request lists the object store, and nothing else about a bucket changes on its own.
+
+**Delete** is one `DeleteBucketModal`, shared by the list and the detail page:
+- A plain delete answers `204` for an empty bucket.
+- On `409`, the dialog says the bucket is not empty, including the case of only old versions, and points to **Delete all contents**.
+- That checkbox switches to the forced delete (`?force=true` → `202` and a `bucket.delete` task). Because it cannot be undone, the confirm button stays disabled until the bucket name is typed exactly.
+
+**Create.**
+- Fields: name (checked locally against the S3 rule first), a **versioning** toggle and tags.
+- The API answers `201` with the bucket ready, so the page opens its detail page.
+
+**Detail.**
+- **Details**: state, created, creator, versioning. Versioning is an inline Enable/Suspend button rather than a field, because S3 cannot return a bucket to "never versioned"; the button says what it will do.
+- **Connect**: endpoint, region and bucket name, plus a copyable `aws --endpoint-url … s3 ls s3://<name>/` example.
+- **Tags** editor, and **Activity**: tasks under `bucket/<name>`.
+- Writes are disabled for a viewer and while the bucket is `deleting`.
+- A bucket that is gone (`404`), whether deleted here or by another client, gets an info alert with a way back.
 
 ## 7. UX details
 

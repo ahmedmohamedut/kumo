@@ -26,6 +26,9 @@ import { SubnetsListPage } from '@/features/subnets/SubnetsListPage'
 import { SubnetDetailPage } from '@/features/subnets/SubnetDetailPage'
 import { CreateSubnetPage } from '@/features/subnets/CreateSubnetPage'
 import { NotFoundPage } from '@/features/system/NotFoundPage'
+import { BucketsListPage } from '@/features/buckets/BucketsListPage'
+import { CreateBucketPage } from '@/features/buckets/CreateBucketPage'
+import { BucketDetailPage } from '@/features/buckets/BucketDetailPage'
 
 /**
  * Console routes from 03-frontend.md §3. `/login` and `/setup` are public, and
@@ -62,6 +65,9 @@ export const router = createBrowserRouter([
       { path: 'subnets', element: <SubnetsListPage /> },
       { path: 'subnets/create', element: <CreateSubnetPage /> },
       { path: 'subnets/:subnetId', element: <SubnetDetailPage /> },
+      { path: 'buckets', element: <BucketsListPage /> },
+      { path: 'buckets/create', element: <CreateBucketPage /> },
+      { path: 'buckets/:bucketName', element: <BucketDetailPage /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },
