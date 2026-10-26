@@ -101,6 +101,13 @@ export function ImportImagePage() {
 
   const catalogImages = catalog ?? []
   const selectedCatalogImage = catalogImages.find((item) => item.id === catalogId)
+  const catalogOptions = catalogImages.map((item) => ({
+    value: item.id,
+    label: item.name,
+    description: [item.os_family, item.os_version, item.architecture]
+      .filter((part) => part !== undefined)
+      .join(' · '),
+  }))
   // Local validation wins over the API's: a form that is fixed and resubmitted
   // must not keep showing the complaint of the previous attempt.
   const errors = { ...fieldErrors(error), ...localErrors }
@@ -299,20 +306,18 @@ export function ImportImagePage() {
                     errorText={errors['source_url']}
                   >
                     <Select
-                      selectedOption={catalogImages.find((item) => item.id === catalogId) ?? null}
+                      // The selection has to be one of the options: a catalog
+                      // entry has no `label`, so the trigger rendered blank.
+                      selectedOption={
+                        catalogOptions.find((option) => option.value === catalogId) ?? null
+                      }
                       onChange={({ detail }) => {
                         const value = detail.selectedOption?.value
                         if (value !== undefined && value !== '') {
                           selectCatalogImage(value)
                         }
                       }}
-                      options={catalogImages.map((item) => ({
-                        value: item.id,
-                        label: item.name,
-                        description: [item.os_family, item.os_version, item.architecture]
-                          .filter((part) => part !== undefined)
-                          .join(' · '),
-                      }))}
+                      options={catalogOptions}
                       placeholder="Choose an image"
                       ariaLabel="Well-known image"
                       data-testid="import-catalog"
