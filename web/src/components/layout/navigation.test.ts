@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { activeHref, navigationItems } from './navigation'
+import { activeHref, navigationFor, navigationItems } from './navigation'
 
 describe('activeHref', () => {
   it.each([
@@ -16,6 +16,9 @@ describe('activeHref', () => {
     ['/vpcs/create', '/vpcs'],
     ['/subnets', '/subnets'],
     ['/subnets/subnet-1', '/subnets'],
+    ['/buckets', '/buckets'],
+    ['/buckets/app-logs', '/buckets'],
+    ['/buckets/create', '/buckets'],
     ['/unknown', undefined],
     ['/instancesx', undefined],
   ])('maps %s to %s', (pathname, want) => {
@@ -45,8 +48,24 @@ describe('activeHref', () => {
       '/key-pairs',
       '/vpcs',
       '/subnets',
+      '/buckets',
     ]) {
       expect(hrefs).toContain(route)
     }
+  })
+})
+
+describe('navigationFor', () => {
+  const sections = (objectStorage: boolean) =>
+    navigationFor({ objectStorage }).flatMap((entry) =>
+      entry.type === 'section' ? [entry.text] : [],
+    )
+
+  it('adds Storage when object storage is on', () => {
+    expect(sections(true)).toEqual(['Compute', 'Networking', 'Storage'])
+  })
+
+  it('leaves Storage out when it is off', () => {
+    expect(sections(false)).toEqual(['Compute', 'Networking'])
   })
 })
