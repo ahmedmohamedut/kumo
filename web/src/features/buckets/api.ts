@@ -7,6 +7,16 @@ export type BucketDeleted = components['schemas']['BucketDeleted']
 type BucketList = components['schemas']['BucketList']
 type CreateBucketRequest = components['schemas']['CreateBucketRequest']
 type UpdateBucketRequest = components['schemas']['UpdateBucketRequest']
+export type ObjectListing = components['schemas']['ObjectListing']
+export type StorageObject = components['schemas']['StorageObject']
+export type PresignedURL = components['schemas']['PresignedURL']
+
+/** ListObjectsArgs names one page of one folder. */
+export interface ListObjectsArgs {
+  name: string
+  prefix: string
+  cursor?: string
+}
 
 /** DeleteBucketArgs is a delete; `force` empties the bucket first, as a task. */
 export interface DeleteBucketArgs {
@@ -74,6 +84,55 @@ export const bucketsApi = kumoApi.injectEndpoints({
         'Task',
       ],
     }),
+
+    // Object listings are tagged per bucket, so an upload, a new folder or a
+    // delete refreshes every page of that bucket the console holds.
+    listObjects: build.query<ObjectListing, ListObjectsArgs>({
+      query: ({ name, prefix, cursor }) => ({
+        url: `/s3/buckets/${encodeURIComponent(name)}/objects`,
+        params: { ...(prefix === '' ? {} : { prefix }), ...(cursor ? { cursor } : {}) },
+      }),
+      providesTags: (_result, _error, { name }) => [{ type: 'BucketObjects', id: name }],
+    }),
+
+    // The presigned URLs are mutations, not queries: each is a fresh grant
+    // with its own expiry, and caching one would hand out a stale URL.
+    presignUpload: build.mutation<
+      PresignedURL,
+      { name: string; key: string; content_type: string }
+    >({
+      query: ({ name, ...body }) => ({
+        url: `/s3/buckets/${encodeURIComponent(name)}/uploads`,
+        method: 'POST',
+        body,
+      }),
+    }),
+
+    presignDownload: build.mutation<PresignedURL, { name: string; key: string }>({
+      query: ({ name, key }) => ({
+        url: `/s3/buckets/${encodeURIComponent(name)}/downloads`,
+        method: 'POST',
+        body: { key },
+      }),
+    }),
+
+    createFolder: build.mutation<{ prefix: string }, { name: string; prefix: string }>({
+      query: ({ name, prefix }) => ({
+        url: `/s3/buckets/${encodeURIComponent(name)}/folders`,
+        method: 'POST',
+        body: { prefix },
+      }),
+      invalidatesTags: (_result, _error, { name }) => [{ type: 'BucketObjects', id: name }],
+    }),
+
+    deleteObjects: build.mutation<void, { name: string; keys: string[] }>({
+      query: ({ name, keys }) => ({
+        url: `/s3/buckets/${encodeURIComponent(name)}/objects/delete`,
+        method: 'POST',
+        body: { keys },
+      }),
+      invalidatesTags: (_result, _error, { name }) => [{ type: 'BucketObjects', id: name }],
+    }),
   }),
 })
 
@@ -83,4 +142,9 @@ export const {
   useCreateBucketMutation,
   useUpdateBucketMutation,
   useDeleteBucketMutation,
+  useListObjectsQuery,
+  usePresignUploadMutation,
+  usePresignDownloadMutation,
+  useCreateFolderMutation,
+  useDeleteObjectsMutation,
 } = bucketsApi

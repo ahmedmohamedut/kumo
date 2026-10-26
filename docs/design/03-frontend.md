@@ -176,7 +176,21 @@ Every Storage page renders inside `ObjectStorageGate` (`features/buckets`). It r
 - Fields: name (checked locally against the S3 rule first), a **versioning** toggle and tags.
 - The API answers `201` with the bucket ready, so the page opens its detail page.
 
-**Detail.**
+**Detail** has two tabs, **Objects** (the default) and **Properties**.
+
+**Objects** is `ObjectBrowser`, one folder at a time like the S3 console:
+- The folder is in the URL (`?prefix=`), so links and the back button work. A breadcrumb of the folder path sits above the table.
+- Rows are the folders (common prefixes, opened by clicking) and then the objects, with name, type, size and last modified.
+- Paging uses the API cursor through an open-ended `Pagination`.
+- **Upload** takes several files. For each, it asks for a presigned `PUT` and sends the file with plain `fetch` (`transfer.ts`), never the API client: the Kumo token would break the SigV4 signature, and the bytes must not pass through kumod.
+- A per-file status list shows uploading, done or the reason for a failure. A network error is reported as unreachable or refused by CORS, naming `KUMO_S3_PUBLIC_URL` and `KUMO_S3_CORS_ORIGINS`. The folder is listed again when the files settle.
+- **Download** asks for a presigned `GET` and hands it to the browser through a temporary link. The URL carries `Content-Disposition: attachment`, so the console stays put.
+- **Create folder** is a modal for a single name, with no slashes.
+- **Delete** confirms the selected keys. It explains that a folder delete removes only the folder marker, and that a versioned bucket keeps the previous version.
+- A viewer can browse and download; upload, folder and delete are disabled for a viewer and while the bucket is `deleting`.
+- When the console is served over plain HTTP to a non-local address (`isPlainHTTP`), a warning says objects and their links cross the network unencrypted.
+
+**Properties:**
 - **Details**: state, created, creator, versioning. Versioning is an inline Enable/Suspend button rather than a field, because S3 cannot return a bucket to "never versioned"; the button says what it will do.
 - **Connect**: endpoint, region and bucket name, plus a copyable `aws --endpoint-url … s3 ls s3://<name>/` example.
 - **Tags** editor, and **Activity**: tasks under `bucket/<name>`.

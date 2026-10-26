@@ -13,6 +13,7 @@ import SpaceBetween from '@cloudscape-design/components/space-between'
 import Spinner from '@cloudscape-design/components/spinner'
 import StatusIndicator from '@cloudscape-design/components/status-indicator'
 import TagEditor, { type TagEditorProps } from '@cloudscape-design/components/tag-editor'
+import Tabs from '@cloudscape-design/components/tabs'
 
 import { usePageMeta } from '@/app/pageMeta'
 import { useAppDispatch, useAppSelector } from '@/app/store'
@@ -25,6 +26,7 @@ import {
   useUpdateBucketMutation,
 } from '@/features/buckets/api'
 import { DeleteBucketModal } from '@/features/buckets/DeleteBucketModal'
+import { ObjectBrowser } from '@/features/buckets/ObjectBrowser'
 import { ObjectStorageGate } from '@/features/buckets/ObjectStorageGate'
 import { BUCKET_INDICATOR, VERSIONING_LABEL } from '@/features/buckets/state'
 import {
@@ -62,8 +64,9 @@ export function BucketDetailPage() {
 }
 
 /**
- * BucketDetail shows a bucket: its state and versioning, how an S3 client
- * connects to it, its tags and the tasks that worked on it.
+ * BucketDetail shows a bucket in two tabs: Objects, the folder browser, and
+ * Properties: its state and versioning, how an S3 client connects to it, its
+ * tags and the tasks that worked on it.
  *
  * Versioning is a toggle and not a form field, because S3 has no way back to
  * "never versioned": turning it off suspends it, and the button says so.
@@ -95,6 +98,7 @@ function BucketDetail({ name }: { name: string }) {
   const [actionError, setActionError] = useState<ApiError>(undefined)
   const [isEditing, setIsEditing] = useState(false)
   const [editTags, setEditTags] = useState<ReadonlyArray<TagEditorProps.Tag>>([])
+  const [tab, setTab] = useState('objects')
 
   const tasks = tasksData?.items ?? []
   const tags = Object.entries(bucket?.tags ?? {})
@@ -209,156 +213,178 @@ function BucketDetail({ name }: { name: string }) {
         )}
 
         {bucket !== undefined && (
-          <Container header={<Header variant="h2">Details</Header>}>
-            <ColumnLayout columns={2} variant="text-grid">
-              <Row label="State">
-                <StatusIndicator type={BUCKET_INDICATOR[bucket.state].type}>
-                  {BUCKET_INDICATOR[bucket.state].label}
-                </StatusIndicator>
-              </Row>
-              <Row label="Created">
-                <span title={formatAbsoluteTime(bucket.created_at)}>
-                  {formatRelativeTime(bucket.created_at)}
-                </span>
-              </Row>
-              <Row label="Created by">{bucket.created_by ?? 'Outside Kumo'}</Row>
-              <Row label="Versioning">
-                <SpaceBetween direction="horizontal" size="s" alignItems="center">
-                  <span data-testid="bucket-versioning">
-                    {versioning === undefined ? '—' : VERSIONING_LABEL[versioning]}
-                  </span>
-                  {versioning === 'enabled' ? (
-                    <Button
-                      variant="inline-link"
-                      disabled={!canWrite}
-                      loading={isUpdating}
-                      onClick={() => void setVersioning(false)}
-                    >
-                      Suspend
-                    </Button>
-                  ) : (
-                    <Button
-                      variant="inline-link"
-                      disabled={!canWrite}
-                      loading={isUpdating}
-                      onClick={() => void setVersioning(true)}
-                    >
-                      Enable
-                    </Button>
-                  )}
-                </SpaceBetween>
-              </Row>
-            </ColumnLayout>
-          </Container>
-        )}
+          <Tabs
+            activeTabId={tab}
+            onChange={({ detail }) => setTab(detail.activeTabId)}
+            ariaLabel="Bucket sections"
+            tabs={[
+              {
+                id: 'objects',
+                label: 'Objects',
+                content: <ObjectBrowser bucket={name} canWrite={canWrite} />,
+              },
+              {
+                id: 'properties',
+                label: 'Properties',
+                content: (
+                  <SpaceBetween size="l">
+                    {
+                      <Container header={<Header variant="h2">Details</Header>}>
+                        <ColumnLayout columns={2} variant="text-grid">
+                          <Row label="State">
+                            <StatusIndicator type={BUCKET_INDICATOR[bucket.state].type}>
+                              {BUCKET_INDICATOR[bucket.state].label}
+                            </StatusIndicator>
+                          </Row>
+                          <Row label="Created">
+                            <span title={formatAbsoluteTime(bucket.created_at)}>
+                              {formatRelativeTime(bucket.created_at)}
+                            </span>
+                          </Row>
+                          <Row label="Created by">{bucket.created_by ?? 'Outside Kumo'}</Row>
+                          <Row label="Versioning">
+                            <SpaceBetween direction="horizontal" size="s" alignItems="center">
+                              <span data-testid="bucket-versioning">
+                                {versioning === undefined ? '—' : VERSIONING_LABEL[versioning]}
+                              </span>
+                              {versioning === 'enabled' ? (
+                                <Button
+                                  variant="inline-link"
+                                  disabled={!canWrite}
+                                  loading={isUpdating}
+                                  onClick={() => void setVersioning(false)}
+                                >
+                                  Suspend
+                                </Button>
+                              ) : (
+                                <Button
+                                  variant="inline-link"
+                                  disabled={!canWrite}
+                                  loading={isUpdating}
+                                  onClick={() => void setVersioning(true)}
+                                >
+                                  Enable
+                                </Button>
+                              )}
+                            </SpaceBetween>
+                          </Row>
+                        </ColumnLayout>
+                      </Container>
+                    }
 
-        {bucket !== undefined && (
-          <Container
-            header={
-              <Header
-                variant="h2"
-                description="Point any S3 client at this endpoint with path-style addressing and an access key."
-              >
-                Connect
-              </Header>
-            }
-          >
-            <ColumnLayout columns={3} variant="text-grid">
-              <Row label="Endpoint">
-                <CopyToClipboard
-                  variant="inline"
-                  textToCopy={bucket.endpoint}
-                  copyButtonAriaLabel="Copy endpoint"
-                  copySuccessText="Endpoint copied"
-                  copyErrorText="Endpoint not copied"
-                />
-              </Row>
-              <Row label="Region">{bucket.region}</Row>
-              <Row label="Bucket">
-                <Box variant="code">{bucket.name}</Box>
-              </Row>
-            </ColumnLayout>
-            <Box margin={{ top: 'm' }}>
-              <Box variant="awsui-key-label">Example</Box>
-              <CopyToClipboard
-                variant="inline"
-                textToCopy={cliExample}
-                copyButtonAriaLabel="Copy example command"
-                copySuccessText="Command copied"
-                copyErrorText="Command not copied"
-              />
-            </Box>
-          </Container>
-        )}
-
-        {bucket !== undefined && (
-          <Container
-            header={
-              <Header
-                variant="h2"
-                description="Key/value pairs to organize buckets. They are Kumo's, not S3 object tags."
-                actions={
-                  isEditing ? (
-                    <SpaceBetween direction="horizontal" size="s">
-                      <Button variant="link" onClick={() => setIsEditing(false)}>
-                        Cancel
-                      </Button>
-                      <Button
-                        variant="primary"
-                        loading={isUpdating}
-                        onClick={() => void saveTags()}
+                    {
+                      <Container
+                        header={
+                          <Header
+                            variant="h2"
+                            description="Point any S3 client at this endpoint with path-style addressing and an access key."
+                          >
+                            Connect
+                          </Header>
+                        }
                       >
-                        Save
-                      </Button>
-                    </SpaceBetween>
-                  ) : (
-                    <Button disabled={!canWrite} onClick={beginEditing}>
-                      Edit tags
-                    </Button>
-                  )
-                }
-              >
-                Tags
-              </Header>
-            }
-          >
-            {isEditing ? (
-              <FormField label="Tags" errorText={fieldErrors(actionError)['tags']}>
-                <TagEditor
-                  tags={editTags}
-                  onChange={({ detail }) => setEditTags(detail.tags)}
-                  i18nStrings={{ keyPlaceholder: 'Enter a tag key' }}
-                  tagLimit={50}
-                />
-              </FormField>
-            ) : tags.length === 0 ? (
-              <Box variant="p" color="text-status-inactive">
-                This bucket has no tags.
-              </Box>
-            ) : (
-              <ColumnLayout columns={2} variant="text-grid">
-                {tags.map(([key, value]) => (
-                  <Row key={key} label={key}>
-                    {value === '' ? '—' : value}
-                  </Row>
-                ))}
-              </ColumnLayout>
-            )}
-          </Container>
-        )}
+                        <ColumnLayout columns={3} variant="text-grid">
+                          <Row label="Endpoint">
+                            <CopyToClipboard
+                              variant="inline"
+                              textToCopy={bucket.endpoint}
+                              copyButtonAriaLabel="Copy endpoint"
+                              copySuccessText="Endpoint copied"
+                              copyErrorText="Endpoint not copied"
+                            />
+                          </Row>
+                          <Row label="Region">{bucket.region}</Row>
+                          <Row label="Bucket">
+                            <Box variant="code">{bucket.name}</Box>
+                          </Row>
+                        </ColumnLayout>
+                        <Box margin={{ top: 'm' }}>
+                          <Box variant="awsui-key-label">Example</Box>
+                          <CopyToClipboard
+                            variant="inline"
+                            textToCopy={cliExample}
+                            copyButtonAriaLabel="Copy example command"
+                            copySuccessText="Command copied"
+                            copyErrorText="Command not copied"
+                          />
+                        </Box>
+                      </Container>
+                    }
 
-        {bucket !== undefined && (
-          <Container header={<Header variant="h2">Activity</Header>}>
-            <SpaceBetween size="s">
-              {tasks.length === 0 ? (
-                <Box variant="p" color="text-status-inactive">
-                  No task has touched this bucket.
-                </Box>
-              ) : (
-                tasks.map((task) => <TaskRow key={task.id} task={task} />)
-              )}
-            </SpaceBetween>
-          </Container>
+                    {
+                      <Container
+                        header={
+                          <Header
+                            variant="h2"
+                            description="Key/value pairs to organize buckets. They are Kumo's, not S3 object tags."
+                            actions={
+                              isEditing ? (
+                                <SpaceBetween direction="horizontal" size="s">
+                                  <Button variant="link" onClick={() => setIsEditing(false)}>
+                                    Cancel
+                                  </Button>
+                                  <Button
+                                    variant="primary"
+                                    loading={isUpdating}
+                                    onClick={() => void saveTags()}
+                                  >
+                                    Save
+                                  </Button>
+                                </SpaceBetween>
+                              ) : (
+                                <Button disabled={!canWrite} onClick={beginEditing}>
+                                  Edit tags
+                                </Button>
+                              )
+                            }
+                          >
+                            Tags
+                          </Header>
+                        }
+                      >
+                        {isEditing ? (
+                          <FormField label="Tags" errorText={fieldErrors(actionError)['tags']}>
+                            <TagEditor
+                              tags={editTags}
+                              onChange={({ detail }) => setEditTags(detail.tags)}
+                              i18nStrings={{ keyPlaceholder: 'Enter a tag key' }}
+                              tagLimit={50}
+                            />
+                          </FormField>
+                        ) : tags.length === 0 ? (
+                          <Box variant="p" color="text-status-inactive">
+                            This bucket has no tags.
+                          </Box>
+                        ) : (
+                          <ColumnLayout columns={2} variant="text-grid">
+                            {tags.map(([key, value]) => (
+                              <Row key={key} label={key}>
+                                {value === '' ? '—' : value}
+                              </Row>
+                            ))}
+                          </ColumnLayout>
+                        )}
+                      </Container>
+                    }
+
+                    {
+                      <Container header={<Header variant="h2">Activity</Header>}>
+                        <SpaceBetween size="s">
+                          {tasks.length === 0 ? (
+                            <Box variant="p" color="text-status-inactive">
+                              No task has touched this bucket.
+                            </Box>
+                          ) : (
+                            tasks.map((task) => <TaskRow key={task.id} task={task} />)
+                          )}
+                        </SpaceBetween>
+                      </Container>
+                    }
+                  </SpaceBetween>
+                ),
+              },
+            ]}
+          />
         )}
       </SpaceBetween>
 

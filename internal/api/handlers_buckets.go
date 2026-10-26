@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -138,4 +139,122 @@ func (h *Handler) deleteBucket(c *gin.Context) {
 	}
 	c.Header("Location", "/api/v1/tasks/"+deleted.TaskID)
 	c.JSON(http.StatusAccepted, deleted)
+}
+
+// presignUploadRequest is the body of POST /s3/buckets/{name}/uploads.
+type presignUploadRequest struct {
+	Key         string `json:"key"`
+	ContentType string `json:"content_type"`
+}
+
+// presignDownloadRequest is the body of POST /s3/buckets/{name}/downloads.
+type presignDownloadRequest struct {
+	Key string `json:"key"`
+}
+
+// createFolderRequest is the body of POST /s3/buckets/{name}/folders.
+type createFolderRequest struct {
+	Prefix string `json:"prefix"`
+}
+
+// folderResponse is the answer to a folder create.
+type folderResponse struct {
+	Prefix string `json:"prefix"`
+}
+
+// deleteObjectsRequest is the body of POST /s3/buckets/{name}/objects/delete.
+type deleteObjectsRequest struct {
+	Keys []string `json:"keys"`
+}
+
+// listObjects answers GET /s3/buckets/{name}/objects?prefix=&cursor=&limit=.
+func (h *Handler) listObjects(c *gin.Context) {
+	limit := 0
+	if raw := c.Query("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			WriteError(c, h.logger, Invalid("limit is not acceptable",
+				FieldError{Field: "limit", Reason: "must be a number"}))
+			return
+		}
+		limit = parsed
+	}
+	listing, err := h.buckets.ListObjects(c.Request.Context(), c.Param("name"), bucket.ListObjectsInput{
+		Prefix: c.Query("prefix"),
+		Cursor: c.Query("cursor"),
+		Limit:  limit,
+	})
+	if err != nil {
+		WriteError(c, h.logger, err)
+		return
+	}
+	c.JSON(http.StatusOK, listing)
+}
+
+// presignUpload answers POST /s3/buckets/{name}/uploads with a URL the
+// browser PUTs the file to directly.
+func (h *Handler) presignUpload(c *gin.Context) {
+	var req presignUploadRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		WriteError(c, h.logger, Invalid("the request body is not a valid JSON object",
+			FieldError{Field: "body", Reason: "must be a JSON object with a key"}))
+		return
+	}
+	signed, err := h.buckets.PresignUpload(c.Request.Context(), c.Param("name"), req.Key, req.ContentType)
+	if err != nil {
+		WriteError(c, h.logger, err)
+		return
+	}
+	c.JSON(http.StatusOK, signed)
+}
+
+// presignDownload answers POST /s3/buckets/{name}/downloads. It is a POST,
+// not a GET, so a URL that grants access is never cached or logged as the
+// address of a page.
+func (h *Handler) presignDownload(c *gin.Context) {
+	var req presignDownloadRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		WriteError(c, h.logger, Invalid("the request body is not a valid JSON object",
+			FieldError{Field: "body", Reason: "must be a JSON object with a key"}))
+		return
+	}
+	signed, err := h.buckets.PresignDownload(c.Request.Context(), c.Param("name"), req.Key)
+	if err != nil {
+		WriteError(c, h.logger, err)
+		return
+	}
+	c.JSON(http.StatusOK, signed)
+}
+
+// createFolder answers POST /s3/buckets/{name}/folders.
+func (h *Handler) createFolder(c *gin.Context) {
+	var req createFolderRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		WriteError(c, h.logger, Invalid("the request body is not a valid JSON object",
+			FieldError{Field: "body", Reason: "must be a JSON object with a prefix"}))
+		return
+	}
+	folder, err := h.buckets.CreateFolder(c.Request.Context(), c.Param("name"), req.Prefix)
+	if err != nil {
+		WriteError(c, h.logger, err)
+		return
+	}
+	c.JSON(http.StatusCreated, folderResponse{Prefix: folder})
+}
+
+// deleteObjects answers POST /s3/buckets/{name}/objects/delete, the batch
+// delete of S3. A POST carries the key list, which a DELETE body cannot be
+// relied on to.
+func (h *Handler) deleteObjects(c *gin.Context) {
+	var req deleteObjectsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		WriteError(c, h.logger, Invalid("the request body is not a valid JSON object",
+			FieldError{Field: "body", Reason: "must be a JSON object with a list of keys"}))
+		return
+	}
+	if err := h.buckets.DeleteObjects(c.Request.Context(), c.Param("name"), req.Keys); err != nil {
+		WriteError(c, h.logger, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }

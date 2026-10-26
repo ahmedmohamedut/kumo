@@ -260,6 +260,7 @@ func serve(ctx context.Context, stdout io.Writer) error {
 			PublicURL:   cfg.S3PublicURL,
 			Region:      cfg.S3Region,
 			CORSOrigins: cfg.S3CORSOrigins,
+			PresignTTL:  cfg.S3PresignTTL,
 		})
 		if err != nil {
 			return fmt.Errorf("build the bucket service: %w", err)
