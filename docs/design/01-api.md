@@ -44,11 +44,25 @@ Access JWT claims: `sub` (user id), `role`, `iat`, `exp`, `jti`. Password policy
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/instance-types` | List presets (read-only in v1), smallest first |
+| GET | `/instance-types` | List types, smallest first (memory, then vCPUs, then id) |
+| POST | `/instance-types` | (admin) Create a type → `201` with `Location` |
+| GET | `/instance-types/{id}` | Type detail plus `used_by` (ids of the instances that reference it) |
+| PATCH | `/instance-types/{id}` | (admin) Change `vcpus`, `memory_mib` and/or `description` |
+| DELETE | `/instance-types/{id}` | (admin) `204`; `409` while any instance references it |
 
 Seed set: `kumo.nano` (1 vCPU/512 MiB), `kumo.micro` (1/1 GiB), `kumo.small` (1/2 GiB), `kumo.medium` (2/4 GiB), `kumo.large` (2/8 GiB), `kumo.xlarge` (4/16 GiB), `kumo.2xlarge` (8/32 GiB).
 
-Seeding is idempotent (`INSERT OR IGNORE`): a preset edited on the node survives a restart.
+The seed set is written **once**, by migration `0003_seed_instance_types.sql` (`INSERT OR IGNORE`, so a node that already had the presets keeps them, edits included). From then on the presets are ordinary rows an administrator may edit or delete; a deleted preset does not come back on restart.
+
+```json
+{ "id": "db.large", "vcpus": 4, "memory_mib": 8192, "description": "4 vCPU, 8 GiB" }
+```
+
+Validation: `id` 1–64 chars `^[a-z0-9][a-z0-9._-]*$`, immutable (instances reference it; there is no rename); `vcpus` 1–256; `memory_mib` 256–1048576; `description` ≤ 255 bytes. A taken `id` is `409 already_exists`. The bounds keep a type launchable, not sized to this node: whether a launch fits is the capacity check (`00-architecture.md` §6), so a type larger than the host is legal and refused at launch.
+
+Description: an empty `description` on create is generated from the size the way the presets read (`"4 vCPU, 8 GiB"`, or `"1 vCPU, 1536 MiB"` for a size that is not whole GiB). On `PATCH`, a description that still equals the generated one for the old size follows the new size; a hand-written one is left alone.
+
+Editing a type never touches existing instances: they snapshot `vcpus`/`memory_mib` at launch (`02-data-model.md`), so a change applies to later launches only. A delete is refused while **any** `instances` row references the type, terminated ones included, because `instances.instance_type` is a foreign key with no `ON DELETE` (the same rule as deleting an image).
 
 ## Key pairs
 

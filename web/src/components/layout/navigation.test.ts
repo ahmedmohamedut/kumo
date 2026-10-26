@@ -7,6 +7,8 @@ describe('activeHref', () => {
     ['/', '/'],
     ['/instances', '/instances'],
     ['/instances/i-1', '/instances'],
+    ['/instance-types', '/instance-types'],
+    ['/instance-types/kumo.small/edit', '/instance-types'],
     ['/images', '/images'],
     ['/key-pairs', '/key-pairs'],
     ['/vpcs', '/vpcs'],
@@ -35,7 +37,15 @@ describe('activeHref', () => {
       }
     }
 
-    for (const route of ['/', '/instances', '/images', '/key-pairs', '/vpcs', '/subnets']) {
+    for (const route of [
+      '/',
+      '/instances',
+      '/instance-types',
+      '/images',
+      '/key-pairs',
+      '/vpcs',
+      '/subnets',
+    ]) {
       expect(hrefs).toContain(route)
     }
   })

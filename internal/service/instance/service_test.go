@@ -99,12 +99,9 @@ func newHarnessWith(t *testing.T, hvConfig fake.Config, opts instance.Options) h
 	}
 	vpcID, subnetID := seedDefaultNetwork(t, db, hv)
 
-	types, err := instancetype.New(instancetype.Options{Store: db})
+	types, err := instancetype.New(instancetype.Options{Logger: logging.Discard(), Store: db})
 	if err != nil {
 		t.Fatalf("instancetype.New(): %v", err)
-	}
-	if err := types.Seed(ctx); err != nil {
-		t.Fatalf("Seed(): %v", err)
 	}
 
 	// The system service measures the node and sums what the instances hold, and
@@ -381,7 +378,7 @@ func TestNewValidatesItsDependencies(t *testing.T) {
 
 	db := storetest.New(t)
 	hv := fake.New(fake.Config{})
-	types, err := instancetype.New(instancetype.Options{Store: db})
+	types, err := instancetype.New(instancetype.Options{Logger: logging.Discard(), Store: db})
 	if err != nil {
 		t.Fatalf("instancetype.New(): %v", err)
 	}

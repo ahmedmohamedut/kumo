@@ -14,6 +14,7 @@ export const navigationItems: ReadonlyArray<NavItem> = [
     defaultExpanded: true,
     items: [
       { type: 'link', text: 'Instances', href: '/instances' },
+      { type: 'link', text: 'Instance types', href: '/instance-types' },
       { type: 'link', text: 'Images', href: '/images' },
       { type: 'link', text: 'Key pairs', href: '/key-pairs' },
     ],

@@ -117,3 +117,15 @@ export function formatGiB(value: number | null | undefined): string {
   }
   return `${Math.round(value)} GiB`
 }
+
+/**
+ * formatMemoryMiB renders an instance size's memory the way the API's generated
+ * descriptions do: whole GiB when it divides evenly ("4 GiB"), MiB otherwise
+ * ("1536 MiB"), so a size never reads as a rounded figure it is not.
+ */
+export function formatMemoryMiB(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value < 0) {
+    return '—'
+  }
+  return value % 1024 === 0 ? `${value / 1024} GiB` : `${Math.round(value)} MiB`
+}

@@ -9,6 +9,52 @@ import (
 	"context"
 )
 
+const createInstanceType = `-- name: CreateInstanceType :one
+INSERT INTO instance_types (id, vcpus, memory_mib, description)
+VALUES (?1, ?2, ?3, ?4)
+RETURNING id, vcpus, memory_mib, description
+`
+
+type CreateInstanceTypeParams struct {
+	ID          string `json:"id"`
+	Vcpus       int64  `json:"vcpus"`
+	MemoryMib   int64  `json:"memory_mib"`
+	Description string `json:"description"`
+}
+
+func (q *Queries) CreateInstanceType(ctx context.Context, arg CreateInstanceTypeParams) (InstanceType, error) {
+	row := q.db.QueryRowContext(ctx, createInstanceType,
+		arg.ID,
+		arg.Vcpus,
+		arg.MemoryMib,
+		arg.Description,
+	)
+	var i InstanceType
+	err := row.Scan(
+		&i.ID,
+		&i.Vcpus,
+		&i.MemoryMib,
+		&i.Description,
+	)
+	return i, err
+}
+
+const deleteInstanceType = `-- name: DeleteInstanceType :execrows
+DELETE FROM instance_types WHERE id = ?1
+`
+
+type DeleteInstanceTypeParams struct {
+	ID string `json:"id"`
+}
+
+func (q *Queries) DeleteInstanceType(ctx context.Context, arg DeleteInstanceTypeParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteInstanceType, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getInstanceType = `-- name: GetInstanceType :one
 SELECT id, vcpus, memory_mib, description FROM instance_types WHERE id = ?1
 `
@@ -30,11 +76,14 @@ func (q *Queries) GetInstanceType(ctx context.Context, arg GetInstanceTypeParams
 }
 
 const listInstanceTypes = `-- name: ListInstanceTypes :many
+
 SELECT id, vcpus, memory_mib, description
 FROM instance_types
 ORDER BY memory_mib ASC, vcpus ASC, id ASC
 `
 
+// The presets are seeded once by migration 0003, not here: an administrator
+// manages the set, so a boot-time seed would bring back a deleted type.
 // Ordered smallest first, which is the order a picker wants. A plain ORDER BY
 // id would sort kumo.2xlarge before kumo.large.
 func (q *Queries) ListInstanceTypes(ctx context.Context) ([]InstanceType, error) {
@@ -65,21 +114,68 @@ func (q *Queries) ListInstanceTypes(ctx context.Context) ([]InstanceType, error)
 	return items, nil
 }
 
-const seedInstanceTypes = `-- name: SeedInstanceTypes :exec
-INSERT OR IGNORE INTO instance_types (id, vcpus, memory_mib, description) VALUES
-  ('kumo.nano',    1, 512,   '1 vCPU, 512 MiB'),
-  ('kumo.micro',   1, 1024,  '1 vCPU, 1 GiB'),
-  ('kumo.small',   1, 2048,  '1 vCPU, 2 GiB'),
-  ('kumo.medium',  2, 4096,  '2 vCPU, 4 GiB'),
-  ('kumo.large',   2, 8192,  '2 vCPU, 8 GiB'),
-  ('kumo.xlarge',  4, 16384, '4 vCPU, 16 GiB'),
-  ('kumo.2xlarge', 8, 32768, '8 vCPU, 32 GiB')
+const listInstancesUsingInstanceType = `-- name: ListInstancesUsingInstanceType :many
+SELECT id FROM instances
+WHERE instance_type = ?1
+ORDER BY launched_at DESC, id DESC
 `
 
-// The instance type presets of docs/design/01-api.md. They are seeded on every
-// boot with INSERT OR IGNORE, so an operator who edits a preset keeps the edit.
-// The list lives here rather than in Go because it is data the database owns.
-func (q *Queries) SeedInstanceTypes(ctx context.Context) error {
-	_, err := q.db.ExecContext(ctx, seedInstanceTypes)
-	return err
+type ListInstancesUsingInstanceTypeParams struct {
+	InstanceType string `json:"instance_type"`
+}
+
+// Every row counts, terminated ones included: instances.instance_type is a
+// foreign key with no ON DELETE clause, so any reference blocks the delete.
+func (q *Queries) ListInstancesUsingInstanceType(ctx context.Context, arg ListInstancesUsingInstanceTypeParams) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listInstancesUsingInstanceType, arg.InstanceType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const updateInstanceType = `-- name: UpdateInstanceType :one
+UPDATE instance_types
+SET vcpus = ?2, memory_mib = ?3, description = ?4
+WHERE id = ?1
+RETURNING id, vcpus, memory_mib, description
+`
+
+type UpdateInstanceTypeParams struct {
+	ID          string `json:"id"`
+	Vcpus       int64  `json:"vcpus"`
+	MemoryMib   int64  `json:"memory_mib"`
+	Description string `json:"description"`
+}
+
+func (q *Queries) UpdateInstanceType(ctx context.Context, arg UpdateInstanceTypeParams) (InstanceType, error) {
+	row := q.db.QueryRowContext(ctx, updateInstanceType,
+		arg.ID,
+		arg.Vcpus,
+		arg.MemoryMib,
+		arg.Description,
+	)
+	var i InstanceType
+	err := row.Scan(
+		&i.ID,
+		&i.Vcpus,
+		&i.MemoryMib,
+		&i.Description,
+	)
+	return i, err
 }

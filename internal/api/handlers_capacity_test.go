@@ -44,6 +44,10 @@ type capacityBody struct {
 	DiskBytes   capacityMetricBody `json:"disk_bytes"`
 }
 
+// capacitySecret signs the tokens of the capacity router, so a test can issue
+// one for a role the setup flow does not create.
+var capacitySecret = strings.Repeat("i", 32)
+
 // newCapacityRouter wires the two M4.1 read endpoints over a real database and
 // the in-memory backend, which is what kumod does with KUMO_HYPERVISOR=fake.
 func newCapacityRouter(t *testing.T) *gin.Engine {
@@ -59,7 +63,7 @@ func newCapacityRouterWithStore(t *testing.T) (*gin.Engine, *store.Store) {
 	logger := logging.Discard()
 	db := storetest.New(t)
 
-	signer, err := auth.NewSigner([]byte(strings.Repeat("i", 32)), 15*time.Minute)
+	signer, err := auth.NewSigner([]byte(capacitySecret), 15*time.Minute)
 	if err != nil {
 		t.Fatalf("auth.NewSigner(): %v", err)
 	}
@@ -70,14 +74,10 @@ func newCapacityRouterWithStore(t *testing.T) (*gin.Engine, *store.Store) {
 		t.Fatalf("authservice.New(): %v", err)
 	}
 
-	types, err := instancetype.New(instancetype.Options{Store: db})
+	// Migration 0003 seeds the presets, so storetest.New already has them.
+	types, err := instancetype.New(instancetype.Options{Logger: logger, Store: db})
 	if err != nil {
 		t.Fatalf("instancetype.New(): %v", err)
-	}
-	// kumod seeds the presets on every boot, so the endpoint is only exercised
-	// through a router that did the same.
-	if err := types.Seed(t.Context()); err != nil {
-		t.Fatalf("Seed(): %v", err)
 	}
 
 	hv := fake.New(fake.Config{})

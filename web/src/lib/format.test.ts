@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatAbsoluteTime, formatBytes, formatGiB, formatRelativeTime } from '@/lib/format'
+import {
+  formatAbsoluteTime,
+  formatBytes,
+  formatGiB,
+  formatMemoryMiB,
+  formatRelativeTime,
+} from '@/lib/format'
 
 /** The reference "now" every case below is measured against. */
 const NOW = new Date('2026-03-15T12:00:00Z')
@@ -85,5 +91,20 @@ describe('formatGiB', () => {
 
   it.each(cases)('%s', (_label, value, want) => {
     expect(formatGiB(value)).toBe(want)
+  })
+})
+
+describe('formatMemoryMiB', () => {
+  const cases: ReadonlyArray<[string, number | null | undefined, string]> = [
+    ['whole GiB', 4096, '4 GiB'],
+    ['below a GiB', 512, '512 MiB'],
+    ['not whole GiB', 1536, '1536 MiB'],
+    ['a TiB stays in GiB', 1048576, '1024 GiB'],
+    ['unknown', null, '—'],
+    ['absent', undefined, '—'],
+  ]
+
+  it.each(cases)('%s', (_label, value, want) => {
+    expect(formatMemoryMiB(value)).toBe(want)
   })
 })

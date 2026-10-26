@@ -86,14 +86,11 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		VCPUOvercommit:   cfg.VCPUOvercommit,
 	})
 
-	// The instance type presets are data, not schema, so they are seeded on
-	// every boot: INSERT OR IGNORE keeps a preset an operator edited by hand.
-	instanceTypes, err := instancetype.New(instancetype.Options{Store: db})
+	// The kumo.* presets are seeded once by migration 0003; from then on an
+	// administrator manages the set through the API.
+	instanceTypes, err := instancetype.New(instancetype.Options{Logger: logger, Store: db})
 	if err != nil {
 		return fmt.Errorf("build the instance type service: %w", err)
-	}
-	if err := instanceTypes.Seed(ctx); err != nil {
-		return fmt.Errorf("seed the instance types: %w", err)
 	}
 
 	signer, err := auth.NewSignerFromFile(cfg.JWTSecretFile, cfg.AccessTTL)
