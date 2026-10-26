@@ -30,7 +30,7 @@ Stack: React 18, TypeScript (strict), Vite, Redux Toolkit + RTK Query, React Rou
 
 - `AppLayout` (navigation = `SideNavigation`, breadcrumbs, notifications = `Flashbar`, `toolsHide` for now, `headerSelector="#h"`, content type per page: `table`, `form`, `wizard`, `default`).
 - `TopNavigation`: logo + "Kumo", a **Services** utility menu listing the service groups, each opening its first page. Storage is disabled and marked "Not configured" on a node without object storage. User menu: profile, theme toggle, sign out.
-- Side navigation items: **Dashboard**, **Compute** (Instances, Instance types, Images, Key pairs), **Networking** (VPCs, Subnets) and **Storage** (Buckets). Storage appears only when `/system/info` reports `object_storage.backend` other than `none` (`navigationFor`). Active item follows the route.
+- Side navigation items: **Dashboard**, **Compute** (Instances, Instance types, Images, Key pairs), **Networking** (VPCs, Subnets) and **Storage** (Buckets, Access keys). Storage appears only when `/system/info` reports `object_storage.backend` other than `none` (`navigationFor`). Active item follows the route.
 - Layout component: `components/layout/ConsoleLayout.tsx`; routes render inside via `<Outlet />`. Pages set breadcrumbs through a small context/hook (`usePageMeta({breadcrumbs})`).
 
 ## 3. Routes
@@ -54,7 +54,10 @@ Stack: React 18, TypeScript (strict), Vite, Redux Toolkit + RTK Query, React Rou
 | `/key-pairs/import` | ImportKeyPair | |
 | `/buckets` | BucketsList | Table + Create/Delete (admin); behind the object storage gate |
 | `/buckets/create` | CreateBucket | Name, versioning, tags |
-| `/buckets/:name` | BucketDetail | Details, versioning toggle, Connect, tags, activity |
+| `/buckets/:name` | BucketDetail | Tabs: Objects (browser), Properties |
+| `/access-keys` | AccessKeysList | Table + Create/Edit/Delete (admin) |
+| `/access-keys/create` | CreateAccessKey | Shows the secret once in a modal |
+| `/access-keys/:id/edit` | EditAccessKey | Name, access, buckets; the secret is unchanged |
 | `*` | NotFound | |
 
 Protected routes wrapped by `RequireAuth`.
@@ -196,6 +199,22 @@ Every Storage page renders inside `ObjectStorageGate` (`features/buckets`). It r
 - **Tags** editor, and **Activity**: tasks under `bucket/<name>`.
 - Writes are disabled for a viewer and while the bucket is `deleting`.
 - A bucket that is gone (`404`), whether deleted here or by another client, gets an info alert with a way back.
+
+### 6.8 Access keys (Storage)
+Behind `ObjectStorageGate`, like the bucket pages.
+
+**List.**
+- Columns: name, access key id, access ("Read only" or "Read and write"), buckets, state ("Active", or "Missing from RustFS" for a key removed with another tool), creator, created.
+- No row and no request but the create carries a secret.
+- Single selection, admin only. Edit works on an active key; Delete works on any key.
+
+**Create and edit** share one form: a name, the access level as a radio group (each option says what it allows and that buckets themselves are never touched), and a bucket `Multiselect` of the buckets that exist. A granted bucket that has since been deleted stays listed, so saving does not drop it silently. An edit says the secret stays the same.
+
+**The secret** follows the private key rule of §6.5:
+- `createAccessKey` goes through `uncachedRequest`, never an RTK mutation, so the answer never enters the Redux store. A test asserts the serialised store never contains it.
+- `SecretKeyDialog` shows the access key and secret with copy buttons, plus `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_ENDPOINT_URL`/`AWS_REGION` lines. The endpoint and region come from the first granted bucket's detail.
+- The dialog cannot be dismissed until "I have saved the secret access key" is ticked.
+- It renders as a sibling of the form rather than inside it: a modal is portalled in the DOM but not in React, so its button would otherwise submit the form again.
 
 ## 7. UX details
 

@@ -19,6 +19,8 @@ describe('activeHref', () => {
     ['/buckets', '/buckets'],
     ['/buckets/app-logs', '/buckets'],
     ['/buckets/create', '/buckets'],
+    ['/access-keys', '/access-keys'],
+    ['/access-keys/KUMO1/edit', '/access-keys'],
     ['/unknown', undefined],
     ['/instancesx', undefined],
   ])('maps %s to %s', (pathname, want) => {
@@ -49,6 +51,7 @@ describe('activeHref', () => {
       '/vpcs',
       '/subnets',
       '/buckets',
+      '/access-keys',
     ]) {
       expect(hrefs).toContain(route)
     }

@@ -77,6 +77,13 @@ type Store struct {
 	api     *s3.Client
 	presign *s3.PresignClient
 	now     func() time.Time
+
+	// The admin API (admin.go) is called by hand: aws-sdk-go-v2 has no client
+	// for it. The secret key also encrypts the bodies that carry credentials.
+	admin    aws.Credentials
+	endpoint string
+	region   string
+	http     *http.Client
 }
 
 var _ objectstore.ObjectStore = (*Store)(nil)
@@ -134,9 +141,13 @@ func New(opts Options) (*Store, error) {
 	}
 
 	return &Store{
-		api:     clientFor(opts.Endpoint),
-		presign: s3.NewPresignClient(clientFor(public)),
-		now:     time.Now,
+		api:      clientFor(opts.Endpoint),
+		presign:  s3.NewPresignClient(clientFor(public)),
+		now:      time.Now,
+		admin:    creds,
+		endpoint: strings.TrimRight(opts.Endpoint, "/"),
+		region:   region,
+		http:     httpClient,
 	}, nil
 }
 

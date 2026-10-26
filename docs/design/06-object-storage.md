@@ -142,7 +142,24 @@ the bucket and object endpoints are there now.
 Upload size: a single presigned `PUT` carries up to 5 GiB, the S3 limit.
 Multipart upload from the browser is out of scope for M6.
 
-## 5. Security
+## 5. Access keys
+
+Each Kumo access key is a **RustFS user with a policy of its own**: the level's bucket actions on each bucket, and its object actions on everything inside. Permission checks run on RustFS's core IAM path, and the keys appear in the RustFS console.
+
+**Calls:** creating a key is three admin calls: `add-canned-policy`, then `add-user`, then `set-user-or-group-policy`. A failure in any of them undoes the earlier ones. Deleting removes the user first, so the key stops working even if the policy removal then fails.
+
+**Admin body encryption:** the admin API encrypts the bodies that carry credentials (the new user's secret, the user list) with the admin secret key, in madmin's format:
+- a 32-byte salt, an algorithm byte, a nonce, then a sio (DARE) stream;
+- RustFS 1.0.4 uses algorithm `0x02`, PBKDF2-SHA256 (8192 rounds) with AES-256-GCM.
+
+Kumo implements this in `internal/objectstore/rustfs/crypto.go`, with `github.com/secure-io/sio-go` (MIT) and Go's own `crypto/pbkdf2`. MinIO's `madmin-go` is not used because it is AGPL-3.0.
+
+**Verified against RustFS 1.0.4** by `TestAccessKeyIsEnforced` (`make test-rustfs`):
+- A read-only key reads and lists its bucket. It cannot write there or read another bucket.
+- Re-scoped to read-write, it writes and deletes objects in its bucket. It cannot write another bucket, delete its bucket, or create a bucket.
+- A deleted key is refused.
+
+## 6. Security
 
 - The RustFS admin keys stay in kumod. The browser only ever holds a presigned URL
   for one key, one method and a few minutes.

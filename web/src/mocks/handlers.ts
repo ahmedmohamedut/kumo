@@ -15,6 +15,7 @@ type VPC = components['schemas']['VPC']
 type Subnet = components['schemas']['Subnet']
 type Bucket = components['schemas']['Bucket']
 type BucketDetail = components['schemas']['BucketDetail']
+type AccessKey = components['schemas']['AccessKey']
 
 /**
  * MSW handlers for the auth and system endpoints (03-frontend.md §8). The auth
@@ -198,6 +199,33 @@ function freshBuckets(): MockBucket[] {
 
 let buckets: MockBucket[] = freshBuckets()
 
+function freshAccessKeys(): AccessKey[] {
+  return [
+    {
+      access_key: 'KUMOAAAABBBBCCCCDDDD',
+      name: 'log-shipper',
+      level: 'read-write',
+      buckets: ['app-logs'],
+      state: 'active',
+      created_by: 'ada',
+      created_at: '2026-01-05T12:00:00Z',
+      updated_at: '2026-01-05T12:00:00Z',
+    },
+  ]
+}
+
+let accessKeys: AccessKey[] = freshAccessKeys()
+
+/** mockAccessKeys is the current access key table, for assertions. */
+export function mockAccessKeys(): AccessKey[] {
+  return accessKeys
+}
+
+/** setMockAccessKeys replaces the access key table. */
+export function setMockAccessKeys(next: AccessKey[]): void {
+  accessKeys = next
+}
+
 /** listPageSize is the default page of the mock listing; tests lower it to page. */
 let listPageSize = 200
 
@@ -223,6 +251,34 @@ function bucketDetail(entry: MockBucket): BucketDetail {
     endpoint: MOCK_S3_ENDPOINT,
     region: 'us-east-1',
   }
+}
+
+/** validateAccessKey applies the rules of internal/service/accesskey. */
+function validateAccessKey(
+  body: { name?: string; level?: string; buckets?: string[] },
+  self: string | null,
+) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(body.name ?? '')) {
+    return invalidArgument('name', 'must be 1-64 letters, digits, ".", "_" or "-"')
+  }
+  if (body.level !== 'read-only' && body.level !== 'read-write') {
+    return invalidArgument('level', 'must be read-only or read-write')
+  }
+  const missing = (body.buckets ?? []).find((name) => findBucket(name) === undefined)
+  if ((body.buckets ?? []).length === 0 || missing !== undefined) {
+    return invalidArgument(
+      'buckets',
+      missing === undefined ? 'must name 1-100 buckets' : `no bucket "${missing}"`,
+    )
+  }
+  if (accessKeys.some((key) => key.name === body.name && key.access_key !== self)) {
+    return apiError(
+      409,
+      'already_exists',
+      `already exists: an access key named "${body.name ?? ''}" already exists`,
+    )
+  }
+  return null
 }
 
 /** objectStorageRefusal is the 503 every /s3 route answers with the module off or down. */
@@ -893,6 +949,7 @@ export function resetMockState(): void {
   capacity = freshCapacity()
   buckets = freshBuckets()
   listPageSize = 200
+  accessKeys = freshAccessKeys()
   info = { ...info, object_storage: { backend: 'fake', ok: true } }
 }
 
@@ -2136,6 +2193,112 @@ export const handlers = [
       )
     }
     subnets = subnets.filter((candidate) => candidate.id !== id)
+    return new HttpResponse(null, { status: 204 })
+  }),
+
+  // ----------------------------------------------------------- access keys ---
+
+  http.get('/api/v1/s3/access-keys', ({ request }) => {
+    if (requireUser(request) === undefined) {
+      return unauthenticated()
+    }
+    const refusal = objectStorageRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    return HttpResponse.json({
+      items: [...accessKeys].sort((a, b) => a.name.localeCompare(b.name)),
+    })
+  }),
+
+  http.get('/api/v1/s3/access-keys/:id', ({ request, params }) => {
+    if (requireUser(request) === undefined) {
+      return unauthenticated()
+    }
+    const key = accessKeys.find((candidate) => candidate.access_key === String(params.id))
+    return key === undefined
+      ? apiError(404, 'not_found', `no access key "${String(params.id)}"`)
+      : HttpResponse.json(key)
+  }),
+
+  http.post('/api/v1/s3/access-keys', async ({ request }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const body = (await request.json()) as { name?: string; level?: string; buckets?: string[] }
+    const refusal = validateAccessKey(body, null)
+    if (refusal !== null) {
+      return refusal
+    }
+    const id = `KUMO${String((counter += 1)).padStart(16, 'Q')}`
+    const key: AccessKey = {
+      access_key: id,
+      name: body.name ?? '',
+      level: body.level === 'read-write' ? 'read-write' : 'read-only',
+      buckets: [...new Set(body.buckets ?? [])].sort(),
+      state: 'active',
+      created_by: user.username,
+      created_at: '2026-01-06T09:00:00Z',
+      updated_at: '2026-01-06T09:00:00Z',
+    }
+    accessKeys = [...accessKeys, key]
+    return HttpResponse.json(
+      { ...key, secret_key: `mock-secret-${id}` },
+      {
+        status: 201,
+        headers: { Location: `/api/v1/s3/access-keys/${id}`, 'Cache-Control': 'no-store' },
+      },
+    )
+  }),
+
+  http.patch('/api/v1/s3/access-keys/:id', async ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const current = accessKeys.find((candidate) => candidate.access_key === String(params.id))
+    if (current === undefined) {
+      return apiError(404, 'not_found', `no access key "${String(params.id)}"`)
+    }
+    const body = (await request.json()) as { name?: string; level?: string; buckets?: string[] }
+    const next: AccessKey = {
+      ...current,
+      name: body.name ?? current.name,
+      level:
+        body.level === undefined
+          ? current.level
+          : body.level === 'read-write'
+            ? 'read-write'
+            : 'read-only',
+      buckets: body.buckets === undefined ? current.buckets : [...new Set(body.buckets)].sort(),
+    }
+    const refusal = validateAccessKey(next, current.access_key)
+    if (refusal !== null) {
+      return refusal
+    }
+    accessKeys = accessKeys.map((candidate) => (candidate === current ? next : candidate))
+    return HttpResponse.json(next)
+  }),
+
+  http.delete('/api/v1/s3/access-keys/:id', ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    if (!accessKeys.some((candidate) => candidate.access_key === String(params.id))) {
+      return apiError(404, 'not_found', `no access key "${String(params.id)}"`)
+    }
+    accessKeys = accessKeys.filter((candidate) => candidate.access_key !== String(params.id))
     return new HttpResponse(null, { status: 204 })
   }),
 

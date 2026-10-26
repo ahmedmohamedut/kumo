@@ -905,6 +905,59 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/s3/access-keys': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * List access keys
+     * @description Every key Kumo issued, by name. No answer but the create carries a secret.
+     */
+    get: operations['listAccessKeys']
+    put?: never
+    /**
+     * Issue an access key
+     * @description Generates the key id and secret, creates the RustFS user and its
+     *     policy, and returns the secret **once**, with `Cache-Control:
+     *     no-store`. Kumo never stores or logs it.
+     */
+    post: operations['createAccessKey']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/s3/access-keys/{id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description The access key id (KUMO + 16 base32 characters). */
+        id: string
+      }
+      cookie?: never
+    }
+    /** Access key detail */
+    get: operations['getAccessKey']
+    put?: never
+    post?: never
+    /** Revoke an access key */
+    delete: operations['deleteAccessKey']
+    options?: never
+    head?: never
+    /**
+     * Rename or re-scope an access key
+     * @description A change of `level` or `buckets` rewrites the key's policy, effective
+     *     on its next request. The secret cannot be changed: delete a leaked key
+     *     and issue a new one. `409` for a key gone from the object store.
+     */
+    patch: operations['updateAccessKey']
+    trace?: never
+  }
 }
 export type webhooks = Record<string, never>
 export interface components {
@@ -1417,6 +1470,45 @@ export interface components {
       }
       /** Format: date-time */
       expires_at: string
+    }
+    /**
+     * @description read-only lists the buckets and reads objects; read-write also writes and deletes objects. Neither can create, delete or reconfigure a bucket.
+     * @enum {string}
+     */
+    AccessLevel: 'read-only' | 'read-write'
+    AccessKey: {
+      /** @description The S3 access key id, KUMO + 16 base32 characters. */
+      access_key: string
+      name: string
+      level: components['schemas']['AccessLevel']
+      buckets: string[]
+      /**
+       * @description missing means the object store no longer has the key; it does not work.
+       * @enum {string}
+       */
+      state: 'active' | 'missing'
+      created_by: string | null
+      /** Format: date-time */
+      created_at: string
+      /** Format: date-time */
+      updated_at: string
+    }
+    CreatedAccessKey: components['schemas']['AccessKey'] & {
+      /** @description Returned only here. Kumo does not store it. */
+      secret_key: string
+    }
+    AccessKeyList: {
+      items: components['schemas']['AccessKey'][]
+    }
+    CreateAccessKeyRequest: {
+      name: string
+      level: components['schemas']['AccessLevel']
+      buckets: string[]
+    }
+    UpdateAccessKeyRequest: {
+      name?: string
+      level?: components['schemas']['AccessLevel']
+      buckets?: string[]
     }
     BucketDeleted: {
       bucket: components['schemas']['Bucket']
@@ -3295,6 +3387,143 @@ export interface operations {
           [name: string]: unknown
         }
         content?: never
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+      503: components['responses']['Unavailable']
+    }
+  }
+  listAccessKeys: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The keys. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['AccessKeyList']
+        }
+      }
+      401: components['responses']['Unauthorized']
+      503: components['responses']['Unavailable']
+    }
+  }
+  createAccessKey: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CreateAccessKeyRequest']
+      }
+    }
+    responses: {
+      /** @description The key and, this once, its secret. */
+      201: {
+        headers: {
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CreatedAccessKey']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+      503: components['responses']['Unavailable']
+    }
+  }
+  getAccessKey: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description The access key id (KUMO + 16 base32 characters). */
+        id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The key, without its secret. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['AccessKey']
+        }
+      }
+      401: components['responses']['Unauthorized']
+      404: components['responses']['NotFound']
+      503: components['responses']['Unavailable']
+    }
+  }
+  deleteAccessKey: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description The access key id (KUMO + 16 base32 characters). */
+        id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The key no longer works. */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      503: components['responses']['Unavailable']
+    }
+  }
+  updateAccessKey: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description The access key id (KUMO + 16 base32 characters). */
+        id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['UpdateAccessKeyRequest']
+      }
+    }
+    responses: {
+      /** @description The updated key. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['AccessKey']
+        }
       }
       400: components['responses']['InvalidArgument']
       401: components['responses']['Unauthorized']

@@ -18,6 +18,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/kdomanski/iso9660 v0.4.0
 	github.com/pressly/goose/v3 v3.24.1
+	github.com/secure-io/sio-go v0.3.1
 	golang.org/x/crypto v0.57.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.60.1
