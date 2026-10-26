@@ -8,6 +8,20 @@ import (
 	"database/sql"
 )
 
+type AccessKey struct {
+	AccessKey string         `json:"access_key"`
+	Name      string         `json:"name"`
+	Level     string         `json:"level"`
+	CreatedBy sql.NullString `json:"created_by"`
+	CreatedAt string         `json:"created_at"`
+	UpdatedAt string         `json:"updated_at"`
+}
+
+type AccessKeyBucket struct {
+	AccessKey string `json:"access_key"`
+	Bucket    string `json:"bucket"`
+}
+
 type Bucket struct {
 	Name      string         `json:"name"`
 	State     string         `json:"state"`

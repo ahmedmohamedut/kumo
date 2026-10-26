@@ -218,6 +218,38 @@ func Run(t *testing.T, store objectstore.ObjectStore, opts Options) {
 		follow(t, wrong, strings.NewReader("{}"), http.StatusForbidden)
 	})
 
+	t.Run("access keys", func(t *testing.T) {
+		accessKey := "KUMOTEST" + strings.ToUpper(hex.EncodeToString(randomBytes(t, 6)))
+		spec := objectstore.AccessKeySpec{
+			AccessKey: accessKey,
+			SecretKey: hex.EncodeToString(randomBytes(t, 20)),
+			Grant:     objectstore.Grant{Buckets: []string{name}, Level: objectstore.AccessReadOnly},
+		}
+		if err := store.CreateAccessKey(ctx, spec); err != nil {
+			t.Fatalf("CreateAccessKey: %v", err)
+		}
+		t.Cleanup(func() { _ = store.DeleteAccessKey(context.Background(), accessKey) })
+
+		keys, err := store.ListAccessKeys(ctx)
+		if err != nil || !slices.Contains(keys, accessKey) {
+			t.Errorf("ListAccessKeys: %v, %v; want %s in it", keys, err, accessKey)
+		}
+		if err := store.SetAccessKeyPolicy(ctx, accessKey, objectstore.Grant{
+			Buckets: []string{name}, Level: objectstore.AccessReadWrite,
+		}); err != nil {
+			t.Errorf("SetAccessKeyPolicy: %v", err)
+		}
+		if err := store.DeleteAccessKey(ctx, accessKey); err != nil {
+			t.Fatalf("DeleteAccessKey: %v", err)
+		}
+		if keys, _ := store.ListAccessKeys(ctx); slices.Contains(keys, accessKey) {
+			t.Errorf("the key survived its delete")
+		}
+		if err := store.DeleteAccessKey(ctx, accessKey); err != nil {
+			t.Errorf("DeleteAccessKey of a deleted key: %v", err)
+		}
+	})
+
 	t.Run("delete", func(t *testing.T) {
 		if err := store.DeleteBucket(ctx, name); !errors.Is(err, objectstore.ErrBucketNotEmpty) {
 			t.Errorf("DeleteBucket(non-empty): got %v, want ErrBucketNotEmpty", err)
@@ -305,11 +337,16 @@ func follow(t *testing.T, p objectstore.Presigned, body io.Reader, want int) str
 
 func bucketName(t *testing.T) string {
 	t.Helper()
-	b := make([]byte, 6)
+	return "kumo-test-" + hex.EncodeToString(randomBytes(t, 6))
+}
+
+func randomBytes(t *testing.T, n int) []byte {
+	t.Helper()
+	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
 		t.Fatal(err)
 	}
-	return "kumo-test-" + hex.EncodeToString(b)
+	return b
 }
 
 func objectKeys(page objectstore.ObjectPage) []string {

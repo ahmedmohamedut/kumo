@@ -10,7 +10,10 @@ const storageSection: NavItem = {
   type: 'section',
   text: 'Storage',
   defaultExpanded: true,
-  items: [{ type: 'link', text: 'Buckets', href: '/buckets' }],
+  items: [
+    { type: 'link', text: 'Buckets', href: '/buckets' },
+    { type: 'link', text: 'Access keys', href: '/access-keys' },
+  ],
 }
 
 /**

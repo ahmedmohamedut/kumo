@@ -29,6 +29,8 @@ import { NotFoundPage } from '@/features/system/NotFoundPage'
 import { BucketsListPage } from '@/features/buckets/BucketsListPage'
 import { CreateBucketPage } from '@/features/buckets/CreateBucketPage'
 import { BucketDetailPage } from '@/features/buckets/BucketDetailPage'
+import { AccessKeysListPage } from '@/features/accesskeys/AccessKeysListPage'
+import { CreateAccessKeyPage, EditAccessKeyPage } from '@/features/accesskeys/AccessKeyFormPage'
 
 /**
  * Console routes from 03-frontend.md §3. `/login` and `/setup` are public, and
@@ -68,6 +70,9 @@ export const router = createBrowserRouter([
       { path: 'buckets', element: <BucketsListPage /> },
       { path: 'buckets/create', element: <CreateBucketPage /> },
       { path: 'buckets/:bucketName', element: <BucketDetailPage /> },
+      { path: 'access-keys', element: <AccessKeysListPage /> },
+      { path: 'access-keys/create', element: <CreateAccessKeyPage /> },
+      { path: 'access-keys/:accessKeyId/edit', element: <EditAccessKeyPage /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

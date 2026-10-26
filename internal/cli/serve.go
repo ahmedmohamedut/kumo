@@ -23,6 +23,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/objectstore"
 	objectfake "github.com/ahmedmohamedut/kumo/internal/objectstore/fake"
 	"github.com/ahmedmohamedut/kumo/internal/objectstore/rustfs"
+	"github.com/ahmedmohamedut/kumo/internal/service/accesskey"
 	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
 	"github.com/ahmedmohamedut/kumo/internal/service/bucket"
 	"github.com/ahmedmohamedut/kumo/internal/service/capacity"
@@ -266,6 +267,13 @@ func serve(ctx context.Context, stdout io.Writer) error {
 			return fmt.Errorf("build the bucket service: %w", err)
 		}
 	}
+	var accessKeys *accesskey.Service
+	if objects != nil {
+		accessKeys, err = accesskey.New(accesskey.Options{Logger: logger, Store: db, Objects: objects})
+		if err != nil {
+			return fmt.Errorf("build the access key service: %w", err)
+		}
+	}
 	handlers := []worker.Registry{images.Handler(), instances.Handler(), vpcs.Handler()}
 	if buckets != nil {
 		handlers = append(handlers, buckets.Handler())
@@ -350,6 +358,7 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		VPCs:          vpcs,
 		Subnets:       subnets,
 		Buckets:       buckets,
+		AccessKeys:    accessKeys,
 		Tasks:         tasks,
 		Signer:        signer,
 		ReadyChecks: []api.Check{
