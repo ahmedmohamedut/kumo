@@ -329,6 +329,36 @@ Versioning: `false` suspends a bucket that had versioning and leaves a never-ver
 
 Delete: a bucket that has had versioning keeps old versions and delete markers after its objects are deleted, so it can look empty and still be refused with `409`. `?force=true` marks it `deleting` and queues `bucket.delete`, which removes every version and delete marker and then the bucket. While a bucket is `deleting`, `PATCH` and a plain `DELETE` are `409`. Another forced delete queues the task again, which is how a failed one is retried. An upload that lands between the emptying and the delete fails the task and leaves the bucket `deleting`.
 
+### Access keys
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/s3/access-keys` | Every key Kumo issued, by name; no secrets |
+| POST | `/s3/access-keys` | (admin) `{name, level, buckets}` → `201` with the key and its `secret_key`, once |
+| GET | `/s3/access-keys/{id}` | One key, without its secret |
+| PATCH | `/s3/access-keys/{id}` | (admin) `name`, `level` and/or `buckets` |
+| DELETE | `/s3/access-keys/{id}` | (admin) `204`; the key stops working at once |
+
+```json
+{ "access_key": "KUMO7Q2LZ4XKD3MPRW5A", "name": "web-app", "level": "read-write",
+  "buckets": ["media"], "state": "active", "created_by": "ada",
+  "created_at": "…", "updated_at": "…", "secret_key": "…only in the create answer…" }
+```
+
+- **Shape:** a key is S3 credentials for an application. The id is `KUMO` plus 16 base32 characters (80 random bits); the secret is 40 URL-safe characters (240 bits).
+- **The secret is shown once.** It is returned in the create answer with `Cache-Control: no-store`, and never stored or logged, the same rule as a generated private key. It cannot be changed: delete a leaked key and issue a new one.
+- **Levels:**
+  - `read-only` lists the buckets and reads objects.
+  - `read-write` also writes and deletes objects.
+  - Neither can create, delete or reconfigure a bucket.
+- **Validation:**
+  - `name`: 1–64 characters of letters, digits, `.`, `_` and `-`, unique (`409` when taken).
+  - `buckets`: 1–100 buckets that exist when the grant is made; an unknown bucket is a `400` on `buckets`.
+- **Changing a key:** a change of `level` or `buckets` rewrites the key's policy on RustFS and applies to its next request.
+- **Deleting a bucket keeps the grant.** Grants name buckets, not rows, so the grant reaches nothing until a bucket of that name exists again.
+- **`state: missing`** means RustFS no longer has the key, because it was removed with another tool. Such a key does not work; it cannot be re-scoped (`409`), only deleted.
+- **Listing:** RustFS users made with other tools are not Kumo's keys and are not listed.
+
 Objects: the bytes of a console upload or download never pass through kumod. The console gets a presigned URL, valid for `KUMO_S3_PRESIGN_TTL`, and talks to RustFS at `KUMO_S3_PUBLIC_URL` directly.
 - An upload URL signs its `Content-Type`, and the browser must send the `headers` given with it.
 - The first upload to a bucket in a kumod process applies the console's CORS rule, because a bucket made outside Kumo has none.

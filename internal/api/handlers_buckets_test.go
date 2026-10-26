@@ -14,6 +14,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/auth"
 	"github.com/ahmedmohamedut/kumo/internal/logging"
 	objectfake "github.com/ahmedmohamedut/kumo/internal/objectstore/fake"
+	"github.com/ahmedmohamedut/kumo/internal/service/accesskey"
 	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
 	"github.com/ahmedmohamedut/kumo/internal/service/bucket"
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
@@ -65,7 +66,12 @@ func newBucketRouter(t *testing.T, objects *objectfake.Store) (*gin.Engine, *aut
 	}
 
 	var buckets *bucket.Service
+	var keys *accesskey.Service
 	if objects != nil {
+		keys, err = accesskey.New(accesskey.Options{Logger: logger, Store: db, Objects: objects})
+		if err != nil {
+			t.Fatal(err)
+		}
 		buckets, err = bucket.New(bucket.Options{
 			Logger: logger, Store: db, Objects: objects, Tasks: tasks,
 			PublicURL: "https://s3.kumo.example", Region: "us-east-1",
@@ -82,6 +88,7 @@ func newBucketRouter(t *testing.T, objects *objectfake.Store) (*gin.Engine, *aut
 		System:     system.New(logger, "test", "fake", db, nil, nil),
 		Auth:       authSvc,
 		Buckets:    buckets,
+		AccessKeys: keys,
 		Tasks:      tasks,
 		Signer:     signer,
 		RefreshTTL: 7 * 24 * time.Hour,
@@ -392,5 +399,114 @@ func TestObjectEndpoints(t *testing.T) {
 	}
 	if recorder := doWithToken(t, router, http.MethodPost, "/api/v1/s3/buckets/media/objects/delete", `{"keys":[]}`, login.access); recorder.Code != http.StatusBadRequest {
 		t.Errorf("POST objects/delete with no keys = %d, want 400", recorder.Code)
+	}
+}
+
+type accessKeyBody struct {
+	AccessKey string   `json:"access_key"`
+	Name      string   `json:"name"`
+	Level     string   `json:"level"`
+	Buckets   []string `json:"buckets"`
+	State     string   `json:"state"`
+	SecretKey *string  `json:"secret_key"`
+}
+
+func TestAccessKeyEndpoints(t *testing.T) {
+	t.Parallel()
+	objects := objectfake.New()
+	router, signer := newBucketRouter(t, objects)
+	login := setupUserAndLogin(t, router)
+	if err := objects.CreateBucket(context.Background(), "media"); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := doWithToken(t, router, http.MethodPost, "/api/v1/s3/access-keys",
+		`{"name":"web-app","level":"read-only","buckets":["media"]}`, login.access)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("POST access-keys = %d %s", recorder.Code, recorder.Body)
+	}
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Errorf("the answer that carries the secret is cacheable: %q", recorder.Header().Get("Cache-Control"))
+	}
+	var created accessKeyBody
+	decode(t, recorder, &created)
+	if created.SecretKey == nil || *created.SecretKey == "" || created.State != "active" ||
+		recorder.Header().Get("Location") != "/api/v1/s3/access-keys/"+created.AccessKey {
+		t.Fatalf("created = %+v", created)
+	}
+	secret := *created.SecretKey
+
+	// No other answer carries the secret.
+	for _, path := range []string{"/api/v1/s3/access-keys", "/api/v1/s3/access-keys/" + created.AccessKey} {
+		recorder := doWithToken(t, router, http.MethodGet, path, "", login.access)
+		if recorder.Code != http.StatusOK || strings.Contains(recorder.Body.String(), secret) ||
+			strings.Contains(recorder.Body.String(), "secret_key") {
+			t.Errorf("GET %s = %d and carries the secret: %s", path, recorder.Code, recorder.Body)
+		}
+	}
+
+	recorder = doWithToken(t, router, http.MethodPatch, "/api/v1/s3/access-keys/"+created.AccessKey,
+		`{"level":"read-write"}`, login.access)
+	var updated accessKeyBody
+	decode(t, recorder, &updated)
+	if recorder.Code != http.StatusOK || updated.Level != "read-write" || updated.SecretKey != nil {
+		t.Errorf("PATCH = %d %+v", recorder.Code, updated)
+	}
+
+	for _, test := range []struct {
+		method, path, body string
+		status             int
+		field              string
+	}{
+		{http.MethodPost, "/api/v1/s3/access-keys", `{"name":"x","level":"admin","buckets":["media"]}`, http.StatusBadRequest, "level"},
+		{http.MethodPost, "/api/v1/s3/access-keys", `{"name":"x","level":"read-only","buckets":["nope"]}`, http.StatusBadRequest, "buckets"},
+		{http.MethodPost, "/api/v1/s3/access-keys", `{"name":"web-app","level":"read-only","buckets":["media"]}`, http.StatusConflict, ""},
+		{http.MethodPatch, "/api/v1/s3/access-keys/" + created.AccessKey, `{}`, http.StatusBadRequest, "body"},
+		{http.MethodGet, "/api/v1/s3/access-keys/KUMONOPE", "", http.StatusNotFound, ""},
+	} {
+		recorder := doWithToken(t, router, test.method, test.path, test.body, login.access)
+		if recorder.Code != test.status {
+			t.Errorf("%s %s %s = %d, want %d (%s)", test.method, test.path, test.body, recorder.Code, test.status, recorder.Body)
+			continue
+		}
+		if test.field != "" {
+			if envelope := decodeError(t, recorder.Body.Bytes()); len(envelope.Error.Details) == 0 ||
+				envelope.Error.Details[0].Field != test.field {
+				t.Errorf("%s %s: details %+v, want %s", test.method, test.path, envelope.Error.Details, test.field)
+			}
+		}
+	}
+
+	viewer, err := signer.IssueAccessToken("01J0000000000000000000000V", auth.RoleViewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recorder := doWithToken(t, router, http.MethodGet, "/api/v1/s3/access-keys", "", viewer.Token); recorder.Code != http.StatusOK {
+		t.Errorf("viewer GET = %d", recorder.Code)
+	}
+	for _, test := range []struct{ method, path, body string }{
+		{http.MethodPost, "/api/v1/s3/access-keys", `{"name":"v","level":"read-only","buckets":["media"]}`},
+		{http.MethodPatch, "/api/v1/s3/access-keys/" + created.AccessKey, `{"level":"read-only"}`},
+		{http.MethodDelete, "/api/v1/s3/access-keys/" + created.AccessKey, ""},
+	} {
+		if recorder := doWithToken(t, router, test.method, test.path, test.body, viewer.Token); recorder.Code != http.StatusForbidden {
+			t.Errorf("viewer %s %s = %d, want 403", test.method, test.path, recorder.Code)
+		}
+	}
+
+	if recorder := doWithToken(t, router, http.MethodDelete, "/api/v1/s3/access-keys/"+created.AccessKey, "", login.access); recorder.Code != http.StatusNoContent {
+		t.Fatalf("DELETE = %d %s", recorder.Code, recorder.Body)
+	}
+	if _, _, ok := objects.AccessKey(created.AccessKey); ok {
+		t.Error("the deleted key still works on the object store")
+	}
+}
+
+func TestAccessKeysWithObjectStorageOff(t *testing.T) {
+	t.Parallel()
+	router, _ := newBucketRouter(t, nil)
+	login := setupUserAndLogin(t, router)
+	if recorder := doWithToken(t, router, http.MethodGet, "/api/v1/s3/access-keys", "", login.access); recorder.Code != http.StatusServiceUnavailable {
+		t.Errorf("GET access-keys with the module off = %d, want 503", recorder.Code)
 	}
 }

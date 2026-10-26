@@ -188,6 +188,29 @@ CREATE TABLE buckets (
 - Bucket tags live in `tags` under the resource id `bucket/<name>`. A bucket is named, not numbered, and a bare name could equal another resource's id (`i-0123456789abcdef0` is a valid bucket name). The same id is the `resource_id` of its `bucket.delete` tasks.
 - There is no bucket id format. The name is the identity, as in S3, and it is immutable.
 
+## Access keys (0005_access_keys.sql)
+
+```sql
+CREATE TABLE access_keys (
+  access_key  TEXT PRIMARY KEY,                  -- KUMO + 16 base32 characters, the S3 access key id
+  name        TEXT NOT NULL UNIQUE,
+  level       TEXT NOT NULL CHECK (level IN ('read-only','read-write')),
+  created_by  TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+CREATE TABLE access_key_buckets (
+  access_key TEXT NOT NULL REFERENCES access_keys(access_key) ON DELETE CASCADE,
+  bucket     TEXT NOT NULL,
+  PRIMARY KEY (access_key, bucket)
+);
+```
+
+- **No secrets here.** The secret key is never stored; the create answer is the only place it exists.
+- **Each row is a RustFS user** with the access key as its name, plus a policy named `kumo-<lowercased access key>`. RustFS is the truth for whether the key works, and the API reports a key RustFS has lost as `missing`.
+- **No foreign key from `access_key_buckets.bucket`:** buckets have no row of their own until Kumo changes them (`buckets` above). Deleting a bucket leaves the grant in place.
+- **The access key is the id.** It is a credential id in the shape S3 clients expect, not an `<prefix>-<17 hex>` resource id.
+
 ## Notes
 
 - A terminate **deletes** the `instances` row rather than keeping it as history (`01-api.md`): its `network_interfaces` rows follow through the cascade and its tags go in the same transaction, so a terminated instance leaves nothing behind but its tasks and its id, which stays allocated. Rows an earlier release left in `terminated` are the exception and stay until an operator `DELETE`s that id — the `state` CHECK still accepts the value and the partial unique index still releases the name, so such a row neither blocks a launch nor needs a migration of its own to disappear.

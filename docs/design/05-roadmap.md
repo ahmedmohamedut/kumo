@@ -129,8 +129,32 @@ Approved 2026-10-26, ahead of the open M5 items. Design: `06-object-storage.md`.
 - [x] **Objects API + UI**: folder browser, presigned upload/download, create folder, delete objects; plain-HTTP warning.
   Done: `GET /s3/buckets/{name}/objects` and `POST …/uploads`, `…/downloads`, `…/folders`, `…/objects/delete` (`01-api.md` §Object storage). A listing is one folder (common prefixes on `/`) without the folder's own marker, paged by cursor. Upload and download answer presigned URLs valid for `KUMO_S3_PRESIGN_TTL`. An upload signs its `Content-Type` and applies the console's CORS rule the first time a process presigns for a bucket, which covers buckets made outside Kumo. A download checks the key exists and saves under its base name, and is open to viewers. A folder is a zero-byte `prefix/` marker, and deleting one never takes what is below it. Writes are `409` while the bucket is `deleting`. The console's bucket page gained an **Objects** tab (`03-frontend.md` §6.7) that uploads and downloads with the object store directly.
   Verified: service tests for listing (root, a folder without its own marker, metadata, paging, bad limits and prefixes, a missing bucket), upload URLs (signed host and path, content type, expiry, the CORS rule applied to a bucket made elsewhere, the default type, every key and type refusal), download URLs (the attachment name, a missing key), folders (normalised prefix, the marker, refusals), deletes (a folder keeps its contents, a missing key, the 0 and 1001 bounds), and writes refused while deleting with downloads still open; handler tests for every endpoint, the viewer's reads and downloads and `403`s on writes. 14 component tests for the browser: folder navigation and the breadcrumb, a folder from the URL, paging, a two-file upload landing in the mock object store with its content type, a viewer's download through the presigned URL, create folder with local validation, a confirmed multi-delete, the folder-delete notice, viewer gating, an empty bucket, and `isPlainHTTP`.
-  Not run here: a browser upload against a real RustFS. This session can no longer read the RustFS keys; `storetest` (`make test-rustfs`) covers the same presigned `PUT`/`GET` and the CORS preflight from a plain HTTP client.
-- [ ] **Access keys API + UI**: RustFS service accounts scoped to buckets, read-only or read-write, secret shown once.
+  Verified end to end with the access keys PR below: kumod against RustFS 1.0.4 through its HTTP API, with `curl` standing in for the browser. It covers the CORS preflight and the presigned `PUT` with the console's origin, the listing, the presigned download with its file name, folders and the batch delete.
+- [x] **Access keys API + UI**: scoped to buckets, read-only or read-write, secret shown once.
+  Decided: each key is a RustFS **user with a policy of its own**, rather than a service account with an inline policy, so permission checks run on RustFS's core IAM path. Admin bodies are encrypted in madmin's format with `github.com/secure-io/sio-go` (MIT) and `crypto/pbkdf2`; `madmin-go` is AGPL-3.0 and is not used.
+  Done:
+  - `GET|POST /s3/access-keys` and `GET|PATCH|DELETE /s3/access-keys/{id}` (`01-api.md` §Access keys), with migration `0005_access_keys.sql`.
+  - The id is `KUMO` plus 16 base32 characters; the secret is 40 URL-safe characters. The secret is returned once with `Cache-Control: no-store`, and never stored or logged.
+  - Create runs policy → user → attach on RustFS, undoing each step on failure, then records the key, and removes it from RustFS if recording fails.
+  - A key RustFS no longer has is reported as `missing`.
+  - Console: Storage → Access keys (`03-frontend.md` §6.8), with the secret created outside the Redux store and a dialog that cannot close before it is saved.
+
+  Verified:
+  - **Against RustFS 1.0.4** (`make test-rustfs`): the shared suite's create/list/re-scope/delete, and `TestAccessKeyIsEnforced`. A read-only key reads and lists its bucket only. Re-scoped to read-write, it writes and deletes objects there but cannot write another bucket, delete its bucket or create one. A deleted key is refused.
+  - **Unit tests:**
+    - Admin cipher: round trip at stream boundaries; refusals of a wrong key, tampering, a short body and argon2id.
+    - Policy documents per level.
+    - The exact admin call sequence, with the secret sent encrypted.
+    - Rollback after each failing step; a delete of a missing key tolerated; the encrypted user list read.
+  - **Service tests:** create (id and secret shape, the grant on the object store, uniqueness, every refusal), keys missing from RustFS and keys made elsewhere, update without a new secret, delete, an unreachable server.
+  - **Handler tests:** `no-store`, no secret in any other answer, refusals, viewer reads and `403`s, `503` with the module off.
+  - **8 component tests**, including the secret never reaching the store and the dialog refusing to close before it is saved.
+  - **End to end against RustFS 1.0.4:** kumod on the fake hypervisor with `KUMO_OBJECTSTORE=rustfs`, driven over its HTTP API, all passing:
+    - **Bucket:** create with versioning.
+    - **Browser:** CORS preflight and presigned `PUT` with the console origin, listing, presigned download (`attachment; filename=…`), folder create.
+    - **Key:** a read-only key issued with `no-store` and absent from the list. Used by an application (`curl --aws-sigv4`), it reads (200) and is refused writes (403). Re-scoped to read-write, it writes (200) and is refused deleting the bucket (403). Once revoked, it is refused (403).
+    - **Cleanup:** batch delete; a plain delete of the versioned bucket refused (409); a forced delete whose task succeeds, leaving a 404.
+    - **Logs:** neither secret appears in kumod's log.
 - [ ] **E2E**: Playwright on `KUMO_OBJECTSTORE=fake`; CI job running `make test-rustfs` against a RustFS container.
 
 ## Post-v0.1 backlog (do not start without approval)

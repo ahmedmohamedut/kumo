@@ -25,6 +25,10 @@ tags:
     description: Virtual machines; state changes run as tasks.
   - name: Tasks
     description: Asynchronous operation progress.
+  - name: AccessKeys
+    description: >-
+      S3 credentials for applications, each limited to chosen buckets; the
+      secret is returned once. 503 when object storage is off.
   - name: Buckets
     description: >-
       Object storage buckets on the RustFS server Kumo manages
@@ -1525,6 +1529,133 @@ paths:
           $ref: '#/components/responses/Conflict'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /s3/access-keys:
+    get:
+      tags: [AccessKeys]
+      operationId: listAccessKeys
+      summary: List access keys
+      description: Every key Kumo issued, by name. No answer but the create carries a secret.
+      responses:
+        '200':
+          description: The keys.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessKeyList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      tags: [AccessKeys]
+      operationId: createAccessKey
+      summary: Issue an access key
+      description: |
+        Generates the key id and secret, creates the RustFS user and its
+        policy, and returns the secret **once**, with `Cache-Control:
+        no-store`. Kumo never stores or logs it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAccessKeyRequest'
+      responses:
+        '201':
+          description: The key and, this once, its secret.
+          headers:
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedAccessKey'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /s3/access-keys/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The access key id (KUMO + 16 base32 characters).
+        schema:
+          type: string
+    get:
+      tags: [AccessKeys]
+      operationId: getAccessKey
+      summary: Access key detail
+      responses:
+        '200':
+          description: The key, without its secret.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessKey'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    patch:
+      tags: [AccessKeys]
+      operationId: updateAccessKey
+      summary: Rename or re-scope an access key
+      description: |
+        A change of `level` or `buckets` rewrites the key's policy, effective
+        on its next request. The secret cannot be changed: delete a leaked key
+        and issue a new one. `409` for a key gone from the object store.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAccessKeyRequest'
+      responses:
+        '200':
+          description: The updated key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessKey'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      tags: [AccessKeys]
+      operationId: deleteAccessKey
+      summary: Revoke an access key
+      responses:
+        '204':
+          description: The key no longer works.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
 components:
   securitySchemes:
     bearerAuth:
@@ -2627,6 +2758,86 @@ components:
         expires_at:
           type: string
           format: date-time
+    AccessLevel:
+      type: string
+      enum: [read-only, read-write]
+      description: >-
+        read-only lists the buckets and reads objects; read-write also writes
+        and deletes objects. Neither can create, delete or reconfigure a bucket.
+    AccessKey:
+      type: object
+      required: [access_key, name, level, buckets, state, created_by, created_at, updated_at]
+      properties:
+        access_key:
+          type: string
+          description: The S3 access key id, KUMO + 16 base32 characters.
+        name:
+          type: string
+        level:
+          $ref: '#/components/schemas/AccessLevel'
+        buckets:
+          type: array
+          items:
+            type: string
+        state:
+          type: string
+          enum: [active, missing]
+          description: missing means the object store no longer has the key; it does not work.
+        created_by:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    CreatedAccessKey:
+      allOf:
+        - $ref: '#/components/schemas/AccessKey'
+        - type: object
+          required: [secret_key]
+          properties:
+            secret_key:
+              type: string
+              description: Returned only here. Kumo does not store it.
+    AccessKeyList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AccessKey'
+    CreateAccessKeyRequest:
+      type: object
+      required: [name, level, buckets]
+      properties:
+        name:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+        level:
+          $ref: '#/components/schemas/AccessLevel'
+        buckets:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
+    UpdateAccessKeyRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+        level:
+          $ref: '#/components/schemas/AccessLevel'
+        buckets:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
     BucketDeleted:
       type: object
       required: [bucket, task_id]

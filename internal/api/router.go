@@ -11,6 +11,7 @@ import (
 
 	"github.com/ahmedmohamedut/kumo/internal/api/middleware"
 	"github.com/ahmedmohamedut/kumo/internal/auth"
+	"github.com/ahmedmohamedut/kumo/internal/service/accesskey"
 	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
 	"github.com/ahmedmohamedut/kumo/internal/service/bucket"
 	"github.com/ahmedmohamedut/kumo/internal/service/image"
@@ -55,6 +56,9 @@ type Options struct {
 	// Buckets answers the /api/v1/s3/buckets endpoints. Nil means object
 	// storage is off, and every /s3 route answers 503.
 	Buckets *bucket.Service
+	// AccessKeys answers the /api/v1/s3/access-keys endpoints; nil when
+	// object storage is off.
+	AccessKeys *accesskey.Service
 	// Tasks answers the /api/v1/tasks endpoints, which is where the Location
 	// header of an asynchronous image operation points.
 	Tasks *task.Service
@@ -87,6 +91,7 @@ type Handler struct {
 	vpcs           *vpc.Service
 	subnets        *subnet.Service
 	buckets        *bucket.Service
+	accessKeys     *accesskey.Service
 	tasks          *task.Service
 	signer         *auth.Signer
 	refreshTTL     time.Duration
@@ -110,6 +115,7 @@ func NewHandler(opts Options) *Handler {
 		vpcs:           opts.VPCs,
 		subnets:        opts.Subnets,
 		buckets:        opts.Buckets,
+		accessKeys:     opts.AccessKeys,
 		tasks:          opts.Tasks,
 		signer:         opts.Signer,
 		refreshTTL:     opts.RefreshTTL,
@@ -256,6 +262,16 @@ func (h *Handler) Router() *gin.Engine {
 		write.POST("/buckets/:name/uploads", h.presignUpload)
 		write.POST("/buckets/:name/folders", h.createFolder)
 		write.POST("/buckets/:name/objects/delete", h.deleteObjects)
+	}
+	if h.buckets != nil && h.accessKeys != nil {
+		// Both roles see which keys exist and what they reach; no answer but
+		// the create carries a secret.
+		s3.GET("/access-keys", h.listAccessKeys)
+		s3.GET("/access-keys/:id", h.getAccessKey)
+		write := s3.Group("", middleware.RequireRole(auth.RoleAdmin))
+		write.POST("/access-keys", h.createAccessKey)
+		write.PATCH("/access-keys/:id", h.updateAccessKey)
+		write.DELETE("/access-keys/:id", h.deleteAccessKey)
 	}
 
 	// Host capacity. A launch form shows it next to the instance type, so both

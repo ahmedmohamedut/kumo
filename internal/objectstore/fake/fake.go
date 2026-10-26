@@ -35,6 +35,7 @@ var errBodySize = errors.New("fake: the body is not the declared size")
 type Store struct {
 	mu      sync.Mutex
 	buckets map[string]*bucket
+	keys    map[string]fakeKey
 	now     func() time.Time
 	// down makes every call fail with ErrUnavailable, for readiness tests.
 	down bool
@@ -57,7 +58,7 @@ var _ objectstore.ObjectStore = (*Store)(nil)
 
 // New returns an empty store.
 func New() *Store {
-	return &Store{buckets: map[string]*bucket{}, now: time.Now}
+	return &Store{buckets: map[string]*bucket{}, keys: map[string]fakeKey{}, now: time.Now}
 }
 
 // SetDown makes the store answer every call with ErrUnavailable until it is
@@ -404,4 +405,82 @@ func escapeKey(key string) string {
 		parts[i] = url.PathEscape(p)
 	}
 	return strings.Join(parts, "/")
+}
+
+// fakeKey is an access key the fake holds; the secret is kept so a test can
+// check it was passed through, never returned.
+type fakeKey struct {
+	secret string
+	grant  objectstore.Grant
+}
+
+// CreateAccessKey records a key.
+func (s *Store) CreateAccessKey(_ context.Context, spec objectstore.AccessKeySpec) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.check("create access key"); err != nil {
+		return err
+	}
+	if spec.AccessKey == "" || spec.SecretKey == "" || len(spec.Grant.Buckets) == 0 {
+		return fmt.Errorf("%w: an access key needs an id, a secret and a bucket", objectstore.ErrInvalidName)
+	}
+	if _, ok := s.keys[spec.AccessKey]; ok {
+		return fmt.Errorf("%w: access key %q", objectstore.ErrAlreadyExists, spec.AccessKey)
+	}
+	s.keys[spec.AccessKey] = fakeKey{secret: spec.SecretKey, grant: cloneGrant(spec.Grant)}
+	return nil
+}
+
+// SetAccessKeyPolicy replaces a key's grant.
+func (s *Store) SetAccessKeyPolicy(_ context.Context, accessKey string, grant objectstore.Grant) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.check("set access key policy"); err != nil {
+		return err
+	}
+	key, ok := s.keys[accessKey]
+	if !ok {
+		return fmt.Errorf("%w: access key %q", objectstore.ErrNotFound, accessKey)
+	}
+	key.grant = cloneGrant(grant)
+	s.keys[accessKey] = key
+	return nil
+}
+
+// DeleteAccessKey forgets a key.
+func (s *Store) DeleteAccessKey(_ context.Context, accessKey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.check("delete access key"); err != nil {
+		return err
+	}
+	delete(s.keys, accessKey)
+	return nil
+}
+
+// ListAccessKeys returns the key ids, sorted.
+func (s *Store) ListAccessKeys(context.Context) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.check("list access keys"); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(s.keys))
+	for id := range s.keys {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
+// AccessKey returns what the fake holds for a key, for tests.
+func (s *Store) AccessKey(accessKey string) (secret string, grant objectstore.Grant, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key, ok := s.keys[accessKey]
+	return key.secret, cloneGrant(key.grant), ok
+}
+
+func cloneGrant(g objectstore.Grant) objectstore.Grant {
+	return objectstore.Grant{Buckets: slices.Clone(g.Buckets), Level: g.Level}
 }
