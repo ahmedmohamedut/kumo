@@ -45,6 +45,9 @@ const (
 	TypeVPCCreate = "vpc.create"
 	// TypeVPCDelete destroys, undefines and removes the row of a deleted VPC.
 	TypeVPCDelete = "vpc.delete"
+	// TypeBucketDelete empties an object storage bucket of every object and
+	// version, then deletes it.
+	TypeBucketDelete = "bucket.delete"
 )
 
 // State is the lifecycle of a task. The values mirror the CHECK constraint on

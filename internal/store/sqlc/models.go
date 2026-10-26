@@ -8,6 +8,14 @@ import (
 	"database/sql"
 )
 
+type Bucket struct {
+	Name      string         `json:"name"`
+	State     string         `json:"state"`
+	CreatedBy sql.NullString `json:"created_by"`
+	CreatedAt string         `json:"created_at"`
+	UpdatedAt string         `json:"updated_at"`
+}
+
 type Image struct {
 	ID               string         `json:"id"`
 	Name             string         `json:"name"`

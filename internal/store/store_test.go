@@ -48,8 +48,8 @@ func TestOpenAppliesMigrationsOnAnEmptyDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query goose_db_version: %v", err)
 	}
-	if count != 3 {
-		t.Errorf("applied migrations = %d, want 3", count)
+	if count != 4 {
+		t.Errorf("applied migrations = %d, want 4", count)
 	}
 }
 
@@ -76,8 +76,8 @@ func TestOpenIsIdempotent(t *testing.T) {
 		`SELECT COUNT(*) FROM goose_db_version WHERE is_applied = 1 AND version_id > 0`).Scan(&applied); err != nil {
 		t.Fatalf("query goose_db_version: %v", err)
 	}
-	if applied != 3 {
-		t.Errorf("applied migrations after re-opening = %d, want 3", applied)
+	if applied != 4 {
+		t.Errorf("applied migrations after re-opening = %d, want 4", applied)
 	}
 }
 
@@ -301,7 +301,7 @@ func TestMigrationsAreEmbedded(t *testing.T) {
 	for _, entry := range entries {
 		names = append(names, entry.Name())
 	}
-	want := []string{"0001_init.sql", "0002_network.sql", "0003_seed_instance_types.sql"}
+	want := []string{"0001_init.sql", "0002_network.sql", "0003_seed_instance_types.sql", "0004_buckets.sql"}
 	if !slices.Equal(names, want) {
 		t.Errorf("embedded migrations = %v, want %v", names, want)
 	}

@@ -149,7 +149,7 @@ CREATE TABLE tags (
 
 CREATE TABLE tasks (
   id          TEXT PRIMARY KEY,                  -- task-<17 hex>
-  type        TEXT NOT NULL,                     -- instance.launch, instance.terminate, image.import, ...
+  type        TEXT NOT NULL,                     -- instance.launch, instance.terminate, image.import, bucket.delete, ...
   resource_id TEXT,
   state       TEXT NOT NULL CHECK (state IN ('pending','running','succeeded','failed')),
   progress    INTEGER NOT NULL DEFAULT 0,
@@ -170,6 +170,23 @@ CREATE TABLE settings (
 -- +goose Down
 -- (drop in reverse order)
 ```
+
+## Object storage (0004_buckets.sql)
+
+```sql
+CREATE TABLE buckets (
+  name        TEXT PRIMARY KEY,                  -- the S3 bucket name, immutable
+  state       TEXT NOT NULL DEFAULT 'available' CHECK (state IN ('available','deleting')),
+  created_by  TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+```
+
+- RustFS is the source of truth for which buckets exist (`06-object-storage.md`). A row holds only what Kumo adds. A bucket made with another client has no row until it is tagged or force-deleted through Kumo, and it is listed all the same.
+- A row whose bucket has disappeared from the server is dropped, with its tags, the next time the buckets are listed. Otherwise a bucket recreated later under the same name would inherit a stranger's creator and tags.
+- Bucket tags live in `tags` under the resource id `bucket/<name>`. A bucket is named, not numbered, and a bare name could equal another resource's id (`i-0123456789abcdef0` is a valid bucket name). The same id is the `resource_id` of its `bucket.delete` tasks.
+- There is no bucket id format. The name is the identity, as in S3, and it is immutable.
 
 ## Notes
 

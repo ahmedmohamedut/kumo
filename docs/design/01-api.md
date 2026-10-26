@@ -298,6 +298,32 @@ Consistency:
 with (the step, and the error from the backend). `task_id` is the task of the most recent state
 change, so the console follows a launch without guessing which task it was.
 
+## Object storage (S3)
+
+The optional module of `06-object-storage.md`. Every `/s3` route answers `503 unavailable` when `KUMO_OBJECTSTORE` is `none`, after authentication, so a client learns the module is off rather than that the path is wrong. A server that does not answer is also `503`.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/s3/buckets` | Every bucket on the server, by name, including buckets made with another client; not paged |
+| POST | `/s3/buckets` | (admin) `{name, versioning?, tags?}` → `201` with `Location` and the bucket detail |
+| GET | `/s3/buckets/{name}` | Detail: the bucket plus `versioning` (`off`/`enabled`/`suspended`), `endpoint` and `region` |
+| PATCH | `/s3/buckets/{name}` | (admin) `versioning` and/or `tags`; the name is immutable |
+| DELETE | `/s3/buckets/{name}` | (admin) `204` when empty, `409` otherwise; `?force=true` → `202` with a `bucket.delete` task |
+
+```json
+{ "name": "app-logs", "state": "available", "created_at": "…", "created_by": "ada",
+  "tags": {"env": "prod"}, "versioning": "enabled",
+  "endpoint": "https://s3.kumo.example", "region": "us-east-1" }
+```
+
+Names follow the S3 rules: 3–63 characters of lowercase letters, digits, `.` and `-`, starting and ending with a letter or digit, no `..`, not an IP address, none of the reserved prefixes (`xn--`, `sthree-`, `amzn-s3-demo-`) or suffixes (`-s3alias`, `--ol-s3`, `--x-s3`, `.mrap`). A taken name is `409 already_exists`, also when the bucket was made outside Kumo. A name that cannot exist in the path of a `GET`/`PATCH`/`DELETE` is `404`.
+
+`created_by` is the creator's username, or `null` for a bucket made outside Kumo. The first `PATCH` of such a bucket gives it a row (`02-data-model.md`). A create also enables versioning when asked and sets the console's CORS rule (`06-object-storage.md` §3). If either step fails, the bucket is removed again and the error returned.
+
+Versioning: `false` suspends a bucket that had versioning and leaves a never-versioned bucket `off`, because S3 has no way back to `off`.
+
+Delete: a bucket that has had versioning keeps old versions and delete markers after its objects are deleted, so it can look empty and still be refused with `409`. `?force=true` marks it `deleting` and queues `bucket.delete`, which removes every version and delete marker and then the bucket. While a bucket is `deleting`, `PATCH` and a plain `DELETE` are `409`. Another forced delete queues the task again, which is how a failed one is retried. An upload that lands between the emptying and the delete fails the task and leaves the bucket `deleting`.
+
 ## Tasks
 
 | Method | Path | Description |
@@ -315,3 +341,5 @@ change, so the console follows a launch without guessing which task it was.
 |---|---|---|
 | `admin` | ✅ | ✅ |
 | `viewer` | ✅ (no `user_data`) | ❌ (`403`) |
+
+Object storage follows the same matrix: both roles list and read buckets; every write is admin only.
