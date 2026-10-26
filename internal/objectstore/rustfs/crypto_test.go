@@ -16,7 +16,10 @@ func TestAdminCipherRoundTrip(t *testing.T) {
 		if sealed[saltSize] != algPBKDF2AESGCM {
 			t.Errorf("algorithm byte %#x", sealed[saltSize])
 		}
-		if size > 0 && bytes.Contains(sealed, data) {
+		// A short plaintext turns up in random salt and ciphertext by chance (a
+		// single byte about one time in five), so only a run long enough to
+		// mean something is looked for.
+		if size >= 16 && bytes.Contains(sealed, data) {
 			t.Errorf("%d bytes: the plaintext is visible in the sealed body", size)
 		}
 		plain, err := decryptAdmin("admin-secret", sealed)
