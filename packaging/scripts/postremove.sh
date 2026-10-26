@@ -59,14 +59,17 @@ if command -v ip >/dev/null 2>&1; then
 fi
 
 # --- mandatory access control ------------------------------------------------
-# security-config.sh is already gone, so undo what it did inline.
+# security-config.sh is already gone, so undo what it did inline. The AppArmor
+# local files are shared with the operator's own rules: only Kumo's marked block
+# goes (its markers are AA_BEGIN/AA_END in security-config.sh), plus the bare
+# $KUMO_HOME/ lines releases before the block wrote.
 if command -v semanage >/dev/null 2>&1; then
 	for target in "$KUMO_HOME/pools/images(/.*)?" "$KUMO_HOME/pools/instances(/.*)?" "$KUMO_HOME/console(/.*)?"; do
 		semanage fcontext -d -- "$target" >/dev/null 2>&1 || true
 	done
 fi
 for f in /etc/apparmor.d/local/abstractions/libvirt-qemu /etc/apparmor.d/local/usr.lib.libvirt.virt-aa-helper; do
-	[ -f "$f" ] && sed -i "\\#^$KUMO_HOME/#d" "$f" || true
+	[ -f "$f" ] && sed -i -e '/^# BEGIN kumo -- /,/^# END kumo$/d' -e "\\#^$KUMO_HOME/#d" "$f" || true
 done
 
 # --- state, configuration, account -------------------------------------------
