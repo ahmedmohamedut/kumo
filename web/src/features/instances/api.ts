@@ -4,8 +4,6 @@ import type { components } from '@/types/api'
 export type Instance = components['schemas']['Instance']
 export type InstanceList = components['schemas']['InstanceList']
 export type InstanceState = components['schemas']['InstanceState']
-export type InstanceType = components['schemas']['InstanceType']
-export type InstanceTypeList = components['schemas']['InstanceTypeList']
 export type LaunchInstanceRequest = components['schemas']['LaunchInstanceRequest']
 export type UpdateInstanceRequest = components['schemas']['UpdateInstanceRequest']
 export type ConsoleOutput = components['schemas']['ConsoleOutput']
@@ -94,14 +92,6 @@ export const instancesApi = kumoApi.injectEndpoints({
       providesTags: (_result, _error, id) => [{ type: 'Instance', id }],
     }),
 
-    // The presets are static configuration, so they are fetched once and never
-    // refetched behind the operator's back. `transformResponse` unwraps the page
-    // so the form reads `presets.find(...)` rather than `presets.items.find(...)`.
-    listInstanceTypes: build.query<InstanceType[], void>({
-      query: () => ({ url: '/instance-types' }),
-      transformResponse: (response: InstanceTypeList) => response.items,
-    }),
-
     // The tail of the serial log. It is read on demand rather than polled: the
     // detail page asks for it once per Refresh press, because a guest that is not
     // booting writes nothing worth re-fetching.
@@ -163,7 +153,6 @@ export const instancesApi = kumoApi.injectEndpoints({
 export const {
   useListInstancesQuery,
   useGetInstanceQuery,
-  useListInstanceTypesQuery,
   useGetInstanceConsoleOutputQuery,
   useLaunchInstanceMutation,
   useUpdateInstanceMutation,

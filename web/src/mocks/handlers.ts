@@ -327,11 +327,14 @@ const CATALOG: CatalogImage[] = [
 ]
 
 /**
- * MOCK_INSTANCE_TYPES are the presets `GET /instance-types` serves. They are the
- * same three `internal/service/instance/types.go` defines, so a launch made
- * against the mock and one made against a real node describe the same shape.
+ * INITIAL_INSTANCE_TYPES are the types `GET /instance-types` starts from. They
+ * are deliberately fewer than the real seed set of migration 0003 and carry
+ * short descriptions: the launch form tests pick `kumo.small` by name and do
+ * not care about the rest. The instance fixtures below reference `kumo.small`
+ * and `kumo.medium`, which is what the delete guard of the instance types page
+ * is tested against; `kumo.large` is unused.
  */
-const MOCK_INSTANCE_TYPES: InstanceType[] = [
+const INITIAL_INSTANCE_TYPES: InstanceType[] = [
   { id: 'kumo.small', vcpus: 2, memory_mib: 4096, description: 'Small' },
   { id: 'kumo.medium', vcpus: 4, memory_mib: 8192, description: 'Medium' },
   { id: 'kumo.large', vcpus: 8, memory_mib: 16384, description: 'Large' },
@@ -602,6 +605,21 @@ function freshTasks(): Task[] {
 }
 
 let images: MockImage[] = freshImages()
+let instanceTypes: InstanceType[] = freshInstanceTypes()
+
+function freshInstanceTypes(): InstanceType[] {
+  return INITIAL_INSTANCE_TYPES.map((type) => ({ ...type }))
+}
+
+/** mockInstanceTypes is the current type table, for assertions. */
+export function mockInstanceTypes(): InstanceType[] {
+  return instanceTypes
+}
+
+/** setMockInstanceTypes replaces the type table, e.g. to start from an empty list. */
+export function setMockInstanceTypes(next: InstanceType[]): void {
+  instanceTypes = next
+}
 let tasks: Task[] = freshTasks()
 let instances: Instance[] = freshInstances()
 let vpcs: VPC[] = freshVPCs()
@@ -684,6 +702,7 @@ export function resetMockState(): void {
   info = { ...info, needs_setup: false }
   keyPairs = freshKeyPairs()
   images = freshImages()
+  instanceTypes = freshInstanceTypes()
   tasks = freshTasks()
   instances = freshInstances()
   vpcs = freshVPCs()
@@ -1327,7 +1346,117 @@ export const handlers = [
     if (user === undefined) {
       return unauthenticated()
     }
-    return HttpResponse.json({ items: MOCK_INSTANCE_TYPES })
+    return HttpResponse.json({ items: sortInstanceTypes(instanceTypes) })
+  }),
+
+  http.get('/api/v1/instance-types/:id', ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    const type = instanceTypes.find((candidate) => candidate.id === String(params.id))
+    if (type === undefined) {
+      return apiError(404, 'not_found', `no instance type "${String(params.id)}"`)
+    }
+    return HttpResponse.json({ ...type, used_by: instancesUsingType(type.id) })
+  }),
+
+  http.post('/api/v1/instance-types', async ({ request }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const body = (await request.json()) as Partial<InstanceType>
+    const id = body.id ?? ''
+    if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(id)) {
+      return invalidArgument('id', 'must be 1-64 lowercase letters, digits, ".", "_" or "-"')
+    }
+    const sizeError = validateInstanceTypeSize(body.vcpus ?? 0, body.memory_mib ?? 0)
+    if (sizeError !== null) {
+      return invalidArgument(sizeError.field, sizeError.reason)
+    }
+    if (instanceTypes.some((candidate) => candidate.id === id)) {
+      return apiError(409, 'already_exists', `an instance type "${id}" already exists`)
+    }
+    const created: InstanceType = {
+      id,
+      vcpus: body.vcpus ?? 0,
+      memory_mib: body.memory_mib ?? 0,
+      description:
+        body.description === undefined || body.description === ''
+          ? describeInstanceType(body.vcpus ?? 0, body.memory_mib ?? 0)
+          : body.description,
+    }
+    instanceTypes = [...instanceTypes, created]
+    return HttpResponse.json(created, {
+      status: 201,
+      headers: { Location: `/api/v1/instance-types/${id}` },
+    })
+  }),
+
+  http.patch('/api/v1/instance-types/:id', async ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const current = instanceTypes.find((candidate) => candidate.id === String(params.id))
+    if (current === undefined) {
+      return apiError(404, 'not_found', `no instance type "${String(params.id)}"`)
+    }
+    const body = (await request.json()) as Partial<InstanceType>
+    if (
+      body.vcpus === undefined &&
+      body.memory_mib === undefined &&
+      body.description === undefined
+    ) {
+      return invalidArgument('body', 'must set vcpus, memory_mib or description')
+    }
+    const next: InstanceType = {
+      ...current,
+      vcpus: body.vcpus ?? current.vcpus,
+      memory_mib: body.memory_mib ?? current.memory_mib,
+    }
+    const sizeError = validateInstanceTypeSize(next.vcpus, next.memory_mib)
+    if (sizeError !== null) {
+      return invalidArgument(sizeError.field, sizeError.reason)
+    }
+    // As in internal/service/instancetype: a generated description follows a
+    // new size, a hand-written one is kept.
+    if (body.description !== undefined) {
+      next.description = body.description
+    } else if (current.description === describeInstanceType(current.vcpus, current.memory_mib)) {
+      next.description = describeInstanceType(next.vcpus, next.memory_mib)
+    }
+    instanceTypes = instanceTypes.map((candidate) =>
+      candidate.id === current.id ? next : candidate,
+    )
+    return HttpResponse.json(next)
+  }),
+
+  http.delete('/api/v1/instance-types/:id', ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const id = String(params.id)
+    if (!instanceTypes.some((candidate) => candidate.id === id)) {
+      return apiError(404, 'not_found', `no instance type "${id}"`)
+    }
+    const usedBy = instancesUsingType(id)
+    if (usedBy.length > 0) {
+      return apiError(409, 'conflict', `instance type "${id}" is in use by ${usedBy.join(', ')}`)
+    }
+    instanceTypes = instanceTypes.filter((candidate) => candidate.id !== id)
+    return new HttpResponse(null, { status: 204 })
   }),
 
   http.get('/api/v1/instances', ({ request }) => {
@@ -1372,7 +1501,7 @@ export const handlers = [
       return forbidden()
     }
     const body = (await request.json()) as LaunchInstanceRequest
-    const fieldError = validateLaunch(body, images, MOCK_INSTANCE_TYPES)
+    const fieldError = validateLaunch(body, images, instanceTypes)
     if (fieldError !== null) {
       return invalidArgument(fieldError.field, fieldError.reason)
     }
@@ -1384,7 +1513,7 @@ export const handlers = [
         ? subnets.find((subnet) => subnet.is_default)
         : subnets.find((subnet) => subnet.id === body.subnet_id)
     const image = images.find((candidate) => candidate.id === body.image_id) as MockImage
-    const preset = MOCK_INSTANCE_TYPES.find((candidate) => candidate.id === body.instance_type)
+    const preset = instanceTypes.find((candidate) => candidate.id === body.instance_type)
     const task: Task = {
       id: nextResourceID('task'),
       type: 'instance.launch',
@@ -1905,6 +2034,44 @@ function invalidArgument(field: string, reason: string) {
     },
     { status: 400 },
   )
+}
+
+/** sortInstanceTypes is the API's order: memory, then vCPUs, then id. */
+function sortInstanceTypes(types: InstanceType[]): InstanceType[] {
+  return [...types].sort(
+    (a, b) => a.memory_mib - b.memory_mib || a.vcpus - b.vcpus || a.id.localeCompare(b.id),
+  )
+}
+
+/**
+ * instancesUsingType is `used_by`: every instance row referencing the type,
+ * terminated ones included, as the foreign key in the backend counts them.
+ */
+function instancesUsingType(id: string): string[] {
+  return instances
+    .filter((instance) => instance.instance_type === id)
+    .map((instance) => instance.id)
+}
+
+/** validateInstanceTypeSize mirrors the bounds of internal/service/instancetype. */
+function validateInstanceTypeSize(
+  vcpus: number,
+  memoryMiB: number,
+): { field: string; reason: string } | null {
+  if (!Number.isInteger(vcpus) || vcpus < 1 || vcpus > 256) {
+    return { field: 'vcpus', reason: 'must be between 1 and 256' }
+  }
+  if (!Number.isInteger(memoryMiB) || memoryMiB < 256 || memoryMiB > 1048576) {
+    return { field: 'memory_mib', reason: 'must be between 256 and 1048576' }
+  }
+  return null
+}
+
+/** describeInstanceType is the generated description of a size. */
+function describeInstanceType(vcpus: number, memoryMiB: number): string {
+  return memoryMiB % 1024 === 0
+    ? `${vcpus} vCPU, ${memoryMiB / 1024} GiB`
+    : `${vcpus} vCPU, ${memoryMiB} MiB`
 }
 
 /** validateNewKeyPair is the shared name rule of the create and import forms. */

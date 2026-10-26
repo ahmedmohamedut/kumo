@@ -30,7 +30,7 @@ Stack: React 18, TypeScript (strict), Vite, Redux Toolkit + RTK Query, React Rou
 
 - `AppLayout` (navigation = `SideNavigation`, breadcrumbs, notifications = `Flashbar`, `toolsHide` for now, `headerSelector="#h"`, content type per page: `table`, `form`, `wizard`, `default`).
 - `TopNavigation`: logo + "Kumo", a **Services** utility menu listing available service groups (Compute active; others disabled with "Coming soon" badges), user menu (profile, theme toggle, sign out).
-- Side navigation items: **Dashboard**, **Compute** (section: Instances, Images, Key pairs). Active item follows the route.
+- Side navigation items: **Dashboard**, **Compute** (section: Instances, Instance types, Images, Key pairs). Active item follows the route.
 - Layout component: `components/layout/ConsoleLayout.tsx`; routes render inside via `<Outlet />`. Pages set breadcrumbs through a small context/hook (`usePageMeta({breadcrumbs})`).
 
 ## 3. Routes
@@ -43,6 +43,9 @@ Stack: React 18, TypeScript (strict), Vite, Redux Toolkit + RTK Query, React Rou
 | `/instances` | InstancesList | Table, actions, filters |
 | `/instances/launch` | LaunchWizard | Single-page form (v1), `Wizard` later |
 | `/instances/:id` | InstanceDetail | Tabs: Details, Storage, Tags, Console output |
+| `/instance-types` | InstanceTypesList | Table + Create/Edit/Delete (admin) |
+| `/instance-types/create` | CreateInstanceType | |
+| `/instance-types/:id/edit` | EditInstanceType | Name read only |
 | `/images` | ImagesList | Table + Import button |
 | `/images/import` | ImportImage | Form with catalog picker |
 | `/images/:id` | ImageDetail | Details, tags, activity (tasks), retry/delete |
@@ -76,7 +79,7 @@ src/features/auth/…
 src/features/notifications/   // flashbar slice + hooks
 ```
 
-RTK Query tags: `Instance`, `Image`, `KeyPair`, `Task`. Mutations invalidate lists. Pages with transitional resources use `pollingInterval: 5000`, otherwise 30000.
+RTK Query tags: `Instance`, `InstanceType`, `Image`, `KeyPair`, `Task`, `VPC`, `Subnet`. Mutations invalidate lists. Pages with transitional resources use `pollingInterval: 5000`, otherwise 30000.
 
 The interval follows the data, not the route: the images and tasks pages pass `pollInterval(items)` to the hook, which returns 5000 while anything is `pending`/`downloading`/`deleting` (images) or `pending`/`running` (tasks) and 30000 once everything has settled. RTK Query types `pollingInterval` as a constant on the endpoint, so the value has to come from the cached copy of the query — read through `endpoints.<name>.select(args)` in a `useAppSelector` — and be passed as a per-hook option. An operator who leaves the tab open during an import watches it arrive, and does not then pay for a 5 s loop over a settled table forever.
 
@@ -140,6 +143,15 @@ Import form: pick from **catalog** or paste a URL, plus algorithm/checksum, OS m
 ### 6.5 Key pairs
 List columns: Name, ID, Type, Fingerprint, Created. Actions: Create key pair, Import, Delete.
 Create form: name, type (ED25519 default / RSA), tags. On success show a **Modal** "Save your private key": download as `<name>.pem` (`.pem` with `0600` reminder text) and Copy; warn it can't be shown again; closing requires an explicit "I have saved it" checkbox.
+
+### 6.6 Instance types
+List columns: Name (the id, e.g. `kumo.small`), vCPUs, Memory (whole GiB when it divides evenly, MiB otherwise — `formatMemoryMiB`), Description. The API order (smallest first) is the default; columns sort on top of it. Single selection; header actions Refresh, Edit, Delete, **Create instance type**. There is no detail page: everything a type has fits in a row.
+
+The write actions are disabled for a viewer (`selectIsAdmin`) and the row selection is hidden, rather than offering buttons that can only answer `403`; the create/edit form shows a "Read only" alert and a disabled submit for the same reason.
+
+Delete opens a `Modal` that first reads `GET /instance-types/{id}`. While `used_by` is non-empty it names those instances (links to their detail pages) and the Delete button stays disabled, because the API refuses the delete with `409` (any instance row blocks it, terminated ones included).
+
+Create/edit is one form (`InstanceTypeFormPage`): Name (read only on edit — instances reference it), vCPUs, Memory (MiB, with the formatted size under the label), optional Description ("generated from the size when empty"). Bounds are checked locally before a request. An edit sends **only the fields that changed**: an untouched description is left out so the API can regenerate a generated one for the new size; an edit with no change shows "Nothing to save" instead of sending an empty `PATCH`. The `InstanceType` tag is shared with the launch form's picker, so an edit there is offered on the next launch without a reload.
 
 ## 7. UX details
 
