@@ -246,10 +246,16 @@ func (h *Handler) Router() *gin.Engine {
 	} else {
 		s3.GET("/buckets", h.listBuckets)
 		s3.GET("/buckets/:name", h.getBucket)
+		s3.GET("/buckets/:name/objects", h.listObjects)
+		// A download is a read, so a viewer may have its URL.
+		s3.POST("/buckets/:name/downloads", h.presignDownload)
 		write := s3.Group("", middleware.RequireRole(auth.RoleAdmin))
 		write.POST("/buckets", h.createBucket)
 		write.PATCH("/buckets/:name", h.updateBucket)
 		write.DELETE("/buckets/:name", h.deleteBucket)
+		write.POST("/buckets/:name/uploads", h.presignUpload)
+		write.POST("/buckets/:name/folders", h.createFolder)
+		write.POST("/buckets/:name/objects/delete", h.deleteObjects)
 	}
 
 	// Host capacity. A launch form shows it next to the instance type, so both

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/ahmedmohamedut/kumo/internal/objectstore"
@@ -101,6 +102,8 @@ type Options struct {
 	Region    string
 	// CORSOrigins are allowed on every bucket Kumo creates; empty sets no rule.
 	CORSOrigins []string
+	// PresignTTL is how long an upload or download URL stays valid.
+	PresignTTL time.Duration
 }
 
 // Service owns the buckets.
@@ -112,7 +115,13 @@ type Service struct {
 	publicURL   string
 	region      string
 	corsOrigins []string
+	presignTTL  time.Duration
 	now         func() time.Time
+
+	// corsMu guards corsReady, the buckets whose CORS rule this process has
+	// already applied, so an upload does not rewrite it every time.
+	corsMu    sync.Mutex
+	corsReady map[string]bool
 }
 
 // New builds the service.
@@ -127,6 +136,10 @@ func New(opts Options) (*Service, error) {
 	case opts.Tasks == nil:
 		return nil, ErrNoTasks
 	}
+	presignTTL := opts.PresignTTL
+	if presignTTL <= 0 {
+		presignTTL = DefaultPresignTTL
+	}
 	return &Service{
 		logger:      opts.Logger,
 		store:       opts.Store,
@@ -135,9 +148,15 @@ func New(opts Options) (*Service, error) {
 		publicURL:   opts.PublicURL,
 		region:      opts.Region,
 		corsOrigins: opts.CORSOrigins,
+		presignTTL:  presignTTL,
 		now:         time.Now,
+		corsReady:   map[string]bool{},
 	}, nil
 }
+
+// DefaultPresignTTL is the lifetime of a presigned URL when Options does not
+// set one; it matches the KUMO_S3_PRESIGN_TTL default.
+const DefaultPresignTTL = 15 * time.Minute
 
 // ResourceID is the id a bucket's tags and tasks are filed under.
 func ResourceID(name string) string { return "bucket/" + name }
@@ -265,6 +284,7 @@ func (s *Service) configure(ctx context.Context, in CreateInput) error {
 		if err := s.objects.SetCORS(ctx, in.Name, s.corsOrigins); err != nil {
 			return mapErr(err)
 		}
+		s.markCORSReady(in.Name)
 	}
 
 	now := formatTime(s.now())

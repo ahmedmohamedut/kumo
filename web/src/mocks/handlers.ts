@@ -73,10 +73,95 @@ export function setMockObjectStorage(objectStorage: SystemInfo['object_storage']
 export interface MockBucket {
   bucket: Bucket
   versioning: BucketDetail['versioning']
-  objects: number
+  objects: MockObject[]
 }
 
-const MOCK_S3_ENDPOINT = 'http://s3.kumo.test:9000'
+/** MockObject is one key in a mock bucket; a key ending in '/' is a folder marker. */
+export interface MockObject {
+  key: string
+  size_bytes: number
+  last_modified: string
+  content_type?: string
+}
+
+function mockObject(key: string, size = 1024): MockObject {
+  return { key, size_bytes: size, last_modified: '2026-01-05T11:00:00Z' }
+}
+
+export const MOCK_S3_ENDPOINT = 'http://s3.kumo.test:9000'
+
+/** findBucket looks a bucket up for the object handlers. */
+function findBucket(name: string): MockBucket | undefined {
+  return buckets.find((candidate) => candidate.bucket.name === name)
+}
+
+/** listFolder is the S3 ListObjectsV2 of the mock: one level under prefix,
+ *  folders as common prefixes, paged by index. */
+function listFolder(entry: MockBucket, prefix: string, cursor: string | null, limit: number) {
+  const names = new Set<string>()
+  const rows: Array<{ name: string; folder: boolean; object?: MockObject }> = []
+  for (const object of entry.objects) {
+    if (!object.key.startsWith(prefix)) {
+      continue
+    }
+    const rest = object.key.slice(prefix.length)
+    const slash = rest.indexOf('/')
+    if (slash >= 0 && slash < rest.length - 1) {
+      const folder = prefix + rest.slice(0, slash + 1)
+      if (!names.has(folder)) {
+        names.add(folder)
+        rows.push({ name: folder, folder: true })
+      }
+      continue
+    }
+    if (rest.endsWith('/') && rest !== '') {
+      if (!names.has(object.key)) {
+        names.add(object.key)
+        rows.push({ name: object.key, folder: true })
+      }
+      continue
+    }
+    if (rest === '') {
+      continue // the marker of the folder being listed
+    }
+    rows.push({ name: object.key, folder: false, object })
+  }
+  rows.sort((a, b) => a.name.localeCompare(b.name))
+  const start = cursor === null ? 0 : Number(cursor)
+  const page = rows.slice(start, start + limit)
+  const next = start + limit < rows.length ? String(start + limit) : null
+  return {
+    prefix,
+    folders: page.filter((row) => row.folder).map((row) => row.name),
+    objects: page
+      .filter((row) => !row.folder && row.object !== undefined)
+      .map((row) => ({
+        key: row.name,
+        size_bytes: row.object?.size_bytes ?? 0,
+        last_modified: row.object?.last_modified ?? '',
+        etag: 'mock-etag',
+      })),
+    next_cursor: next,
+  }
+}
+
+/** encodeKey escapes each segment of a key, keeping its slashes. */
+function encodeKey(key: string): string {
+  return key.split('/').map(encodeURIComponent).join('/')
+}
+
+/** writableBucket is the guard the object writes share: the bucket exists and
+ *  is not being deleted. */
+function writableBucket(name: string) {
+  const entry = findBucket(name)
+  if (entry === undefined) {
+    return { refusal: apiError(404, 'not_found', `no bucket "${name}"`) }
+  }
+  if (entry.bucket.state === 'deleting') {
+    return { refusal: apiError(409, 'conflict', `bucket "${name}" is being deleted`) }
+  }
+  return { entry }
+}
 
 function freshBuckets(): MockBucket[] {
   return [
@@ -89,7 +174,13 @@ function freshBuckets(): MockBucket[] {
         tags: { env: 'prod' },
       },
       versioning: 'enabled',
-      objects: 12,
+      objects: [
+        mockObject('README.md', 2048),
+        mockObject('logs/'),
+        mockObject('logs/2026-01-04.log', 524288),
+        mockObject('logs/2026-01-05.log', 1048576),
+        mockObject('logs/archive/2025.tar.gz', 73400320),
+      ],
     },
     {
       bucket: {
@@ -100,12 +191,20 @@ function freshBuckets(): MockBucket[] {
         tags: {},
       },
       versioning: 'off',
-      objects: 0,
+      objects: [],
     },
   ]
 }
 
 let buckets: MockBucket[] = freshBuckets()
+
+/** listPageSize is the default page of the mock listing; tests lower it to page. */
+let listPageSize = 200
+
+/** setMockObjectPageSize sets the default listing page, to exercise paging. */
+export function setMockObjectPageSize(size: number): void {
+  listPageSize = size
+}
 
 /** mockBuckets is the current bucket table, for assertions. */
 export function mockBuckets(): MockBucket[] {
@@ -793,6 +892,7 @@ export function resetMockState(): void {
   subnets = freshSubnets()
   capacity = freshCapacity()
   buckets = freshBuckets()
+  listPageSize = 200
   info = { ...info, object_storage: { backend: 'fake', ok: true } }
 }
 
@@ -2107,7 +2207,7 @@ export const handlers = [
         tags: body.tags ?? {},
       },
       versioning: body.versioning === true ? 'enabled' : 'off',
-      objects: 0,
+      objects: [],
     }
     buckets = [...buckets, entry]
     return HttpResponse.json(bucketDetail(entry), {
@@ -2177,7 +2277,7 @@ export const handlers = [
       if (current.bucket.state === 'deleting') {
         return apiError(409, 'conflict', `bucket "${name}" is already being deleted`)
       }
-      if (current.objects > 0) {
+      if (current.objects.length > 0) {
         return apiError(
           409,
           'conflict',
@@ -2202,6 +2302,149 @@ export const handlers = [
       { bucket: deleting.bucket, task_id: task.id },
       { status: 202, headers: { Location: `/api/v1/tasks/${task.id}` } },
     )
+  }),
+
+  http.get('/api/v1/s3/buckets/:name/objects', ({ request, params }) => {
+    if (requireUser(request) === undefined) {
+      return unauthenticated()
+    }
+    const refusal = objectStorageRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const entry = findBucket(String(params.name))
+    if (entry === undefined) {
+      return apiError(404, 'not_found', `no bucket "${String(params.name)}"`)
+    }
+    const query = new URL(request.url).searchParams
+    const limit = Number(query.get('limit') ?? listPageSize)
+    return HttpResponse.json(
+      listFolder(entry, query.get('prefix') ?? '', query.get('cursor'), limit),
+    )
+  }),
+
+  http.post('/api/v1/s3/buckets/:name/uploads', async ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const refusal = objectStorageRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const { refusal: bucketRefusal } = writableBucket(String(params.name))
+    if (bucketRefusal !== undefined) {
+      return bucketRefusal
+    }
+    const body = (await request.json()) as { key?: string; content_type?: string }
+    const key = body.key ?? ''
+    if (key === '' || key.startsWith('/') || key.endsWith('/')) {
+      return invalidArgument('key', 'must be 1-1024 bytes, not starting or ending with "/"')
+    }
+    return HttpResponse.json({
+      url: `${MOCK_S3_ENDPOINT}/${String(params.name)}/${encodeKey(key)}?X-Amz-Signature=mock`,
+      method: 'PUT',
+      headers: { 'Content-Type': body.content_type ?? 'application/octet-stream' },
+      expires_at: '2026-01-06T09:15:00Z',
+    })
+  }),
+
+  http.post('/api/v1/s3/buckets/:name/downloads', async ({ request, params }) => {
+    if (requireUser(request) === undefined) {
+      return unauthenticated()
+    }
+    const refusal = objectStorageRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const entry = findBucket(String(params.name))
+    const body = (await request.json()) as { key?: string }
+    const key = body.key ?? ''
+    if (entry === undefined || !entry.objects.some((object) => object.key === key)) {
+      return apiError(404, 'not_found', `no object "${key}"`)
+    }
+    return HttpResponse.json({
+      url: `${MOCK_S3_ENDPOINT}/${entry.bucket.name}/${encodeKey(key)}?X-Amz-Signature=mock`,
+      method: 'GET',
+      headers: {},
+      expires_at: '2026-01-06T09:15:00Z',
+    })
+  }),
+
+  http.post('/api/v1/s3/buckets/:name/folders', async ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const refusal = objectStorageRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const { entry, refusal: bucketRefusal } = writableBucket(String(params.name))
+    if (bucketRefusal !== undefined) {
+      return bucketRefusal
+    }
+    const body = (await request.json()) as { prefix?: string }
+    const folder = `${(body.prefix ?? '').replace(/\/+$/, '')}/`
+    if (folder === '/' || folder.startsWith('/')) {
+      return invalidArgument('prefix', 'must name a folder')
+    }
+    if (!entry.objects.some((object) => object.key === folder)) {
+      entry.objects = [...entry.objects, mockObject(folder, 0)]
+    }
+    return HttpResponse.json({ prefix: folder }, { status: 201 })
+  }),
+
+  http.post('/api/v1/s3/buckets/:name/objects/delete', async ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const refusal = objectStorageRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const { entry, refusal: bucketRefusal } = writableBucket(String(params.name))
+    if (bucketRefusal !== undefined) {
+      return bucketRefusal
+    }
+    const body = (await request.json()) as { keys?: string[] }
+    const keys = new Set(body.keys ?? [])
+    if (keys.size === 0) {
+      return invalidArgument('keys', 'must list between 1 and 1000 keys')
+    }
+    // A folder key removes only its marker, as in internal/service/bucket.
+    entry.objects = entry.objects.filter((object) => !keys.has(object.key))
+    return new HttpResponse(null, { status: 204 })
+  }),
+
+  // The object store itself: a presigned PUT lands here, the way the browser
+  // sends it to RustFS.
+  http.put(`${MOCK_S3_ENDPOINT}/:bucket/*`, async ({ request, params }) => {
+    const entry = findBucket(String(params.bucket))
+    if (entry === undefined) {
+      return new HttpResponse('<Error><Code>NoSuchBucket</Code></Error>', { status: 404 })
+    }
+    const url = new URL(request.url)
+    const key = decodeURIComponent(url.pathname.slice(`/${entry.bucket.name}/`.length))
+    const body = await request.arrayBuffer()
+    const object: MockObject = {
+      key,
+      size_bytes: body.byteLength,
+      last_modified: '2026-01-06T09:05:00Z',
+      content_type: request.headers.get('Content-Type') ?? 'application/octet-stream',
+    }
+    entry.objects = [...entry.objects.filter((candidate) => candidate.key !== key), object]
+    return new HttpResponse(null, { status: 200, headers: { ETag: '"mock-etag"' } })
   }),
 
   // ----------------------------------------------------------------- tasks ---

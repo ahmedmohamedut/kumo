@@ -1350,6 +1350,181 @@ paths:
           $ref: '#/components/responses/Conflict'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /s3/buckets/{name}/objects:
+    parameters:
+      - $ref: '#/components/parameters/BucketName'
+    get:
+      tags: [Buckets]
+      operationId: listObjects
+      summary: List one folder of a bucket
+      description: |
+        The folders directly below `prefix` (common prefixes on `/`) and the
+        objects in it. The zero-byte marker of the folder being listed is not
+        an object. Paged with `cursor` and `next_cursor`.
+      parameters:
+        - name: prefix
+          in: query
+          schema:
+            type: string
+            maxLength: 1024
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 200
+      responses:
+        '200':
+          description: One page of the folder.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectListing'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /s3/buckets/{name}/uploads:
+    parameters:
+      - $ref: '#/components/parameters/BucketName'
+    post:
+      tags: [Buckets]
+      operationId: presignUpload
+      summary: Get a URL to upload one object
+      description: |
+        A presigned `PUT` the browser sends the file to directly. The
+        `Content-Type` is signed into it and must be sent as given in
+        `headers`. Applies the console's CORS rule to the bucket first if
+        needed. `409` while the bucket is being deleted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PresignUploadRequest'
+      responses:
+        '200':
+          description: The upload URL.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PresignedURL'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /s3/buckets/{name}/downloads:
+    parameters:
+      - $ref: '#/components/parameters/BucketName'
+    post:
+      tags: [Buckets]
+      operationId: presignDownload
+      summary: Get a URL to download one object
+      description: |
+        A presigned `GET` that saves the object under its base name. Open to
+        both roles, since it is a read. `404` for a key that does not exist.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PresignDownloadRequest'
+      responses:
+        '200':
+          description: The download URL.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PresignedURL'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /s3/buckets/{name}/folders:
+    parameters:
+      - $ref: '#/components/parameters/BucketName'
+    post:
+      tags: [Buckets]
+      operationId: createFolder
+      summary: Create a folder
+      description: Writes the zero-byte `prefix/` marker S3 consoles use for an empty folder.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateFolderRequest'
+      responses:
+        '201':
+          description: The folder, with its trailing slash.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateFolderRequest'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /s3/buckets/{name}/objects/delete:
+    parameters:
+      - $ref: '#/components/parameters/BucketName'
+    post:
+      tags: [Buckets]
+      operationId: deleteObjects
+      summary: Delete objects
+      description: |
+        Removes up to 1000 keys; a missing key is not an error. A folder key
+        (`photos/`) removes only its marker, never the objects below it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteObjectsRequest'
+      responses:
+        '204':
+          description: The keys are gone.
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
 components:
   securitySchemes:
     bearerAuth:
@@ -2369,6 +2544,89 @@ components:
           type: boolean
         tags:
           $ref: '#/components/schemas/TagMap'
+    ObjectListing:
+      type: object
+      required: [prefix, folders, objects, next_cursor]
+      properties:
+        prefix:
+          type: string
+        folders:
+          type: array
+          items:
+            type: string
+          description: Common prefixes one level below, each ending in '/'.
+        objects:
+          type: array
+          items:
+            $ref: '#/components/schemas/StorageObject'
+        next_cursor:
+          type: string
+          nullable: true
+    StorageObject:
+      type: object
+      required: [key, size_bytes, last_modified, etag]
+      properties:
+        key:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+        last_modified:
+          type: string
+          format: date-time
+        etag:
+          type: string
+    PresignUploadRequest:
+      type: object
+      required: [key]
+      properties:
+        key:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          description: Full object key; must not start or end with '/'.
+        content_type:
+          type: string
+          default: application/octet-stream
+    PresignDownloadRequest:
+      type: object
+      required: [key]
+      properties:
+        key:
+          type: string
+    CreateFolderRequest:
+      type: object
+      required: [prefix]
+      properties:
+        prefix:
+          type: string
+    DeleteObjectsRequest:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            type: string
+    PresignedURL:
+      type: object
+      required: [url, method, headers, expires_at]
+      properties:
+        url:
+          type: string
+        method:
+          type: string
+          enum: [GET, PUT]
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: Headers the request must carry for the signature to match.
+        expires_at:
+          type: string
+          format: date-time
     BucketDeleted:
       type: object
       required: [bucket, task_id]

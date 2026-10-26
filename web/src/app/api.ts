@@ -84,7 +84,17 @@ const withAuth: BaseQueryFn<string | FetchArgs, unknown, FetchBaseQueryError> = 
 export const kumoApi = createApi({
   reducerPath: 'kumoApi',
   baseQuery: withAuth,
-  tagTypes: ['Instance', 'Image', 'KeyPair', 'Task', 'VPC', 'Subnet', 'InstanceType', 'Bucket'],
+  tagTypes: [
+    'Instance',
+    'Image',
+    'KeyPair',
+    'Task',
+    'VPC',
+    'Subnet',
+    'InstanceType',
+    'Bucket',
+    'BucketObjects',
+  ],
   endpoints: () => ({}),
 })
 
