@@ -25,6 +25,10 @@ tags:
     description: Virtual machines; state changes run as tasks.
   - name: Tasks
     description: Asynchronous operation progress.
+  - name: Buckets
+    description: >-
+      Object storage buckets on the RustFS server Kumo manages
+      (06-object-storage.md). Every route answers 503 when the module is off.
 security:
   - bearerAuth: []
 paths:
@@ -1202,6 +1206,150 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /s3/buckets:
+    get:
+      tags: [Buckets]
+      operationId: listBuckets
+      summary: List buckets
+      description: |
+        Every bucket on the object storage server, by name, including buckets
+        made with another client. Not paged: the server returns them at once.
+      responses:
+        '200':
+          description: The buckets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BucketList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      tags: [Buckets]
+      operationId: createBucket
+      summary: Create a bucket
+      description: |
+        Creates the bucket, enables versioning when asked, and sets the
+        console's CORS rule. A failure after the bucket exists removes it
+        again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBucketRequest'
+      responses:
+        '201':
+          description: The new bucket.
+          headers:
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BucketDetail'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /s3/buckets/{name}:
+    parameters:
+      - $ref: '#/components/parameters/BucketName'
+    get:
+      tags: [Buckets]
+      operationId: getBucket
+      summary: Bucket detail
+      responses:
+        '200':
+          description: The bucket with its versioning state and connection details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BucketDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    patch:
+      tags: [Buckets]
+      operationId: updateBucket
+      summary: Change versioning or tags
+      description: |
+        The name is immutable. `versioning: false` suspends versioning on a
+        bucket that had it and leaves a never-versioned bucket alone. An absent
+        `tags` keeps the tags; `{}` drops them. `409` while the bucket is being
+        deleted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateBucketRequest'
+      responses:
+        '200':
+          description: The updated bucket.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BucketDetail'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      tags: [Buckets]
+      operationId: deleteBucket
+      summary: Delete a bucket
+      description: |
+        Without `force`, deletes an empty bucket (`204`) and refuses one that
+        holds objects, old versions or delete markers (`409`). With
+        `force=true`, marks the bucket `deleting` and answers `202` with a
+        `bucket.delete` task that empties it and then deletes it.
+      parameters:
+        - $ref: '#/components/parameters/Force'
+      responses:
+        '202':
+          description: The deletion task was queued.
+          headers:
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BucketDeleted'
+        '204':
+          description: The empty bucket was deleted.
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
 components:
   securitySchemes:
     bearerAuth:
@@ -1249,6 +1397,15 @@ components:
       schema:
         type: boolean
         default: false
+    BucketName:
+      name: name
+      in: path
+      description: Bucket name.
+      required: true
+      schema:
+        type: string
+        minLength: 3
+        maxLength: 63
     RefreshCookie:
       name: refresh_token
       in: cookie
@@ -1351,6 +1508,12 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
     TooManyRequests:
       description: The caller exceeded a rate limit or a quota.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unavailable:
+      description: A dependency cannot serve the request, or the module is off on this node.
       content:
         application/json:
           schema:
@@ -2139,6 +2302,81 @@ components:
           type: string
           nullable: true
           description: Absent on the last page.
+    BucketState:
+      type: string
+      enum: [available, deleting]
+    Bucket:
+      type: object
+      required: [name, state, created_at, created_by, tags]
+      properties:
+        name:
+          type: string
+        state:
+          $ref: '#/components/schemas/BucketState'
+        created_at:
+          type: string
+          format: date-time
+          description: When the object storage server created it.
+        created_by:
+          type: string
+          nullable: true
+          description: Username of the creator; null for a bucket made outside Kumo.
+        tags:
+          $ref: '#/components/schemas/TagMap'
+    BucketDetail:
+      allOf:
+        - $ref: '#/components/schemas/Bucket'
+        - type: object
+          required: [versioning, endpoint, region]
+          properties:
+            versioning:
+              type: string
+              enum: [off, enabled, suspended]
+            endpoint:
+              type: string
+              description: The S3 endpoint clients connect to (KUMO_S3_PUBLIC_URL).
+            region:
+              type: string
+    BucketList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Bucket'
+    CreateBucketRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: |
+            3-63 lowercase letters, digits, '.' and '-', starting and ending with
+            a letter or digit, no '..', not an IP address, and none of the
+            reserved prefixes and suffixes of the S3 naming rules.
+          pattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+        versioning:
+          type: boolean
+          default: false
+        tags:
+          $ref: '#/components/schemas/TagMap'
+    UpdateBucketRequest:
+      type: object
+      minProperties: 1
+      properties:
+        versioning:
+          type: boolean
+        tags:
+          $ref: '#/components/schemas/TagMap'
+    BucketDeleted:
+      type: object
+      required: [bucket, task_id]
+      properties:
+        bucket:
+          $ref: '#/components/schemas/Bucket'
+        task_id:
+          type: string
     TagMap:
       type: object
       description: Free-form tags.

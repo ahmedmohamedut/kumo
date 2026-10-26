@@ -122,14 +122,15 @@ one suite run by the fake on every `go test`, and by the RustFS client under
 ## 4. API (`/api/v1/s3`)
 
 Reads are open to both roles; every write is `admin`. The endpoints arrive with
-their PRs and are specified in `01-api.md` and `api/openapi.yaml` as they land.
+their PRs and are specified in `01-api.md` and `api/openapi.yaml` as they land;
+the bucket endpoints are there now.
 
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/s3/buckets` | list from RustFS joined with Kumo's metadata |
 | POST | `/s3/buckets` | `{name, versioning?, tags?}` → `201`; the name follows the S3 rules (3–63 chars, lowercase letters, digits, `-` and `.`, no IP-address form) |
-| GET | `/s3/buckets/{name}` | detail: versioning, CORS state, the endpoint and an example `aws s3` command |
-| PUT | `/s3/buckets/{name}/versioning` | `{enabled}` |
+| GET | `/s3/buckets/{name}` | detail: versioning, the endpoint and the region |
+| PATCH | `/s3/buckets/{name}` | `{versioning?, tags?}` |
 | DELETE | `/s3/buckets/{name}` | `204` when empty, `409` otherwise; `?force=true` → `202` with a `bucket.delete` task that empties it first |
 | GET | `/s3/buckets/{name}/objects` | `?prefix=&cursor=&limit=`; folders are common prefixes on `/` |
 | POST | `/s3/buckets/{name}/uploads` | `{key, content_type}` → presigned `PUT` |
