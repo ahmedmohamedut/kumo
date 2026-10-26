@@ -174,10 +174,15 @@ func (h *Handler) Router() *gin.Engine {
 		write.DELETE("/images/:id", h.deleteImage)
 	}
 
-	// Instance types are read-only presets: a viewer picks one in the launch
-	// form, they just may not submit it.
+	// Instance types. Reads are open to both roles, because a viewer picks one in
+	// the launch form; managing the set is admin only.
 	if h.instanceTypes != nil {
 		secured.GET("/instance-types", h.listInstanceTypes)
+		secured.GET("/instance-types/:id", h.getInstanceType)
+		write := secured.Group("", middleware.RequireRole(auth.RoleAdmin))
+		write.POST("/instance-types", h.createInstanceType)
+		write.PATCH("/instance-types/:id", h.updateInstanceType)
+		write.DELETE("/instance-types/:id", h.deleteInstanceType)
 	}
 
 	// Instances. Reads are open to both roles; launching is admin only, because it

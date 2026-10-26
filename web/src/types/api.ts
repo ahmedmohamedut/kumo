@@ -173,16 +173,51 @@ export interface paths {
       cookie?: never
     }
     /**
-     * List the size presets
-     * @description Read-only in v1; the seed set is documented in `01-api.md`.
+     * List the instance types
+     * @description Smallest first (memory, then vCPUs, then id). The seed set is documented in `01-api.md`.
      */
     get: operations['listInstanceTypes']
     put?: never
-    post?: never
+    /**
+     * Create an instance type
+     * @description An empty `description` is generated from the size (`"4 vCPU, 8 GiB"`).
+     *     A taken `id` is `409 already_exists`.
+     */
+    post: operations['createInstanceType']
     delete?: never
     options?: never
     head?: never
     patch?: never
+    trace?: never
+  }
+  '/instance-types/{id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Instance type id. */
+        id: components['parameters']['InstanceTypeID']
+      }
+      cookie?: never
+    }
+    /** Instance type detail */
+    get: operations['getInstanceType']
+    put?: never
+    post?: never
+    /**
+     * Delete an instance type
+     * @description `409` while any instance references the type, terminated ones included.
+     */
+    delete: operations['deleteInstanceType']
+    options?: never
+    head?: never
+    /**
+     * Update an instance type
+     * @description Existing instances keep the size they launched at; the change applies
+     *     to later launches. The `id` is immutable. A description that was
+     *     generated from the old size follows the new one.
+     */
+    patch: operations['updateInstanceType']
     trace?: never
   }
   '/key-pairs': {
@@ -788,12 +823,30 @@ export interface components {
     }
     InstanceType: {
       /**
-       * @description Preset id, e.g. `kumo.small`.
+       * @description Type id, e.g. `kumo.small`; immutable.
        * @example kumo.small
        */
       id: string
       vcpus: number
       memory_mib: number
+      description: string
+    }
+    InstanceTypeDetail: components['schemas']['InstanceType'] & {
+      /** @description Ids of the instances that reference the type; a delete is refused while this is non-empty. */
+      used_by: string[]
+    }
+    CreateInstanceTypeRequest: {
+      /** @example db.large */
+      id: string
+      vcpus: number
+      memory_mib: number
+      /** @description Generated from the size when empty or absent. */
+      description?: string
+    }
+    /** @description At least one field must be set. */
+    UpdateInstanceTypeRequest: {
+      vcpus?: number
+      memory_mib?: number
       description?: string
     }
     OrphanList: {
@@ -1308,6 +1361,8 @@ export interface components {
     Force: boolean
     /** @description The `HttpOnly; Secure; SameSite=Strict` refresh cookie. */
     RefreshCookie: string
+    /** @description Instance type id. */
+    InstanceTypeID: string
     /** @description Key pair id. */
     KeyPairID: string
     /** @description Image id. */
@@ -1520,7 +1575,7 @@ export interface operations {
     }
     requestBody?: never
     responses: {
-      /** @description The available presets. */
+      /** @description The available types. */
       200: {
         headers: {
           [name: string]: unknown
@@ -1530,6 +1585,117 @@ export interface operations {
         }
       }
       401: components['responses']['Unauthorized']
+    }
+  }
+  createInstanceType: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CreateInstanceTypeRequest']
+      }
+    }
+    responses: {
+      /** @description The type was created. */
+      201: {
+        headers: {
+          /** @description The new type. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['InstanceType']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      409: components['responses']['Conflict']
+    }
+  }
+  getInstanceType: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Instance type id. */
+        id: components['parameters']['InstanceTypeID']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The type with the instances that reference it. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['InstanceTypeDetail']
+        }
+      }
+      401: components['responses']['Unauthorized']
+      404: components['responses']['NotFound']
+    }
+  }
+  deleteInstanceType: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Instance type id. */
+        id: components['parameters']['InstanceTypeID']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The type was deleted. */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+    }
+  }
+  updateInstanceType: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Instance type id. */
+        id: components['parameters']['InstanceTypeID']
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['UpdateInstanceTypeRequest']
+      }
+    }
+    responses: {
+      /** @description The updated type. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['InstanceType']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
     }
   }
   listKeyPairs: {

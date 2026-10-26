@@ -16,7 +16,7 @@ tags:
   - name: System
     description: Build information and host capacity.
   - name: InstanceTypes
-    description: Read-only size presets.
+    description: Instance sizes; readable by both roles, managed by administrators.
   - name: KeyPairs
     description: SSH key pairs; generated private keys are returned exactly once.
   - name: Images
@@ -195,17 +195,113 @@ paths:
     get:
       tags: [InstanceTypes]
       operationId: listInstanceTypes
-      summary: List the size presets
-      description: Read-only in v1; the seed set is documented in `01-api.md`.
+      summary: List the instance types
+      description: Smallest first (memory, then vCPUs, then id). The seed set is documented in `01-api.md`.
       responses:
         '200':
-          description: The available presets.
+          description: The available types.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/InstanceTypeList'
         '401':
           $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [InstanceTypes]
+      operationId: createInstanceType
+      summary: Create an instance type
+      description: |
+        An empty `description` is generated from the size (`"4 vCPU, 8 GiB"`).
+        A taken `id` is `409 already_exists`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateInstanceTypeRequest'
+      responses:
+        '201':
+          description: The type was created.
+          headers:
+            Location:
+              description: The new type.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstanceType'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /instance-types/{id}:
+    parameters:
+      - $ref: '#/components/parameters/InstanceTypeID'
+    get:
+      tags: [InstanceTypes]
+      operationId: getInstanceType
+      summary: Instance type detail
+      responses:
+        '200':
+          description: The type with the instances that reference it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstanceTypeDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [InstanceTypes]
+      operationId: updateInstanceType
+      summary: Update an instance type
+      description: |
+        Existing instances keep the size they launched at; the change applies
+        to later launches. The `id` is immutable. A description that was
+        generated from the old size follows the new one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateInstanceTypeRequest'
+      responses:
+        '200':
+          description: The updated type.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstanceType'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [InstanceTypes]
+      operationId: deleteInstanceType
+      summary: Delete an instance type
+      description: '`409` while any instance references the type, terminated ones included.'
+      responses:
+        '204':
+          description: The type was deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /key-pairs:
     get:
       tags: [KeyPairs]
@@ -1160,6 +1256,14 @@ components:
       required: true
       schema:
         type: string
+    InstanceTypeID:
+      name: id
+      in: path
+      description: Instance type id.
+      required: true
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9._-]{0,63}$'
     KeyPairID:
       name: id
       in: path
@@ -1423,18 +1527,70 @@ components:
           format: int64
     InstanceType:
       type: object
+      required: [id, vcpus, memory_mib, description]
+      properties:
+        id:
+          type: string
+          description: Type id, e.g. `kumo.small`; immutable.
+          example: kumo.small
+        vcpus:
+          type: integer
+          minimum: 1
+          maximum: 256
+        memory_mib:
+          type: integer
+          minimum: 256
+          maximum: 1048576
+        description:
+          type: string
+          maxLength: 255
+    InstanceTypeDetail:
+      allOf:
+        - $ref: '#/components/schemas/InstanceType'
+        - type: object
+          required: [used_by]
+          properties:
+            used_by:
+              type: array
+              description: Ids of the instances that reference the type; a delete is refused while this is non-empty.
+              items:
+                type: string
+    CreateInstanceTypeRequest:
+      type: object
       required: [id, vcpus, memory_mib]
       properties:
         id:
           type: string
-          description: Preset id, e.g. `kumo.small`.
-          example: kumo.small
+          pattern: '^[a-z0-9][a-z0-9._-]{0,63}$'
+          example: db.large
         vcpus:
           type: integer
+          minimum: 1
+          maximum: 256
         memory_mib:
           type: integer
+          minimum: 256
+          maximum: 1048576
         description:
           type: string
+          maxLength: 255
+          description: Generated from the size when empty or absent.
+    UpdateInstanceTypeRequest:
+      type: object
+      description: At least one field must be set.
+      minProperties: 1
+      properties:
+        vcpus:
+          type: integer
+          minimum: 1
+          maximum: 256
+        memory_mib:
+          type: integer
+          minimum: 256
+          maximum: 1048576
+        description:
+          type: string
+          maxLength: 255
     OrphanList:
       type: object
       required: [items]

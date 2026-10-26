@@ -135,15 +135,10 @@ func newInstanceRouter(t *testing.T) instanceRouter {
 	if err != nil {
 		t.Fatalf("image.New(): %v", err)
 	}
-	types, err := instancetype.New(instancetype.Options{Store: db})
+	// Migration 0003 seeds the presets, so storetest.New already has them.
+	types, err := instancetype.New(instancetype.Options{Logger: logger, Store: db})
 	if err != nil {
 		t.Fatalf("instancetype.New(): %v", err)
-	}
-	// serve.go seeds the presets on every boot; a test that launches anything has
-	// to do the same or the launch is refused for an instance type that the
-	// product ships with.
-	if err := types.Seed(t.Context()); err != nil {
-		t.Fatalf("Seed(): %v", err)
 	}
 	pairs, err := keypair.New(keypair.Options{Logger: logger, Store: db})
 	if err != nil {

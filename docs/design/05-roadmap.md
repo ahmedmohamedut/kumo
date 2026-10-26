@@ -104,6 +104,10 @@ Work through tasks **in order**, one per PR. Each task lists acceptance criteria
   Release: a tag matching `v*` runs the release job, which waits for all five checks before publishing — a tag that cannot pass them should not become a download — and hands the artifacts to GoReleaser as a draft. It is the one job with `contents: write`.
   Open: the suite covers the instances, images and key pairs journey; the VPC and subnet pages are only touched through the launch form.
 - [ ] `CONTRIBUTING.md`, `SECURITY.md`, issue templates
+- [x] **Instance type management (API)**: admins create, edit and delete instance types; both roles read them. Approved as an addition to M5; it was not part of the original plan.
+  Done: `POST /instance-types`, `GET|PATCH|DELETE /instance-types/{id}` (`01-api.md` §Instance types). The `kumo.*` presets moved from a boot-time seed to migration `0003_seed_instance_types.sql`, so a deleted preset stays deleted; an existing node keeps its rows. Edits apply to later launches only, because instances snapshot their size. A delete is refused with `409` while any instance row references the type (the foreign key has no `ON DELETE`), and `GET /instance-types/{id}` lists those instances as `used_by`. A description generated from the size follows a size change; a hand-written one does not.
+  Verified: service tests for the migration seed, a deleted preset surviving a re-migrate, create (generated/given descriptions, bounds), every validation refusal, a taken id, update (size, description, both, hand-written description kept, refusals leave the row unchanged, a launched instance keeps its size), delete (unused, repeated, in use by a running and by a terminated row), and detail; handler tests for `201`+`Location`, `400`/`409` with field details, `200`/`400`/`404` on `PATCH`, `204`/`409`/`404` on `DELETE`, `403` for a viewer and `401` without a token on every write, and viewer reads.
+- [ ] **Instance types UI**: list, create, edit, delete (confirmation `Modal` that shows `used_by`); launch form unchanged.
 
 ## Post-v0.1 backlog (do not start without approval)
 
