@@ -3,8 +3,20 @@ import type { SideNavigationProps } from '@cloudscape-design/components'
 type NavItem = NonNullable<SideNavigationProps['items']>[number]
 
 /**
- * Side navigation from 03-frontend.md §2. Compute is the only service group in
- * this phase; the others show up as their milestones land.
+ * The Storage section (06-object-storage.md). It is shown only on a node with
+ * object storage on; see navigationFor.
+ */
+const storageSection: NavItem = {
+  type: 'section',
+  text: 'Storage',
+  defaultExpanded: true,
+  items: [{ type: 'link', text: 'Buckets', href: '/buckets' }],
+}
+
+/**
+ * Side navigation from 03-frontend.md §2: every section a node can have.
+ * activeHref matches against all of it, so a Storage page is still the active
+ * entry while the system info that reveals the section is loading.
  */
 export const navigationItems: ReadonlyArray<NavItem> = [
   { type: 'link', text: 'Dashboard', href: '/' },
@@ -28,7 +40,17 @@ export const navigationItems: ReadonlyArray<NavItem> = [
       { type: 'link', text: 'Subnets', href: '/subnets' },
     ],
   },
+  storageSection,
 ]
+
+/**
+ * navigationFor is the navigation a node shows: Storage only when object
+ * storage is configured, because its pages would otherwise only explain that
+ * it is off.
+ */
+export function navigationFor({ objectStorage }: { objectStorage: boolean }): NavItem[] {
+  return navigationItems.filter((entry) => objectStorage || entry !== storageSection)
+}
 
 /** activeHref is the navigation entry matching the current route, if any. */
 export function activeHref(pathname: string): string | undefined {

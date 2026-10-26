@@ -14,7 +14,7 @@ import { LoginPage } from '@/features/auth/LoginPage'
 import { selectSessionStatus, selectUser, signedIn } from '@/features/auth/authSlice'
 import { renderWithProviders } from '@/test/utils'
 import { server } from '@/mocks/server'
-import { MOCK_ADMIN } from '@/mocks/handlers'
+import { MOCK_ADMIN, setMockObjectStorage } from '@/mocks/handlers'
 
 function consoleRoutes() {
   return (
@@ -80,6 +80,22 @@ describe('ConsoleLayout', () => {
     expect(nav.getByRole('link', { name: 'Instances' })).toBeInTheDocument()
     expect(nav.getByRole('link', { name: 'Images' })).toBeInTheDocument()
     expect(nav.getByRole('link', { name: 'Key pairs' })).toBeInTheDocument()
+  })
+
+  it('shows Storage only on a node with object storage', async () => {
+    renderWithProviders(consoleRoutes(), { route: '/' })
+    expect(await sideNavigation().findByRole('link', { name: 'Buckets' })).toBeInTheDocument()
+  })
+
+  it('hides Storage on a node without object storage', async () => {
+    setMockObjectStorage({ backend: 'none', ok: false })
+    renderWithProviders(consoleRoutes(), { route: '/' })
+
+    // Wait for the system info that decides it, then check the section stayed out.
+    await waitFor(() => expect(screen.getAllByLabelText('Services').length).toBeGreaterThan(0))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(sideNavigation().queryByRole('link', { name: 'Buckets' })).not.toBeInTheDocument()
+    expect(sideNavigation().getByRole('link', { name: 'Instances' })).toBeInTheDocument()
   })
 
   it('shows the breadcrumbs the page declares', async () => {
