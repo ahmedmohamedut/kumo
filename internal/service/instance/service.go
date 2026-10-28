@@ -28,6 +28,20 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/worker/locks"
 )
 
+// ManagedBy says which Kumo module owns an instance. An instance a user
+// launched is owned by nobody and carries the empty value; one the databases
+// module created carries its own, and is hidden from every list a console user
+// can reach while still counting against the host's capacity
+// (docs/design/07-databases.md R7).
+type ManagedBy string
+
+const (
+	// ManagedByNone is a user's own instance.
+	ManagedByNone ManagedBy = ""
+	// ManagedByDatabases is the VM behind a DB instance.
+	ManagedByDatabases ManagedBy = "rds"
+)
+
 // State is the lifecycle of an instance. The values mirror the CHECK constraint
 // on instances.state (docs/design/02-data-model.md) and the InstanceState enum of
 // api/openapi.yaml.

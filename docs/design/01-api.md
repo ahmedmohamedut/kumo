@@ -142,6 +142,16 @@ should show the state until a percentage exists (M3.3).
 | GET | `/instances/{id}/console-output` | Last N KiB of serial console log (`?tail_kib=`, admin only) |
 | GET | `/instances/{id}/console` | WebSocket → VNC proxy (*M5*, admin only, `501` until then) |
 
+**Managed instances.** The virtual machine behind a DB instance is an ordinary
+row in `instances` that the databases module owns (`07-databases.md` R7). It is
+**not returned by `GET /instances`** and not counted in the dashboard tallies,
+but it is counted by `GET /system/capacity`, because it holds real vCPUs,
+memory and disk. `GET /instances/{id}` and `console-output` still serve it, so
+an operator can debug a database that will not start; `PATCH`, `start`, `stop`,
+`reboot` and `DELETE` answer **`409`** naming the DB instance and the
+`/rds/db-instances` path to use instead. A viewer gets `403` first, as
+everywhere.
+
 Launch request:
 ```json
 { "name": "web-1", "image_id": "img-…", "instance_type": "kumo.small",

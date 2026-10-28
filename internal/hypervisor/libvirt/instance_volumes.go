@@ -32,6 +32,9 @@ func RootDiskName(instanceID string) string { return hypervisor.RootDiskName(ins
 // SeedISOName is the volume name of an instance's NoCloud seed.
 func SeedISOName(instanceID string) string { return hypervisor.SeedISOName(instanceID) }
 
+// DataDiskName is the volume name of a DB instance's data disk.
+func DataDiskName(dbInstanceID string) string { return hypervisor.DataDiskName(dbInstanceID) }
+
 // rootDiskXML is the StorageVolCreateXML document of a per-instance overlay.
 //
 // The backing store is what makes the launch cheap: a 10 GiB root disk is a few
@@ -160,6 +163,60 @@ func (c *Client) CreateRootDisk(ctx context.Context, spec hypervisor.RootDiskSpe
 				return fmt.Errorf("the root disk %q: %w", name, hypervisor.ErrAlreadyExists)
 			}
 			return fmt.Errorf("create the root disk %q in %q: %w", name, spec.Pool, err)
+		}
+		return nil
+	})
+}
+
+// CreateDataDisk makes the blank disk a DB instance keeps its data on.
+//
+// No backing store and no source volume: a database is initialized by initdb
+// on an empty filesystem, so cloning anything into it would only give the
+// guest a filesystem to throw away. Allocation stays at zero, so a 20 GiB data
+// disk costs what the database actually writes.
+func (c *Client) CreateDataDisk(ctx context.Context, spec hypervisor.DataDiskSpec) error {
+	if spec.DBInstanceID == "" {
+		return fmt.Errorf("%w: a data disk needs a DB instance id", hypervisor.ErrInvalidSpec)
+	}
+	if spec.Pool == "" {
+		return fmt.Errorf("%w: the data disk of %s needs a pool",
+			hypervisor.ErrInvalidSpec, spec.DBInstanceID)
+	}
+	if spec.SizeGiB <= 0 {
+		return fmt.Errorf("%w: the data disk of %s is %d GiB",
+			hypervisor.ErrInvalidSpec, spec.DBInstanceID, spec.SizeGiB)
+	}
+
+	name := DataDiskName(spec.DBInstanceID)
+	size := uint64(spec.SizeGiB) * gib
+
+	document, err := xml.Marshal(rootDiskXML{
+		Type:       "file",
+		Name:       name,
+		Capacity:   capacityXML{Unit: "bytes", Bytes: size},
+		Allocation: allocationXML{Unit: "bytes", Bytes: 0},
+		Target: &volumeTarget{
+			Format:      volumeFormat{Type: string(hypervisor.FormatQCOW2)},
+			Permissions: &volumePermission{Mode: fmt.Sprintf("%03o", dirPoolVolumePerms)},
+		},
+		// Backing is left nil, which is the whole difference from a root disk.
+	})
+	if err != nil {
+		return fmt.Errorf("build the data disk XML for %q: %w", name, err)
+	}
+
+	return c.withConnection(ctx, func(conn *golibvirt.Libvirt) error {
+		pool, err := conn.StoragePoolLookupByName(spec.Pool)
+		if err != nil {
+			return fmt.Errorf("look the pool %q up: %w", spec.Pool, err)
+		}
+		if _, err := conn.StorageVolCreateXML(pool, string(document), 0); err != nil {
+			if isAlreadyExists(err) {
+				// A requeued create finds its own disk, and the data on it is
+				// the thing the caller must not lose.
+				return fmt.Errorf("the data disk %q: %w", name, hypervisor.ErrAlreadyExists)
+			}
+			return fmt.Errorf("create the data disk %q in %q: %w", name, spec.Pool, err)
 		}
 		return nil
 	})

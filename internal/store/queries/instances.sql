@@ -3,12 +3,12 @@ INSERT INTO instances (
   id, name, state, state_reason, image_id, instance_type,
   vcpus, memory_mib, root_disk_gb,
   key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip,
-  created_by, launched_at, updated_at
+  created_by, launched_at, updated_at, managed_by
 ) VALUES (
   ?1, ?2, ?3, ?4, ?5, ?6,
   ?7, ?8, ?9,
   ?10, ?11, ?12, NULL, ?13, ?14,
-  ?15, ?16, ?17
+  ?15, ?16, ?17, ?18
 )
 RETURNING *;
 
@@ -68,9 +68,15 @@ RETURNING *;
 -- Keyset pagination over (launched_at, id); instr(haystack, '') is 1 in
 -- SQLite, so an empty query matches every row, and an empty state_filter
 -- matches every state.
+-- include_managed is a flag rather than a value to match, because the value a
+-- user-facing list wants to match is the empty string, which is also what the
+-- "no filter" idiom of state_filter means. Zero hides the VMs the databases
+-- module owns, which is what every list a console user can reach passes; the
+-- module itself reads db_instances and never this (07-databases.md section 3).
 -- name: ListInstancesDesc :many
 SELECT * FROM instances
 WHERE instr(lower(name), lower(sqlc.arg(query))) > 0
+  AND (CAST(sqlc.arg(include_managed) AS INTEGER) <> 0 OR managed_by = '')
   AND (CAST(sqlc.arg(state_filter) AS TEXT) = '' OR state = CAST(sqlc.arg(state_filter) AS TEXT))
   AND (CAST(sqlc.arg(cursor_launched) AS TEXT) = ''
        OR launched_at < CAST(sqlc.arg(cursor_launched) AS TEXT)
@@ -81,6 +87,7 @@ LIMIT sqlc.arg(page_limit);
 -- name: ListInstancesAsc :many
 SELECT * FROM instances
 WHERE instr(lower(name), lower(sqlc.arg(query))) > 0
+  AND (CAST(sqlc.arg(include_managed) AS INTEGER) <> 0 OR managed_by = '')
   AND (CAST(sqlc.arg(state_filter) AS TEXT) = '' OR state = CAST(sqlc.arg(state_filter) AS TEXT))
   AND (CAST(sqlc.arg(cursor_launched) AS TEXT) = ''
        OR launched_at > CAST(sqlc.arg(cursor_launched) AS TEXT)
@@ -116,5 +123,8 @@ DELETE FROM instances WHERE id = ?1;
 -- section 4). It is deliberately unpaginated and unfiltered: which rows a pass
 -- may touch is a rule of the reconciler, not of SQL, and a node holds few
 -- enough instances that a page would only let one drift unobserved.
+-- Deliberately unfiltered: libvirt is the truth for runtime state whoever
+-- created the domain, and a managed VM that drifted is the one nobody is
+-- watching by hand (07-databases.md section 6).
 -- name: ListInstancesForReconcile :many
 SELECT * FROM instances ORDER BY id;

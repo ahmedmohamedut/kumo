@@ -646,6 +646,11 @@ paths:
       tags: [Instances]
       operationId: listInstances
       summary: List instances
+      description: >-
+        The servers behind DB instances are not returned: they belong to the
+        databases module rather than the Instances pages, while still counting
+        against `/system/capacity` (07-databases.md R7). Their lifecycle
+        endpoints answer `409` for the same reason.
       parameters:
         - $ref: '#/components/parameters/PageSize'
         - $ref: '#/components/parameters/PageToken'

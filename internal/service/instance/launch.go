@@ -237,6 +237,11 @@ func (s *Service) launchAllocate(ctx context.Context, tx *store.Tx, in LaunchInp
 		CreatedBy:    nullableString(in.CreatedBy),
 		LaunchedAt:   now,
 		UpdatedAt:    now,
+		// Written rather than left to the column default: whether an instance
+		// is the caller's own decides whether they may stop or terminate it,
+		// and a security-relevant column should not depend on a zero value.
+		// The databases module launches through its own path (M7.5).
+		ManagedBy: string(ManagedByNone),
 	})
 	if err != nil {
 		if isUniqueViolation(err) {

@@ -50,6 +50,10 @@ type Hypervisor interface {
 	ImageInfo(ctx context.Context, name string) (ImageInfo, error)
 	DeleteVolume(ctx context.Context, pool, name string) error
 	CreateRootDisk(ctx context.Context, spec RootDiskSpec) error
+	// CreateDataDisk makes the blank disk a DB instance keeps its data
+	// directory on. It has no backing file, because nothing is cloned into it:
+	// the guest formats it on first boot (docs/design/07-databases.md R4).
+	CreateDataDisk(ctx context.Context, spec DataDiskSpec) error
 	// CreateSeedISO writes the rendered seed data as a volume in pool. The pool
 	// is named rather than assumed because a seed ISO is per-instance data and
 	// belongs beside the root disks, not with the images every instance shares.
@@ -143,6 +147,20 @@ type RootDiskSpec struct {
 	SizeGiB      int64
 }
 
+// DataDiskSpec describes the blank disk a DB instance's data directory lives
+// on. Unlike a root disk it names no source: a database starts from initdb on
+// an empty filesystem, not from a copy of an image.
+//
+// It is keyed by the DB instance id rather than the instance id, because the
+// disk outlives any particular root disk: swapping the root overlay for one
+// backed by a patched engine image is the upgrade path, and the data must not
+// move for it.
+type DataDiskSpec struct {
+	DBInstanceID string
+	Pool         string
+	SizeGiB      int64
+}
+
 // CloudInit is the seed data rendered into an instance's NoCloud ISO.
 //
 // Every document arrives rendered. The rules about which key goes into which
@@ -162,17 +180,21 @@ type CloudInit struct {
 
 // DomainSpec is everything needed to write a domain definition.
 type DomainSpec struct {
-	ID             string
-	Name           string
-	UUID           string
-	VCPUs          int
-	MemoryMiB      int
-	Machine        string
-	Arch           string
-	Firmware       string
-	RootDiskPool   string
-	RootDiskPath   string
-	SeedISOPath    string
+	ID           string
+	Name         string
+	UUID         string
+	VCPUs        int
+	MemoryMiB    int
+	Machine      string
+	Arch         string
+	Firmware     string
+	RootDiskPool string
+	RootDiskPath string
+	SeedISOPath  string
+	// DataDiskPath is the blank data disk of a DB instance. Empty on an
+	// ordinary instance, which has none, and the domain then carries the two
+	// disks it always had.
+	DataDiskPath   string
 	ConsoleLogPath string
 	Network        string
 	// MACAddress is the MAC the guest's virtio NIC is created with, from the
@@ -242,6 +264,21 @@ func RootDiskName(instanceID string) string { return instanceID + "-root.qcow2" 
 // SeedISOName is the volume name of an instance's NoCloud seed, for the same
 // reason as RootDiskName.
 func SeedISOName(instanceID string) string { return instanceID + "-seed.iso" }
+
+// DataDiskName is the volume name of a DB instance's data disk, for the same
+// reason as RootDiskName. It is derived from the DB instance id, not the
+// instance id, so the name survives a root disk that is replaced.
+func DataDiskName(dbInstanceID string) string { return dbInstanceID + "-data.qcow2" }
+
+// DataDiskSerial is the serial libvirt puts on a DB instance's data disk, and
+// so the name the guest finds it under at
+// /dev/disk/by-id/virtio-kumodata.
+//
+// First boot must not go by device name. The seed ISO already occupies vdb, so
+// the data disk is vdc today, and anything else attached later would move it
+// again; a first boot that formats the wrong disk is not a failure worth
+// debugging twice (docs/design/07-databases.md section 5).
+const DataDiskSerial = "kumodata"
 
 // BridgeName derives the bridge interface of a VPC's libvirt network: "kmb"
 // plus the first 8 hex characters of the VPC id, e.g. kmb0a1b2c3d. That length
@@ -317,6 +354,7 @@ const (
 	OpImageInfo       Op = "image_info"
 	OpDeleteVolume    Op = "delete_volume"
 	OpCreateRootDisk  Op = "create_root_disk"
+	OpCreateDataDisk  Op = "create_data_disk"
 	OpCreateSeedISO   Op = "create_seed_iso"
 	OpDefineAndStart  Op = "define_and_start"
 	OpStart           Op = "start"

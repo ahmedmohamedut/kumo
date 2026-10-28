@@ -30,6 +30,26 @@ type Bucket struct {
 	UpdatedAt string         `json:"updated_at"`
 }
 
+type DbInstance struct {
+	ID            string         `json:"id"`
+	Identifier    string         `json:"identifier"`
+	State         string         `json:"state"`
+	StateReason   sql.NullString `json:"state_reason"`
+	Engine        string         `json:"engine"`
+	EngineVersion string         `json:"engine_version"`
+	ImageID       string         `json:"image_id"`
+	InstanceID    string         `json:"instance_id"`
+	InstanceType  string         `json:"instance_type"`
+	StorageGb     int64          `json:"storage_gb"`
+	Port          int64          `json:"port"`
+	AdminUsername string         `json:"admin_username"`
+	DatabaseName  string         `json:"database_name"`
+	Endpoint      sql.NullString `json:"endpoint"`
+	CreatedBy     sql.NullString `json:"created_by"`
+	CreatedAt     string         `json:"created_at"`
+	UpdatedAt     string         `json:"updated_at"`
+}
+
 type Image struct {
 	ID               string         `json:"id"`
 	Name             string         `json:"name"`
@@ -77,6 +97,7 @@ type Instance struct {
 	LaunchedAt   string         `json:"launched_at"`
 	TerminatedAt sql.NullString `json:"terminated_at"`
 	UpdatedAt    string         `json:"updated_at"`
+	ManagedBy    string         `json:"managed_by"`
 }
 
 type InstanceType struct {

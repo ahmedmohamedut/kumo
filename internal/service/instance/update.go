@@ -35,11 +35,19 @@ func (s *Service) Update(ctx context.Context, instanceID string, in UpdateInput,
 	}
 
 	err := s.store.WithTx(ctx, func(ctx context.Context, tx *store.Tx) error {
-		if _, err := tx.GetInstance(ctx, sqlc.GetInstanceParams{ID: instanceID}); err != nil {
+		existing, err := tx.GetInstance(ctx, sqlc.GetInstanceParams{ID: instanceID})
+		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("%w: no instance %q", service.ErrNotFound, instanceID)
 			}
 			return fmt.Errorf("get instance: %w", err)
+		}
+		// A managed VM's name is its DNS label, and the label is the database's
+		// endpoint: renaming it would silently break every client. Tags would
+		// be harmless, but the row is not the caller's to edit either way.
+		if ManagedBy(existing.ManagedBy) != ManagedByNone {
+			// tx, not the store: see errManaged on the single writer connection.
+			return s.errManaged(ctx, tx, existing)
 		}
 
 		if in.Name != nil {

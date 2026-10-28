@@ -16,14 +16,14 @@ INSERT INTO instances (
   id, name, state, state_reason, image_id, instance_type,
   vcpus, memory_mib, root_disk_gb,
   key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip,
-  created_by, launched_at, updated_at
+  created_by, launched_at, updated_at, managed_by
 ) VALUES (
   ?1, ?2, ?3, ?4, ?5, ?6,
   ?7, ?8, ?9,
   ?10, ?11, ?12, NULL, ?13, ?14,
-  ?15, ?16, ?17
+  ?15, ?16, ?17, ?18
 )
-RETURNING id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at
+RETURNING id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at, managed_by
 `
 
 type CreateInstanceParams struct {
@@ -44,6 +44,7 @@ type CreateInstanceParams struct {
 	CreatedBy    sql.NullString `json:"created_by"`
 	LaunchedAt   string         `json:"launched_at"`
 	UpdatedAt    string         `json:"updated_at"`
+	ManagedBy    string         `json:"managed_by"`
 }
 
 func (q *Queries) CreateInstance(ctx context.Context, arg CreateInstanceParams) (Instance, error) {
@@ -65,6 +66,7 @@ func (q *Queries) CreateInstance(ctx context.Context, arg CreateInstanceParams) 
 		arg.CreatedBy,
 		arg.LaunchedAt,
 		arg.UpdatedAt,
+		arg.ManagedBy,
 	)
 	var i Instance
 	err := row.Scan(
@@ -87,6 +89,7 @@ func (q *Queries) CreateInstance(ctx context.Context, arg CreateInstanceParams) 
 		&i.LaunchedAt,
 		&i.TerminatedAt,
 		&i.UpdatedAt,
+		&i.ManagedBy,
 	)
 	return i, err
 }
@@ -114,7 +117,7 @@ func (q *Queries) DeleteInstance(ctx context.Context, arg DeleteInstanceParams) 
 }
 
 const getInstance = `-- name: GetInstance :one
-SELECT id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at FROM instances WHERE id = ?1
+SELECT id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at, managed_by FROM instances WHERE id = ?1
 `
 
 type GetInstanceParams struct {
@@ -144,12 +147,13 @@ func (q *Queries) GetInstance(ctx context.Context, arg GetInstanceParams) (Insta
 		&i.LaunchedAt,
 		&i.TerminatedAt,
 		&i.UpdatedAt,
+		&i.ManagedBy,
 	)
 	return i, err
 }
 
 const getInstanceByName = `-- name: GetInstanceByName :one
-SELECT id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at FROM instances WHERE name = ?1
+SELECT id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at, managed_by FROM instances WHERE name = ?1
 `
 
 type GetInstanceByNameParams struct {
@@ -179,6 +183,7 @@ func (q *Queries) GetInstanceByName(ctx context.Context, arg GetInstanceByNamePa
 		&i.LaunchedAt,
 		&i.TerminatedAt,
 		&i.UpdatedAt,
+		&i.ManagedBy,
 	)
 	return i, err
 }
@@ -264,18 +269,20 @@ func (q *Queries) ListImageNames(ctx context.Context, arg ListImageNamesParams) 
 }
 
 const listInstancesAsc = `-- name: ListInstancesAsc :many
-SELECT id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at FROM instances
+SELECT id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at, managed_by FROM instances
 WHERE instr(lower(name), lower(?1)) > 0
-  AND (CAST(?2 AS TEXT) = '' OR state = CAST(?2 AS TEXT))
-  AND (CAST(?3 AS TEXT) = ''
-       OR launched_at > CAST(?3 AS TEXT)
-       OR (launched_at = CAST(?3 AS TEXT) AND id > ?4))
+  AND (CAST(?2 AS INTEGER) <> 0 OR managed_by = '')
+  AND (CAST(?3 AS TEXT) = '' OR state = CAST(?3 AS TEXT))
+  AND (CAST(?4 AS TEXT) = ''
+       OR launched_at > CAST(?4 AS TEXT)
+       OR (launched_at = CAST(?4 AS TEXT) AND id > ?5))
 ORDER BY launched_at ASC, id ASC
-LIMIT ?5
+LIMIT ?6
 `
 
 type ListInstancesAscParams struct {
 	Query          string `json:"query"`
+	IncludeManaged int64  `json:"include_managed"`
 	StateFilter    string `json:"state_filter"`
 	CursorLaunched string `json:"cursor_launched"`
 	CursorID       string `json:"cursor_id"`
@@ -285,6 +292,7 @@ type ListInstancesAscParams struct {
 func (q *Queries) ListInstancesAsc(ctx context.Context, arg ListInstancesAscParams) ([]Instance, error) {
 	rows, err := q.db.QueryContext(ctx, listInstancesAsc,
 		arg.Query,
+		arg.IncludeManaged,
 		arg.StateFilter,
 		arg.CursorLaunched,
 		arg.CursorID,
@@ -317,6 +325,7 @@ func (q *Queries) ListInstancesAsc(ctx context.Context, arg ListInstancesAscPara
 			&i.LaunchedAt,
 			&i.TerminatedAt,
 			&i.UpdatedAt,
+			&i.ManagedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -332,18 +341,20 @@ func (q *Queries) ListInstancesAsc(ctx context.Context, arg ListInstancesAscPara
 }
 
 const listInstancesDesc = `-- name: ListInstancesDesc :many
-SELECT id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at FROM instances
+SELECT id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at, managed_by FROM instances
 WHERE instr(lower(name), lower(?1)) > 0
-  AND (CAST(?2 AS TEXT) = '' OR state = CAST(?2 AS TEXT))
-  AND (CAST(?3 AS TEXT) = ''
-       OR launched_at < CAST(?3 AS TEXT)
-       OR (launched_at = CAST(?3 AS TEXT) AND id < ?4))
+  AND (CAST(?2 AS INTEGER) <> 0 OR managed_by = '')
+  AND (CAST(?3 AS TEXT) = '' OR state = CAST(?3 AS TEXT))
+  AND (CAST(?4 AS TEXT) = ''
+       OR launched_at < CAST(?4 AS TEXT)
+       OR (launched_at = CAST(?4 AS TEXT) AND id < ?5))
 ORDER BY launched_at DESC, id DESC
-LIMIT ?5
+LIMIT ?6
 `
 
 type ListInstancesDescParams struct {
 	Query          string `json:"query"`
+	IncludeManaged int64  `json:"include_managed"`
 	StateFilter    string `json:"state_filter"`
 	CursorLaunched string `json:"cursor_launched"`
 	CursorID       string `json:"cursor_id"`
@@ -353,9 +364,15 @@ type ListInstancesDescParams struct {
 // Keyset pagination over (launched_at, id); instr(haystack, ”) is 1 in
 // SQLite, so an empty query matches every row, and an empty state_filter
 // matches every state.
+// include_managed is a flag rather than a value to match, because the value a
+// user-facing list wants to match is the empty string, which is also what the
+// "no filter" idiom of state_filter means. Zero hides the VMs the databases
+// module owns, which is what every list a console user can reach passes; the
+// module itself reads db_instances and never this (07-databases.md section 3).
 func (q *Queries) ListInstancesDesc(ctx context.Context, arg ListInstancesDescParams) ([]Instance, error) {
 	rows, err := q.db.QueryContext(ctx, listInstancesDesc,
 		arg.Query,
+		arg.IncludeManaged,
 		arg.StateFilter,
 		arg.CursorLaunched,
 		arg.CursorID,
@@ -388,6 +405,7 @@ func (q *Queries) ListInstancesDesc(ctx context.Context, arg ListInstancesDescPa
 			&i.LaunchedAt,
 			&i.TerminatedAt,
 			&i.UpdatedAt,
+			&i.ManagedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -403,7 +421,7 @@ func (q *Queries) ListInstancesDesc(ctx context.Context, arg ListInstancesDescPa
 }
 
 const listInstancesForReconcile = `-- name: ListInstancesForReconcile :many
-SELECT id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at FROM instances ORDER BY id
+SELECT id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at, managed_by FROM instances ORDER BY id
 `
 
 // The reconciler's input: every instance the control plane knows, so one pass
@@ -411,6 +429,9 @@ SELECT id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib
 // section 4). It is deliberately unpaginated and unfiltered: which rows a pass
 // may touch is a rule of the reconciler, not of SQL, and a node holds few
 // enough instances that a page would only let one drift unobserved.
+// Deliberately unfiltered: libvirt is the truth for runtime state whoever
+// created the domain, and a managed VM that drifted is the one nobody is
+// watching by hand (07-databases.md section 6).
 func (q *Queries) ListInstancesForReconcile(ctx context.Context) ([]Instance, error) {
 	rows, err := q.db.QueryContext(ctx, listInstancesForReconcile)
 	if err != nil {
@@ -440,6 +461,7 @@ func (q *Queries) ListInstancesForReconcile(ctx context.Context) ([]Instance, er
 			&i.LaunchedAt,
 			&i.TerminatedAt,
 			&i.UpdatedAt,
+			&i.ManagedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -463,7 +485,7 @@ SET state = 'running',
     private_ip = ?4,
     updated_at = ?5
 WHERE id = ?1
-RETURNING id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at
+RETURNING id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at, managed_by
 `
 
 type MarkInstanceRunningParams struct {
@@ -506,6 +528,7 @@ func (q *Queries) MarkInstanceRunning(ctx context.Context, arg MarkInstanceRunni
 		&i.LaunchedAt,
 		&i.TerminatedAt,
 		&i.UpdatedAt,
+		&i.ManagedBy,
 	)
 	return i, err
 }
@@ -515,7 +538,7 @@ UPDATE instances
 SET name = ?2,
     updated_at = ?3
 WHERE id = ?1
-RETURNING id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at
+RETURNING id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at, managed_by
 `
 
 type RenameInstanceParams struct {
@@ -552,6 +575,7 @@ func (q *Queries) RenameInstance(ctx context.Context, arg RenameInstanceParams) 
 		&i.LaunchedAt,
 		&i.TerminatedAt,
 		&i.UpdatedAt,
+		&i.ManagedBy,
 	)
 	return i, err
 }
@@ -561,7 +585,7 @@ UPDATE instances
 SET private_ip = ?2,
     updated_at = ?3
 WHERE id = ?1
-RETURNING id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at
+RETURNING id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at, managed_by
 `
 
 type SetInstanceAddressParams struct {
@@ -596,6 +620,7 @@ func (q *Queries) SetInstanceAddress(ctx context.Context, arg SetInstanceAddress
 		&i.LaunchedAt,
 		&i.TerminatedAt,
 		&i.UpdatedAt,
+		&i.ManagedBy,
 	)
 	return i, err
 }
@@ -606,7 +631,7 @@ SET state = ?2,
     state_reason = ?3,
     updated_at = ?4
 WHERE id = ?1
-RETURNING id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at
+RETURNING id, name, state, state_reason, image_id, instance_type, vcpus, memory_mib, root_disk_gb, key_pair_id, key_pair_name, user_data, libvirt_uuid, mac_address, private_ip, created_by, launched_at, terminated_at, updated_at, managed_by
 `
 
 type SetInstanceStateParams struct {
@@ -647,6 +672,7 @@ func (q *Queries) SetInstanceState(ctx context.Context, arg SetInstanceStatePara
 		&i.LaunchedAt,
 		&i.TerminatedAt,
 		&i.UpdatedAt,
+		&i.ManagedBy,
 	)
 	return i, err
 }

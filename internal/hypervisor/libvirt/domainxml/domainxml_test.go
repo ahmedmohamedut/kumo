@@ -40,6 +40,14 @@ func TestBuildMatchesGolden(t *testing.T) {
 		spec   hypervisor.DomainSpec
 	}{
 		"a fully specified instance": {golden: "domain.xml", spec: testSpec()},
+		// A DB instance: the data disk is appended as vdc, because the seed ISO
+		// holds vdb, and carries the serial the guest finds it by rather than
+		// trusting the letter (docs/design/07-databases.md section 5).
+		"a DB instance with a data disk": {golden: "domain-data-disk.xml", spec: func() hypervisor.DomainSpec {
+			spec := testSpec()
+			spec.DataDiskPath = "/var/lib/kumo/pools/kumo-instances/db-0a1b2c3d4e5f60718-data.qcow2"
+			return spec
+		}()},
 		"defaults fill in what the service left empty": {golden: "domain-defaults.xml", spec: hypervisor.DomainSpec{
 			ID:           "i-11111111111111111",
 			Name:         "bare",
@@ -189,5 +197,51 @@ func assertGolden(t *testing.T, name string, got []byte) {
 	}
 	if string(got) != string(want) {
 		t.Errorf("Build() does not match %s\n--- got ---\n%s\n--- want ---\n%s", path, got, want)
+	}
+}
+
+// An instance with no data disk carries exactly the two disks it always had.
+// Appending a third is additive for DB instances only, and an existing domain's
+// device letters must not move.
+func TestBuildLeavesAnOrdinaryInstanceWithTwoDisks(t *testing.T) {
+	document, err := domainxml.Build(testSpec())
+	if err != nil {
+		t.Fatalf("Build(): %v", err)
+	}
+	if got := strings.Count(string(document), "<disk "); got != 2 {
+		t.Errorf("disks = %d, want 2 without a data disk:\n%s", got, document)
+	}
+	if strings.Contains(string(document), "kumodata") {
+		t.Error("an instance with no data disk carries the data disk serial")
+	}
+	if strings.Contains(string(document), "vdc") {
+		t.Error("an instance with no data disk carries a vdc target")
+	}
+}
+
+// The serial is the whole mechanism: without it first boot would have to guess
+// a device letter, and the letter moves whenever anything else is attached.
+func TestBuildGivesTheDataDiskItsSerialAndVdc(t *testing.T) {
+	spec := testSpec()
+	spec.DataDiskPath = "/var/lib/kumo/pools/kumo-instances/db-0a1b2c3d4e5f60718-data.qcow2"
+
+	document, err := domainxml.Build(spec)
+	if err != nil {
+		t.Fatalf("Build(): %v", err)
+	}
+	text := string(document)
+	if got := strings.Count(text, "<disk "); got != 3 {
+		t.Errorf("disks = %d, want 3 with a data disk:\n%s", got, text)
+	}
+	if !strings.Contains(text, "<serial>"+hypervisor.DataDiskSerial+"</serial>") {
+		t.Errorf("the data disk has no serial:\n%s", text)
+	}
+	if !strings.Contains(text, `<target dev="vdc" bus="virtio">`) &&
+		!strings.Contains(text, `<target dev="vdc" bus="virtio"></target>`) {
+		t.Errorf("the data disk is not on vdc:\n%s", text)
+	}
+	// The seed must stay where it was; a shifted letter breaks a running guest.
+	if !strings.Contains(text, spec.SeedISOPath) {
+		t.Errorf("the seed ISO went missing:\n%s", text)
 	}
 }

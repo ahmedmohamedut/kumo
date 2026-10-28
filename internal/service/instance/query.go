@@ -76,6 +76,11 @@ type ListInput struct {
 	// PageSize and PageToken are the keyset pagination controls.
 	PageSize  int
 	PageToken string
+	// IncludeManaged also returns the VMs another module owns. The zero value
+	// hides them, which is what makes every caller that does not think about
+	// it -- the Instances pages, the dashboard tallies, a name search -- safe
+	// by default (docs/design/07-databases.md R7).
+	IncludeManaged bool
 }
 
 // List returns one page of instances, newest first by default.
@@ -175,9 +180,14 @@ func (s *Service) List(ctx context.Context, in ListInput) (Page, error) {
 // listPage runs the asc or desc variant of the listing query and returns at most
 // PageSize+1 rows; the extra row is how the caller learns there is a next page.
 func (s *Service) listPage(ctx context.Context, in ListInput, cursor pageCursor) ([]sqlc.Instance, error) {
+	includeManaged := int64(0)
+	if in.IncludeManaged {
+		includeManaged = 1
+	}
 	params := sqlc.ListInstancesDescParams{
 		Query:          in.Query,
 		StateFilter:    string(in.State),
+		IncludeManaged: includeManaged,
 		CursorLaunched: cursor.launched,
 		CursorID:       cursor.id,
 		PageLimit:      int64(in.PageSize) + 1,

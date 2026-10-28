@@ -24,6 +24,10 @@ type AllocatedCapacityRow struct {
 	DiskBytes   int64 `json:"disk_bytes"`
 }
 
+// Counts every instance that is not terminated, managed VMs included: a
+// database holds real vCPUs, memory and disk, and a report that hid them would
+// let a node promise capacity it has already handed out
+// (07-databases.md R7).
 func (q *Queries) AllocatedCapacity(ctx context.Context) (AllocatedCapacityRow, error) {
 	row := q.db.QueryRowContext(ctx, allocatedCapacity)
 	var i AllocatedCapacityRow

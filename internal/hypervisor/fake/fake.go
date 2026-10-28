@@ -327,6 +327,38 @@ func (f *Fake) CreateRootDisk(ctx context.Context, spec hypervisor.RootDiskSpec)
 	return nil
 }
 
+// CreateDataDisk creates the blank data disk of a DB instance. It has no
+// source volume, so unlike a root disk there is nothing to look up first.
+func (f *Fake) CreateDataDisk(ctx context.Context, spec hypervisor.DataDiskSpec) error {
+	if spec.DBInstanceID == "" || spec.Pool == "" {
+		return fmt.Errorf("%w: a data disk needs a DB instance id and a pool", ErrInvalidSpec)
+	}
+	if spec.SizeGiB <= 0 {
+		return fmt.Errorf("%w: data disk size must be positive, got %d GiB", ErrInvalidSpec, spec.SizeGiB)
+	}
+	if err := f.begin(ctx, hypervisor.OpCreateDataDisk); err != nil {
+		return err
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	name := hypervisor.DataDiskName(spec.DBInstanceID)
+	key := volumeKey(spec.Pool, name)
+	if _, ok := f.volumes[key]; ok {
+		return fmt.Errorf("fake: data disk %q: %w", name, hypervisor.ErrAlreadyExists)
+	}
+	f.volumes[key] = volume{
+		pool:             spec.Pool,
+		name:             name,
+		format:           hypervisor.FormatQCOW2,
+		sizeBytes:        1 << 20,
+		virtualSizeBytes: spec.SizeGiB * gib,
+		// No backing: the guest formats it, nothing is cloned in.
+	}
+	return nil
+}
+
 // CreateSeedISO stores the rendered NoCloud seed for an instance in the pool it
 // was told to use, which is the instances pool beside the root disks.
 func (f *Fake) CreateSeedISO(ctx context.Context, pool, name string, seed hypervisor.CloudInit) error {

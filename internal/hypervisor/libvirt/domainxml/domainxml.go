@@ -140,11 +140,15 @@ type devices struct {
 }
 
 type disk struct {
-	Type     string       `xml:"type,attr"`
-	Device   string       `xml:"device,attr"`
-	Driver   driver       `xml:"driver"`
-	Source   diskSource   `xml:"source"`
-	Target   target       `xml:"target"`
+	Type   string     `xml:"type,attr"`
+	Device string     `xml:"device,attr"`
+	Driver driver     `xml:"driver"`
+	Source diskSource `xml:"source"`
+	Target target     `xml:"target"`
+	// Serial becomes /dev/disk/by-id/virtio-<serial> in the guest. Only the
+	// data disk of a DB instance carries one, because only its first boot has
+	// to find a disk without being told which letter it landed on.
+	Serial   string       `xml:"serial,omitempty"`
 	ReadOnly *emptyStruct `xml:"readonly,omitempty"`
 }
 
@@ -367,6 +371,30 @@ func Build(spec hypervisor.DomainSpec) ([]byte, error) {
 	}
 
 	doc.Metadata = metadata{Inner: instanceMetadataXML(spec.Name)}
+
+	// The data disk of a DB instance, appended rather than written into the
+	// literal above: an ordinary instance must keep exactly the two disks it
+	// has always had, and an existing domain's letters must not shift.
+	//
+	// It lands on vdc because the seed ISO holds vdb. The guest does not go by
+	// the letter: the serial is what it finds the disk under, which is why
+	// anything attached here later cannot break a first boot
+	// (docs/design/07-databases.md section 5).
+	if spec.DataDiskPath != "" {
+		doc.Devices.Disks = append(doc.Devices.Disks, disk{
+			Type:   "file",
+			Device: "disk",
+			Driver: driver{
+				Name:    "qemu",
+				Type:    "qcow2",
+				Cache:   "none",
+				Discard: "unmap",
+			},
+			Source: diskSource{File: spec.DataDiskPath},
+			Target: target{Dev: "vdc", Bus: "virtio"},
+			Serial: hypervisor.DataDiskSerial,
+		})
+	}
 
 	out, err := xml.MarshalIndent(doc, "", "  ")
 	if err != nil {

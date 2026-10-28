@@ -156,6 +156,48 @@ func (s *Service) Terminate(ctx context.Context, instanceID string) (Instance, e
 	})
 }
 
+// ownerReader is the one query errManaged needs. Both the store and a
+// transaction satisfy it.
+type ownerReader interface {
+	GetDBInstanceByInstance(
+		ctx context.Context, arg sqlc.GetDBInstanceByInstanceParams,
+	) (sqlc.GetDBInstanceByInstanceRow, error)
+}
+
+// errManaged refuses an action on an instance another module owns, naming the
+// resource the caller should act on instead.
+//
+// Every lifecycle action goes through queue, so this one check covers start,
+// stop, reboot and terminate: stopping the VM under a running database, or
+// terminating it, would take the database down without its own service knowing
+// anything happened (docs/design/07-databases.md section 4).
+//
+// The DB instance is looked up so the message names it. If that read fails the
+// refusal still stands: being unable to name the owner is no reason to allow
+// the action.
+// The reader is passed in rather than taken from the service, because Update
+// makes this check inside its transaction. The store keeps one writer
+// connection, so a read issued against the store from inside a transaction
+// waits for a connection the transaction is holding, and the call deadlocks
+// instead of failing.
+func (s *Service) errManaged(ctx context.Context, q ownerReader, row sqlc.Instance) error {
+	if ManagedBy(row.ManagedBy) != ManagedByDatabases {
+		return fmt.Errorf("%w: instance %q is managed by %q and cannot be changed directly",
+			service.ErrConflict, row.ID, row.ManagedBy)
+	}
+
+	owner, err := q.GetDBInstanceByInstance(ctx, sqlc.GetDBInstanceByInstanceParams{
+		InstanceID: row.ID,
+	})
+	if err != nil {
+		return fmt.Errorf("%w: instance %q belongs to a database and is managed through "+
+			"/api/v1/rds/db-instances", service.ErrConflict, row.ID)
+	}
+	return fmt.Errorf("%w: instance %q is the server behind the DB instance %s (%q); "+
+		"act on it through /api/v1/rds/db-instances/%s",
+		service.ErrConflict, row.ID, owner.ID, owner.Identifier, owner.ID)
+}
+
 // queue is the half of every lifecycle endpoint that touches the database: it
 // validates the request, writes the state the action implies and creates its task
 // in one transaction.
@@ -174,11 +216,17 @@ func (s *Service) Terminate(ctx context.Context, instanceID string) (Instance, e
 func (s *Service) queue(ctx context.Context, act action) (Instance, error) {
 	// Read before locking, so an unknown id is a 404 rather than a lock on a key
 	// nothing owns. The state is re-read inside the transaction under the lock.
-	if _, err := s.store.GetInstance(ctx, sqlc.GetInstanceParams{ID: act.instanceID}); err != nil {
+	existing, err := s.store.GetInstance(ctx, sqlc.GetInstanceParams{ID: act.instanceID})
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Instance{}, fmt.Errorf("%w: no instance %q", service.ErrNotFound, act.instanceID)
 		}
 		return Instance{}, fmt.Errorf("get instance: %w", err)
+	}
+	// Before the lock: a request that cannot proceed should not hold a key
+	// the owning module may need.
+	if ManagedBy(existing.ManagedBy) != ManagedByNone {
+		return Instance{}, s.errManaged(ctx, s.store, existing)
 	}
 
 	release, err := s.locks.TryAcquire(LockKey(act.instanceID), act.taskType)
