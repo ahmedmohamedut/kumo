@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -142,8 +143,11 @@ func TestSystemInfo(t *testing.T) {
 			NeedsSetup:    false,
 			Hypervisor:    system.HypervisorInfo{Type: "fake", OK: false},
 			ObjectStorage: system.ObjectStorageInfo{Backend: "none", OK: false},
+			// A router built without an image service reports the module off
+			// with no engines, and never a null list.
+			Databases: system.DatabasesInfo{Enabled: false, Engines: []system.DatabaseEngineInfo{}},
 		}
-		if body != want {
+		if !reflect.DeepEqual(body, want) {
 			t.Errorf("body = %+v, want %+v", body, want)
 		}
 	})

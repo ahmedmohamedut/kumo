@@ -150,3 +150,4 @@ docs/design/                design docs
 - Leaving orphaned volumes/domains after a failed launch.
 - Using AWS-specific names that don't fit (we mimic UX and vocabulary, **not** the AWS API; there is no EC2-compatible API in this phase).
 - Reaching for localStorage for the access token; keep it in memory, and use the refresh cookie to restore the session.
+- Putting a non-ASCII character in `internal/store/queries/*.sql`, even inside a comment. sqlc mixes rune and byte offsets when it rewrites a query, so one multi-byte character silently corrupts the SQL of **every query after it in the file** and `make sqlc` fails with a parse error naming the wrong line (`mismatched input 'SELECTid'`). Write `section 3`, not a section sign. Keep those files ASCII.

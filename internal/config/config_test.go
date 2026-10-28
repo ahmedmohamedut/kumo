@@ -45,6 +45,7 @@ func TestLoadDefaults(t *testing.T) {
 		StopTimeout:      config.DefaultStopTimeout,
 		MemoryReserveMiB: config.DefaultMemoryReserveMiB,
 		VCPUOvercommit:   config.DefaultVCPUOvercommit,
+		Databases:        config.DefaultDatabases,
 		ObjectStore:      config.ObjectStoreNone,
 		S3Region:         "us-east-1",
 		S3PresignTTL:     15 * time.Minute,
@@ -357,6 +358,8 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 			"KUMO_OBJECTSTORE": "rustfs", "KUMO_S3_ENDPOINT": "http://127.0.0.1:9000",
 			"KUMO_S3_CORS_ORIGINS": "https://kumo.lan/console",
 		}},
+		{name: "databases neither on nor off", env: map[string]string{"KUMO_DATABASES": "maybe"}},
+		{name: "databases empty", env: map[string]string{"KUMO_DATABASES": ""}},
 	}
 
 	for _, tt := range tests {
@@ -550,5 +553,55 @@ func clearKumoEnv(t *testing.T) {
 		if err := os.Unsetenv(key); err != nil {
 			t.Fatalf("os.Unsetenv(%q) error = %v", key, err)
 		}
+	}
+}
+
+// KUMO_DATABASES takes the documented on/off and the booleans strconv
+// understands, so an operator who writes true in one Kumo variable does not
+// have to remember that this one is spelled differently
+// (docs/design/07-databases.md section 2).
+func TestLoadDatabasesSwitch(t *testing.T) {
+	tests := []struct {
+		value string
+		want  bool
+	}{
+		{"on", true},
+		{"ON", true},
+		{" on ", true},
+		{"true", true},
+		{"1", true},
+		{"off", false},
+		{"OFF", false},
+		{"false", false},
+		{"0", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			clearKumoEnv(t)
+			t.Setenv("KUMO_DATABASES", tt.value)
+
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatalf("Load(): %v", err)
+			}
+			if cfg.Databases != tt.want {
+				t.Errorf("Databases = %t, want %t", cfg.Databases, tt.want)
+			}
+		})
+	}
+}
+
+// The module needs no outside server, so unlike object storage it is on unless
+// an operator turns it off.
+func TestDatabasesAreOnByDefault(t *testing.T) {
+	clearKumoEnv(t)
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	if !cfg.Databases {
+		t.Error("Databases = false, want true by default")
 	}
 }

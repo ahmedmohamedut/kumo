@@ -2,11 +2,13 @@
 INSERT INTO images (
   id, name, description, os_family, os_version, architecture, default_user,
   format, state, state_reason, progress, source_url, checksum_algo, checksum_value,
-  size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at
+  size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at,
+  kind, engine, engine_version
 ) VALUES (
   ?1, ?2, ?3, ?4, ?5, ?6, ?7,
   ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-  ?15, ?16, ?17, ?18, ?19, ?20, ?21
+  ?15, ?16, ?17, ?18, ?19, ?20, ?21,
+  ?22, ?23, ?24
 )
 RETURNING *;
 
@@ -83,10 +85,15 @@ RETURNING *;
 -- so an empty query matches every row, and an empty state_filter matches every
 -- state. The argument is not called "state" because that is a column name, and
 -- sqlc would type the comparison as untyped.
+--
+-- kind_filter follows the same idiom, but the service never leaves it empty for
+-- a list anyone can reach: an engine image must not appear on the Images pages
+-- (docs/design/07-databases.md section 3).
 -- name: ListImagesDesc :many
 SELECT * FROM images
 WHERE instr(lower(name), lower(sqlc.arg(query))) > 0
   AND (CAST(sqlc.arg(state_filter) AS TEXT) = '' OR state = CAST(sqlc.arg(state_filter) AS TEXT))
+  AND (CAST(sqlc.arg(kind_filter) AS TEXT) = '' OR kind = CAST(sqlc.arg(kind_filter) AS TEXT))
   AND (CAST(sqlc.arg(cursor_created) AS TEXT) = ''
        OR created_at < CAST(sqlc.arg(cursor_created) AS TEXT)
        OR (created_at = CAST(sqlc.arg(cursor_created) AS TEXT) AND id < sqlc.arg(cursor_id)))
@@ -97,6 +104,7 @@ LIMIT sqlc.arg(page_limit);
 SELECT * FROM images
 WHERE instr(lower(name), lower(sqlc.arg(query))) > 0
   AND (CAST(sqlc.arg(state_filter) AS TEXT) = '' OR state = CAST(sqlc.arg(state_filter) AS TEXT))
+  AND (CAST(sqlc.arg(kind_filter) AS TEXT) = '' OR kind = CAST(sqlc.arg(kind_filter) AS TEXT))
   AND (CAST(sqlc.arg(cursor_created) AS TEXT) = ''
        OR created_at > CAST(sqlc.arg(cursor_created) AS TEXT)
        OR (created_at = CAST(sqlc.arg(cursor_created) AS TEXT) AND id > sqlc.arg(cursor_id)))
@@ -119,3 +127,29 @@ WHERE image_id = ?1;
 SELECT id, state FROM instances
 WHERE image_id = ?1
 ORDER BY CASE state WHEN 'terminated' THEN 1 ELSE 0 END, launched_at DESC, id DESC;
+
+-- The engines a node can create a DB instance from: every available engine
+-- image, newest first. /system/info reports the set, and a create request
+-- resolves its engine and version against it (07-databases.md section 2).
+-- Only 'available' images count: an engine image still downloading cannot boot
+-- anything, so reporting it would offer an engine that is not there yet.
+-- name: ListAvailableEngineImages :many
+SELECT id, engine, engine_version, name, min_disk_gb, created_at FROM images
+WHERE kind = 'engine'
+  AND state = 'available'
+  AND engine IS NOT NULL
+  AND engine_version IS NOT NULL
+ORDER BY engine ASC, engine_version DESC, created_at DESC, id DESC;
+
+-- The newest available image for one engine and version, which is what a
+-- create request boots from. Newest, because a patched engine image is
+-- imported alongside the old one and only new DB instances get it
+-- (07-databases.md section 7).
+-- name: GetAvailableEngineImage :one
+SELECT * FROM images
+WHERE kind = 'engine'
+  AND state = 'available'
+  AND engine = ?1
+  AND engine_version = ?2
+ORDER BY created_at DESC, id DESC
+LIMIT 1;

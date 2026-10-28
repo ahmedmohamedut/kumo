@@ -36,7 +36,7 @@ Access JWT claims: `sub` (user id), `role`, `iat`, `exp`, `jti`. Password policy
 | Method | Path | Description |
 |---|---|---|
 | GET | `/healthz`, `/readyz` | (no auth, outside `/api/v1`) |
-| GET | `/api/v1/system/info` | (no auth) `{version, needs_setup, hypervisor: {type, ok, kvm}, object_storage: {backend, ok}}` (`kvm` is null when the backend cannot answer; `backend` is `none` when object storage is off, see `06-object-storage.md`) |
+| GET | `/api/v1/system/info` | (no auth) `{version, needs_setup, hypervisor: {type, ok, kvm}, object_storage: {backend, ok}, databases: {enabled, engines}}` (`kvm` is null when the backend cannot answer; `backend` is `none` when object storage is off, see `06-object-storage.md`; `databases.engines` is `[{engine, version}]` and is empty until an engine image is imported, see `07-databases.md`) |
 | GET | `/api/v1/system/capacity` | Host CPU/memory/disk totals vs allocated; see `00-architecture.md` §6 |
 | GET | `/api/v1/system/orphans` | (admin) Domains running under an instance id that no row claims, from the last reconcile pass; see `00-architecture.md` §4.3. Reported, never removed |
 
@@ -89,8 +89,8 @@ Create response (`201`):
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/images` | List |
-| POST | `/images/import` | Import from URL (async, `202`) |
+| GET | `/images` | List. Engine images are never returned: they belong to the databases module, not the Images pages (`07-databases.md`) |
+| POST | `/images/import` | Import from URL (async, `202`). `kind: "engine"` with `engine` and `engine_version` imports a golden image for the databases module |
 | POST | `/images/upload` | Multipart upload of qcow2/raw/img (async finalize) — *M3b, optional* |
 | GET | `/images/{id}` | Detail |
 | PATCH | `/images/{id}` | Update `name`, `description`, `tags` |
@@ -106,6 +106,21 @@ Import request:
   "os_family": "ubuntu", "os_version": "24.04", "architecture": "x86_64",
   "default_user": "ubuntu", "min_disk_gb": 10 }
 ```
+Every image carries a `kind`, `user` by default. An import that omits it is an ordinary image,
+which is what every client written before the databases module sends. A golden image for that
+module is imported with
+
+```json
+{ "name": "postgres-18", "source_url": "https://.../kumo-postgres-18-20261028.qcow2",
+  "checksum": { "algorithm": "sha256", "value": "..." },
+  "kind": "engine", "engine": "postgres", "engine_version": "18", "min_disk_gb": 6 }
+```
+
+and `engine`/`engine_version` are required with `kind: "engine"` and refused without it. An engine
+image is reachable at `GET /images/{id}` but never appears in `GET /images`, so the Images pages
+cannot offer a machine nobody should launch directly; `GET /system/info` reports which engines a
+node can create a DB instance from (`07-databases.md`).
+
 Image states: `pending → downloading → available`, `failed`, `deleting`.
 `progress` is a percentage of the server's `Content-Length`, so it stays `0` while a chunked
 download streams — most image CDNs answer that way — and jumps to `100` when the image is

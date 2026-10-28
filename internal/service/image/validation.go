@@ -117,6 +117,65 @@ func (s *Service) validateImport(in ImportInput) []service.FieldError {
 		fields = append(fields, *field)
 	}
 
+	fields = append(fields, validateEngineFields(in)...)
+
+	return fields
+}
+
+// enginePattern is an engine major version: digits only, so it is safe in a
+// path and in a SQL comparison, and so "18" and "18.6" cannot both end up
+// naming the same engine (docs/design/07-databases.md section 3).
+var enginePattern = regexp.MustCompile(`^\d{1,3}$`)
+
+// validateEngineFields checks kind against the engine pair.
+//
+// Both directions are refused on purpose: an engine image without an engine
+// could never be resolved by a create request, and a user image that carries
+// one is a client bug that would otherwise sit in the database looking like an
+// engine image the Images pages happen to show.
+func validateEngineFields(in ImportInput) []service.FieldError {
+	var fields []service.FieldError
+
+	switch in.Kind {
+	case "", KindUser, KindEngine:
+	default:
+		// The kind decides how the rest is read, so there is nothing useful to
+		// say about engine or engine_version until it is one of the two.
+		return []service.FieldError{{
+			Field:  "kind",
+			Reason: `must be "user" or "engine"`,
+		}}
+	}
+
+	if in.Kind != KindEngine {
+		if in.Engine != "" {
+			fields = append(fields, service.FieldError{
+				Field:  "engine",
+				Reason: `is only accepted with kind "engine"`,
+			})
+		}
+		if in.EngineVersion != "" {
+			fields = append(fields, service.FieldError{
+				Field:  "engine_version",
+				Reason: `is only accepted with kind "engine"`,
+			})
+		}
+		return fields
+	}
+
+	if in.Engine != EnginePostgres {
+		fields = append(fields, service.FieldError{
+			Field:  "engine",
+			Reason: fmt.Sprintf("must be %q", EnginePostgres),
+		})
+	}
+	if !enginePattern.MatchString(in.EngineVersion) {
+		fields = append(fields, service.FieldError{
+			Field:  "engine_version",
+			Reason: "must be a major version, 1-3 digits",
+		})
+	}
+
 	return fields
 }
 

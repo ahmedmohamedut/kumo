@@ -59,6 +59,7 @@ let info: SystemInfo = {
   needs_setup: false,
   hypervisor: { type: 'fake', ok: true },
   object_storage: { backend: 'fake', ok: true },
+  databases: { enabled: true, engines: [] },
 }
 
 /** setMockObjectStorage switches the object storage module, e.g. to off. */
@@ -400,6 +401,7 @@ const INITIAL_IMAGES: MockImage[] = [
     name: 'ubuntu-22.04',
     description: 'Ubuntu 22.04 LTS, cloud image',
     state: 'available',
+    kind: 'user',
     state_reason: null,
     progress: 100,
     format: 'qcow2',
@@ -421,6 +423,7 @@ const INITIAL_IMAGES: MockImage[] = [
     id: 'img-0b2c3d4e5f6071890',
     name: 'debian-12-generic',
     state: 'downloading',
+    kind: 'user',
     state_reason: null,
     progress: 42,
     architecture: 'x86_64',
@@ -440,6 +443,7 @@ const INITIAL_IMAGES: MockImage[] = [
     id: 'img-0c2d3e4f5a6071819',
     name: 'rocky-9-arm64',
     state: 'failed',
+    kind: 'user',
     state_reason: 'the source returned 403 for the requested image',
     progress: 0,
     architecture: 'aarch64',
@@ -458,6 +462,7 @@ const INITIAL_IMAGES: MockImage[] = [
     id: 'img-0d3e4f5a6071829',
     name: 'alpine-3.20',
     state: 'available',
+    kind: 'user',
     state_reason: null,
     progress: 100,
     format: 'qcow2',
@@ -1426,6 +1431,7 @@ export const handlers = [
       name: body.name,
       description: body.description,
       state: 'pending',
+      kind: 'user',
       state_reason: null,
       progress: 0,
       architecture: body.architecture,

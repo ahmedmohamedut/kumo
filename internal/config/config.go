@@ -32,6 +32,8 @@ var (
 	// ErrInvalidObjectStore means KUMO_OBJECTSTORE names no known backend, or
 	// the backend it names is missing a setting it needs.
 	ErrInvalidObjectStore = errors.New("invalid object store")
+	// ErrInvalidDatabases means KUMO_DATABASES is neither on nor off.
+	ErrInvalidDatabases = errors.New("invalid databases setting")
 )
 
 // Hypervisor backends.
@@ -82,6 +84,12 @@ type Config struct {
 	AccessTTL     time.Duration
 	RefreshTTL    time.Duration
 	CookieSecure  bool
+
+	// Databases is the managed Postgres module. It needs no server Kumo does
+	// not ship, so unlike object storage it is on by default; what it does
+	// need is an engine image, which is a state /system/info reports rather
+	// than a configuration error (docs/design/07-databases.md §2).
+	Databases bool
 
 	// Object storage. See docs/design/06-object-storage.md §2.
 	ObjectStore string
@@ -149,6 +157,8 @@ const (
 	DefaultStagingDirName = "staging"
 	DefaultLogLevel       = slog.LevelInfo
 	DefaultObjectStore    = ObjectStoreNone
+	// DefaultDatabases leaves the managed Postgres module on.
+	DefaultDatabases = true
 	// DefaultS3Region is signed into every S3 request. RustFS accepts any
 	// region; us-east-1 is what clients assume when none is given.
 	DefaultS3Region = "us-east-1"
@@ -184,6 +194,7 @@ func Load() (*Config, error) {
 		VCPUOvercommit:   DefaultVCPUOvercommit,
 		LogLevel:         DefaultLogLevel,
 		AllowedOrigins:   nil,
+		Databases:        DefaultDatabases,
 		ObjectStore:      DefaultObjectStore,
 		S3Region:         DefaultS3Region,
 		S3PresignTTL:     DefaultS3PresignTTL,
@@ -275,6 +286,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.loadObjectStore()
+	if err := cfg.loadDatabases(); err != nil {
+		return nil, err
+	}
 	cfg.DBPath = filepath.Join(cfg.DataDir, "kumo.db")
 	if v, ok := os.LookupEnv("KUMO_DB_PATH"); ok {
 		cfg.DBPath = v
@@ -327,6 +341,31 @@ func (c *Config) loadDurations() error {
 			return fmt.Errorf("%w: KUMO_S3_PRESIGN_TTL: %w", ErrInvalidDuration, err)
 		}
 		c.S3PresignTTL = d
+	}
+	return nil
+}
+
+// loadDatabases reads KUMO_DATABASES. "on" and "off" are the documented
+// spelling; the booleans strconv understands are accepted too, because an
+// operator who writes true in one Kumo variable should not have to remember
+// that this one is different.
+func (c *Config) loadDatabases() error {
+	v, ok := os.LookupEnv("KUMO_DATABASES")
+	if !ok {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "on":
+		c.Databases = true
+	case "off":
+		c.Databases = false
+	default:
+		b, err := strconv.ParseBool(strings.TrimSpace(v))
+		if err != nil {
+			return fmt.Errorf("%w: KUMO_DATABASES must be on or off, got %q",
+				ErrInvalidDatabases, v)
+		}
+		c.Databases = b
 	}
 	return nil
 }

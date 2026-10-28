@@ -1050,6 +1050,16 @@ export interface components {
         backend: 'none' | 'rustfs' | 'fake'
         ok: boolean
       }
+      /** @description The managed Postgres module (07-databases.md section 2). It needs no server Kumo does not ship, so it is on unless `KUMO_DATABASES` turns it off. `engines` is what a DB instance can actually be created from; it is empty until an engine image is imported, which is a state the console explains rather than a fault. Image ids are not here, for the same reason the object store's endpoint is not: this payload needs no token, and a create request names an engine and a version rather than an image. */
+      databases: {
+        enabled: boolean
+        engines: {
+          /** @enum {string} */
+          engine: 'postgres'
+          /** @example 18 */
+          version: string
+        }[]
+      }
     }
     /** @description Host totals versus what is already allocated. `total` is measured by the hypervisor (node vCPUs multiplied by the configured overcommit ratio, node memory, and the size of the instances pool); `allocated` is summed from the instances table, counting every instance that is not `terminated`. A terminate deletes the row, so a terminated instance stops being counted as soon as it is gone, and rows left in `terminated` by an earlier release hold nothing. The capacity rules are documented in `00-architecture.md` §6. */
     SystemCapacity: {
@@ -1188,6 +1198,21 @@ export interface components {
       os_version?: string
       /** @description Login name injected into the image. */
       default_user?: string
+      /**
+       * @description `user` is an ordinary image, listed by `GET /images`. `engine` is a golden image with a database engine installed, which a DB instance boots from and which `GET /images` never returns (07-databases.md section 3).
+       * @enum {string}
+       */
+      kind: 'user' | 'engine'
+      /**
+       * @description Set on an engine image, null on any other.
+       * @enum {string|null}
+       */
+      engine?: 'postgres' | null
+      /**
+       * @description Engine major version. Set on an engine image, null on any other.
+       * @example 18
+       */
+      engine_version?: string | null
       /** Format: uri */
       source_url?: string | null
       /** @description The expected checksum, when the source publishes one. */
@@ -1240,6 +1265,21 @@ export interface components {
       architecture: 'x86_64' | 'aarch64'
       default_user?: string
       min_disk_gb?: number
+      /**
+       * @description Omit it to import an ordinary image, which is how it defaults. `engine` imports a golden image for the databases module and requires `engine` and `engine_version`; both are refused without it.
+       * @enum {string}
+       */
+      kind?: 'user' | 'engine'
+      /**
+       * @description Required with `kind: engine`, refused otherwise.
+       * @enum {string}
+       */
+      engine?: 'postgres'
+      /**
+       * @description Engine major version, digits only. Required with `kind: engine`, refused otherwise.
+       * @example 18
+       */
+      engine_version?: string
       tags?: components['schemas']['TagMap']
     }
     UpdateImageRequest: {

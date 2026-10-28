@@ -214,6 +214,37 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		return fmt.Errorf("build the image service: %w", err)
 	}
 
+	// The databases module needs no server Kumo does not ship, so it is on
+	// unless an operator turns it off. What it does need is an engine image,
+	// which /system/info reports as an empty engine list rather than a fault
+	// (docs/design/07-databases.md section 2). The adapter keeps the system
+	// service from depending on the image service for one struct.
+	systemService.SetDatabases(cfg.Databases, func(ctx context.Context) ([]system.DatabaseEngineInfo, error) {
+		available, err := images.AvailableEngines(ctx)
+		if err != nil {
+			return nil, err
+		}
+		engines := make([]system.DatabaseEngineInfo, 0, len(available))
+		for _, engine := range available {
+			engines = append(engines, system.DatabaseEngineInfo{
+				Engine:  string(engine.Engine),
+				Version: engine.Version,
+			})
+		}
+		return engines, nil
+	})
+	if cfg.Databases {
+		if engines, err := images.AvailableEngines(ctx); err != nil {
+			logger.WarnContext(ctx, "cannot list the database engines", "error", err)
+		} else if len(engines) == 0 {
+			logger.InfoContext(ctx, "databases are on but no engine image is available; "+
+				"import one to create a DB instance",
+				"hint", "packaging/images/postgres-18/README.md")
+		} else {
+			logger.InfoContext(ctx, "databases are ready", "engines", len(engines))
+		}
+	}
+
 	// The launch workflow needs the pool layout to write a domain XML, which is
 	// knowledge the backend has and the service does not. A backend that cannot
 	// resolve a path is a backend that cannot boot a guest, so the wiring fails

@@ -385,7 +385,7 @@ func TestDoctor(t *testing.T) {
 	}
 
 	for _, want := range []string{"configuration", "data directory", "disk space", "database",
-		"jwt signing key", "hypervisor"} {
+		"jwt signing key", "hypervisor", "databases"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("stdout = %q, want a line for %q", stdout, want)
 		}
@@ -419,6 +419,39 @@ func TestDoctorReportsAnUnfinishedSetup(t *testing.T) {
 	_, stdout, _ = runCLI(t, "", "doctor")
 	if !strings.Contains(stdout, "1 user(s) exist") {
 		t.Errorf("stdout = %q, want it to count the user", stdout)
+	}
+}
+
+// The databases module is on by default and needs no outside server, so the
+// only thing doctor can report about it is whether a golden image exists. A
+// node with none warns rather than fails: the module is on because nobody
+// turned it off, and nothing is broken until somebody tries to create a DB
+// instance (docs/design/07-databases.md section 2).
+func TestDoctorReportsTheDatabasesModule(t *testing.T) {
+	testDir(t)
+
+	code, stdout, _ := runCLI(t, "", "doctor")
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want 0: a missing engine image is a warning, not a failure", code)
+	}
+	if !strings.Contains(stdout, "no engine image is available") {
+		t.Errorf("stdout = %q, want the missing engine image reported", stdout)
+	}
+	if !strings.Contains(stdout, "warn  databases") {
+		t.Errorf("stdout = %q, want the databases line to warn", stdout)
+	}
+}
+
+func TestDoctorReportsTheDatabasesModuleOff(t *testing.T) {
+	testDir(t)
+	t.Setenv("KUMO_DATABASES", "off")
+
+	code, stdout, _ := runCLI(t, "", "doctor")
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "ok    databases          off") {
+		t.Errorf("stdout = %q, want the databases line to report it off", stdout)
 	}
 }
 

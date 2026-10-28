@@ -48,6 +48,27 @@ const (
 	ArchAarch64 Architecture = "aarch64"
 )
 
+// Kind separates the images a user launches from the golden images the
+// databases module boots. The values mirror the images.kind CHECK constraint
+// (docs/design/07-databases.md section 3).
+type Kind string
+
+const (
+	// KindUser is an ordinary image, offered on the Images pages.
+	KindUser Kind = "user"
+	// KindEngine is a golden image with a database engine already installed. It
+	// is hidden from the Images pages and is what a DB instance boots from.
+	KindEngine Kind = "engine"
+)
+
+// Engine is the database engine an engine image carries. It is a value rather
+// than something inferred from a name, so a second engine is data plus an
+// image rather than a code change.
+type Engine string
+
+// EnginePostgres is the only engine of this phase (07-databases.md R1).
+const EnginePostgres Engine = "postgres"
+
 // ChecksumAlgorithm is a hash the import verifies the download against.
 type ChecksumAlgorithm string
 
@@ -87,10 +108,17 @@ type Image struct {
 	// SizeBytes is the size on disk, null until known.
 	SizeBytes *int64 `json:"size_bytes"`
 	// MinDiskGB is the smallest root disk the image boots from.
-	MinDiskGB int               `json:"min_disk_gb"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
-	Tags      map[string]string `json:"tags"`
+	MinDiskGB int `json:"min_disk_gb"`
+	// Kind is "user" for an ordinary image and "engine" for a golden image the
+	// databases module boots.
+	Kind Kind `json:"kind"`
+	// Engine and EngineVersion are set on an engine image and null on any
+	// other, which is what makes "Postgres 18" resolvable to a volume.
+	Engine        *Engine           `json:"engine"`
+	EngineVersion *string           `json:"engine_version"`
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
+	Tags          map[string]string `json:"tags"`
 }
 
 // imageFormat mirrors hypervisor.ImageFormat in the JSON shape the API promises.
@@ -108,7 +136,12 @@ type ListInput struct {
 	Query string
 	// State restricts the page to one state.
 	State State
-	Sort  SortOrder
+	// Kind restricts the page to one kind. List replaces the empty value with
+	// KindUser, so a caller that forgets it cannot publish engine images on a
+	// page the console reaches; an internal caller that wants every kind asks
+	// for one explicitly.
+	Kind Kind
+	Sort SortOrder
 	// PageSize and PageToken are the keyset pagination controls.
 	PageSize  int
 	PageToken string
@@ -127,6 +160,14 @@ type ImportInput struct {
 	MinDiskGB    int
 	Tags         map[string]string
 	CreatedBy    string
+	// Kind defaults to KindUser. KindEngine requires Engine and EngineVersion
+	// and is what makes the image invisible to the Images pages.
+	Kind Kind
+	// Engine and EngineVersion are required with KindEngine and refused
+	// without it: an ordinary image that claims an engine is a client bug, and
+	// dropping the fields silently would hide it.
+	Engine        Engine
+	EngineVersion string
 }
 
 // UpdateInput is a PATCH /images/{id} body. A nil field is left alone; tags are
@@ -277,6 +318,9 @@ func (s *Service) Import(ctx context.Context, in ImportInput) (Imported, error) 
 		return Imported{}, &service.ValidationError{Message: "the image is not acceptable", Fields: fields}
 	}
 
+	if in.Kind == "" {
+		in.Kind = KindUser
+	}
 	if in.Architecture == "" {
 		in.Architecture = ArchX86_64
 	}
@@ -309,6 +353,9 @@ func (s *Service) Import(ctx context.Context, in ImportInput) (Imported, error) 
 			CreatedBy:        nullableString(in.CreatedBy),
 			CreatedAt:        now,
 			UpdatedAt:        now,
+			Kind:             string(in.Kind),
+			Engine:           nullableString(string(in.Engine)),
+			EngineVersion:    nullableString(in.EngineVersion),
 		})
 		if err != nil {
 			if isUniqueViolation(err) {

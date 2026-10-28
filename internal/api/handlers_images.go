@@ -23,6 +23,12 @@ type importImageRequest struct {
 	DefaultUser  string            `json:"default_user"`
 	MinDiskGB    int               `json:"min_disk_gb"`
 	Tags         map[string]string `json:"tags"`
+	// Kind, Engine and EngineVersion import a golden image for the databases
+	// module. Omitting Kind imports an ordinary image, so every client written
+	// before M7.2 keeps working (docs/design/07-databases.md section 3).
+	Kind          string `json:"kind"`
+	Engine        string `json:"engine"`
+	EngineVersion string `json:"engine_version"`
 }
 
 // checksumRequest is the checksum block of an import body.
@@ -80,16 +86,19 @@ func (h *Handler) importImage(c *gin.Context) {
 	}
 
 	in := image.ImportInput{
-		Name:         req.Name,
-		Description:  req.Description,
-		SourceURL:    req.SourceURL,
-		OSFamily:     req.OSFamily,
-		OSVersion:    req.OSVersion,
-		Architecture: image.Architecture(req.Architecture),
-		DefaultUser:  req.DefaultUser,
-		MinDiskGB:    req.MinDiskGB,
-		Tags:         req.Tags,
-		CreatedBy:    middleware.PrincipalFrom(c).UserID,
+		Name:          req.Name,
+		Description:   req.Description,
+		SourceURL:     req.SourceURL,
+		OSFamily:      req.OSFamily,
+		OSVersion:     req.OSVersion,
+		Architecture:  image.Architecture(req.Architecture),
+		DefaultUser:   req.DefaultUser,
+		MinDiskGB:     req.MinDiskGB,
+		Tags:          req.Tags,
+		CreatedBy:     middleware.PrincipalFrom(c).UserID,
+		Kind:          image.Kind(req.Kind),
+		Engine:        image.Engine(req.Engine),
+		EngineVersion: req.EngineVersion,
 	}
 	if req.Checksum != nil {
 		in.Checksum = image.Checksum{

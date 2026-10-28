@@ -52,6 +52,9 @@ type Image struct {
 	CreatedBy        sql.NullString `json:"created_by"`
 	CreatedAt        string         `json:"created_at"`
 	UpdatedAt        string         `json:"updated_at"`
+	Kind             string         `json:"kind"`
+	Engine           sql.NullString `json:"engine"`
+	EngineVersion    sql.NullString `json:"engine_version"`
 }
 
 type Instance struct {

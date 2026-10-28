@@ -52,7 +52,40 @@ type Info struct {
 	Hypervisor HypervisorInfo `json:"hypervisor"`
 	// ObjectStorage tells the console whether to offer the Storage pages.
 	ObjectStorage ObjectStorageInfo `json:"object_storage"`
+	// Databases tells the console whether to offer the Databases pages, and
+	// what a DB instance can be created from.
+	Databases DatabasesInfo `json:"databases"`
 }
+
+// DatabasesInfo describes the databases module (docs/design/07-databases.md
+// section 2). Enabled is the configuration; Engines is what a DB instance can
+// actually be created from, which stays empty until an engine image is
+// imported.
+//
+// Enabled with an empty Engines list is not an error and not a
+// misconfiguration: it is a node whose operator has not imported a golden
+// image yet, and the console explains the import rather than reporting a
+// fault.
+//
+// The image id is deliberately absent. This payload is served without a token,
+// the same reason the object store's endpoint is left out, and nothing needs
+// it: a create request names an engine and a version, never an image.
+type DatabasesInfo struct {
+	Enabled bool                 `json:"enabled"`
+	Engines []DatabaseEngineInfo `json:"engines"`
+}
+
+// DatabaseEngineInfo is one engine and version a DB instance can be created
+// from.
+type DatabaseEngineInfo struct {
+	Engine  string `json:"engine"`
+	Version string `json:"version"`
+}
+
+// EngineLister reports the engines a DB instance can be created from. It is a
+// function rather than an interface so that this package does not depend on
+// the image service for one struct; the wiring adapts.
+type EngineLister func(ctx context.Context) ([]DatabaseEngineInfo, error)
 
 // ObjectStorageInfo describes the object storage module. Backend "none" means
 // the module is off; OK is whether the server answered Kumo's credentials.
@@ -82,6 +115,8 @@ type Service struct {
 	limits        capacity.Limits
 	objectBackend string
 	objectPin     HypervisorChecker
+	databases     bool
+	engines       EngineLister
 }
 
 // New builds the service. users, hypervisorPin and allocator may be nil, which
@@ -114,6 +149,14 @@ func (s *Service) SetObjectStore(backend string, pin HypervisorChecker) {
 	s.objectPin = pin
 }
 
+// SetDatabases reports the databases module in Info. engines is nil when the
+// module is off, or in the API tests built without an image service, and Info
+// then reports no engines rather than failing.
+func (s *Service) SetDatabases(enabled bool, engines EngineLister) {
+	s.databases = enabled
+	s.engines = engines
+}
+
 // SetLimits applies the configured reserve and overcommit ratio. The launch check
 // uses the same limits, which is what keeps GET /system/capacity and the refusal
 // a launch can get from telling the same story.
@@ -126,6 +169,12 @@ func (s *Service) Info(ctx context.Context) (Info, error) {
 		NeedsSetup:    false,
 		Hypervisor:    HypervisorInfo{Type: s.hypervisor, OK: false},
 		ObjectStorage: ObjectStorageInfo{Backend: s.objectBackend, OK: false},
+		Databases: DatabasesInfo{
+			Enabled: s.databases,
+			// Never nil: the console reads this as a list, and a JSON null
+			// would make "no engine image yet" an error case for it.
+			Engines: []DatabaseEngineInfo{},
+		},
 	}
 
 	if s.users != nil {
@@ -151,6 +200,21 @@ func (s *Service) Info(ctx context.Context) (Info, error) {
 				"backend", s.objectBackend, "error", err)
 		} else {
 			info.ObjectStorage.OK = true
+		}
+	}
+
+	// The engines are read only while the module is on: with it off the routes
+	// answer 503 anyway, and a query per /system/info call would be work for
+	// an answer nobody acts on.
+	if s.databases && s.engines != nil {
+		engines, err := s.engines(ctx)
+		if err != nil {
+			// An unreadable image table is not a reason to fail the whole
+			// status payload, which the console polls to decide what to
+			// render. It reports no engines and says so in the log.
+			s.logger.WarnContext(ctx, "cannot list the database engines", "error", err)
+		} else if len(engines) > 0 {
+			info.Databases.Engines = engines
 		}
 	}
 

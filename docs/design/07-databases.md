@@ -86,8 +86,11 @@ anything outside the binary, so there is nothing for an operator to turn on. Wha
 it does need is an engine image, and that is a state the console reports rather
 than a configuration error:
 
-- `/system/info` gains `databases: {enabled, engines: [{engine, version, image_id}]}`,
-  listing the engine images that are `available`.
+- `/system/info` gains `databases: {enabled, engines: [{engine, version}]}`, one
+  entry per engine and version that is `available`. The image id is left out:
+  that payload is served without a token, the same reason the object store's
+  endpoint is left out of it, and nothing needs one, because a create request
+  names an engine and a version rather than an image.
 - An empty `engines` list is not an error. The Databases pages show how to import
   the image, and `POST /rds/db-instances` answers `409 conflict` with
   `no_engine_image`.
@@ -96,7 +99,15 @@ than a configuration error:
 
 ## 3. Data model
 
-### `0006_db_instances.sql`
+### Migrations
+
+The schema arrives in two migrations, because the engine images (M7.2) and the
+DB instances themselves (M7.3) are separate tasks and an applied migration is
+never edited: `0006_engine_images.sql` adds the three columns to `images`, and
+`0007_db_instances.sql` adds `instances.managed_by` and the `db_instances`
+table.
+
+### `0006_engine_images.sql` and `0007_db_instances.sql`
 
 ```sql
 -- +goose Up

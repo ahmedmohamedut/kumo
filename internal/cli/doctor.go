@@ -61,6 +61,7 @@ func runDoctor(ctx context.Context, out io.Writer) error {
 		checks = append(checks, checkLibvirt(ctx, cfg)...)
 	}
 	checks = append(checks, checkObjectStore(ctx, cfg)...)
+	checks = append(checks, checkDatabases(ctx, cfg))
 
 	failed := 0
 	for _, c := range checks {
@@ -251,6 +252,51 @@ func checkObjectStore(ctx context.Context, cfg *config.Config) []check {
 		})
 	}
 	return checks
+}
+
+// checkDatabases reports the managed Postgres module. Unlike object storage it
+// depends on no outside server, so there is nothing here that can fail: with
+// the module off it is one passing line, and with it on but no engine image
+// imported it warns, because the operator left it on and no DB instance can be
+// created until a golden image exists (docs/design/07-databases.md section 2).
+func checkDatabases(ctx context.Context, cfg *config.Config) check {
+	const name = "databases"
+	if !cfg.Databases {
+		return check{name: name, ok: true, note: "off (set KUMO_DATABASES=on to enable)"}
+	}
+
+	db, err := store.Open(ctx, cfg.DBPath)
+	if err != nil {
+		return check{name: name, ok: true, warn: true, note: "not checked: " + err.Error()}
+	}
+	defer db.Close() //nolint:errcheck // a failed close does not change the verdict
+
+	rows, err := db.ListAvailableEngineImages(ctx)
+	if err != nil {
+		return check{name: name, ok: true, warn: true, note: "cannot read images: " + err.Error()}
+	}
+	if len(rows) == 0 {
+		return check{
+			name: name, ok: true, warn: true,
+			note: "on, but no engine image is available: import one before creating a " +
+				"DB instance (see packaging/images/postgres-18/README.md)",
+		}
+	}
+
+	engines := make([]string, 0, len(rows))
+	seen := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		if !row.Engine.Valid || !row.EngineVersion.Valid {
+			continue
+		}
+		label := row.Engine.String + " " + row.EngineVersion.String
+		if _, ok := seen[label]; ok {
+			continue
+		}
+		seen[label] = struct{}{}
+		engines = append(engines, label)
+	}
+	return check{name: name, ok: true, note: "on (" + strings.Join(engines, ", ") + ")"}
 }
 
 func gib(bytes uint64) float64 { return float64(bytes) / (1 << 30) }

@@ -84,6 +84,24 @@ func (s *Service) List(ctx context.Context, in ListInput) (Page, error) {
 		}
 	}
 
+	// An unset kind means the Images pages, which never show engine images.
+	// Set here rather than in the SQL so that the one caller who wants every
+	// kind has to say so (docs/design/07-databases.md section 3).
+	if in.Kind == "" {
+		in.Kind = KindUser
+	}
+	switch in.Kind {
+	case KindUser, KindEngine:
+	default:
+		return Page{}, &service.ValidationError{
+			Message: "the kind filter is not acceptable",
+			Fields: []service.FieldError{{
+				Field:  "kind",
+				Reason: `must be "user" or "engine"`,
+			}},
+		}
+	}
+
 	if in.PageSize == 0 {
 		in.PageSize = DefaultPageSize
 	}
@@ -246,6 +264,58 @@ func (s *Service) Delete(ctx context.Context, imageID string) (Deleted, error) {
 	return deleted, nil
 }
 
+// AvailableEngine is one engine a DB instance can be created from on this node.
+type AvailableEngine struct {
+	Engine    Engine `json:"engine"`
+	Version   string `json:"version"`
+	ImageID   string `json:"image_id"`
+	ImageName string `json:"image_name"`
+	MinDiskGB int    `json:"min_disk_gb"`
+}
+
+// AvailableEngines lists what this node can create a DB instance from: one
+// entry per engine and version, naming the image a create request would boot.
+//
+// An empty list is the normal state of a node where nobody has imported an
+// engine image yet, and is not an error: /system/info reports it and the
+// console explains the import (docs/design/07-databases.md section 2).
+//
+// Only the newest image per engine and version is reported, because that is
+// the one a create request picks: a patched image is imported alongside the
+// one it replaces rather than over it, so both are available at once and
+// reporting both would offer the same engine twice.
+func (s *Service) AvailableEngines(ctx context.Context) ([]AvailableEngine, error) {
+	rows, err := s.store.ListAvailableEngineImages(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list engine images: %w", err)
+	}
+
+	engines := make([]AvailableEngine, 0, len(rows))
+	type key struct{ engine, version string }
+	seen := make(map[key]struct{}, len(rows))
+	for _, row := range rows {
+		// The query excludes NULLs, so a row that reaches this loop has both.
+		// The guard is what keeps a hand-edited database from reporting an
+		// engine with an empty name.
+		if !row.Engine.Valid || !row.EngineVersion.Valid {
+			continue
+		}
+		k := key{row.Engine.String, row.EngineVersion.String}
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		engines = append(engines, AvailableEngine{
+			Engine:    Engine(k.engine),
+			Version:   k.version,
+			ImageID:   row.ID,
+			ImageName: row.Name,
+			MinDiskGB: int(row.MinDiskGb),
+		})
+	}
+	return engines, nil
+}
+
 // Catalog returns the curated list of cloud images the console can offer. It is
 // static on purpose: Kumo does not mirror or re-publish distribution metadata,
 // and a catalog that depends on the network would be a second source of truth
@@ -262,11 +332,13 @@ func (s *Service) listPage(
 	// Both filters use the empty string as "no filter", which keeps the SQL a
 	// single prepared statement for every page.
 	stateFilter := string(in.State)
+	kindFilter := string(in.Kind)
 
 	if in.Sort == SortCreatedAsc {
 		return s.store.ListImagesAsc(ctx, sqlc.ListImagesAscParams{
 			Query:         in.Query,
 			StateFilter:   stateFilter,
+			KindFilter:    kindFilter,
 			CursorCreated: cursor.created,
 			CursorID:      cursor.id,
 			PageLimit:     int64(in.PageSize) + 1,
@@ -275,6 +347,7 @@ func (s *Service) listPage(
 	return s.store.ListImagesDesc(ctx, sqlc.ListImagesDescParams{
 		Query:         in.Query,
 		StateFilter:   stateFilter,
+		KindFilter:    kindFilter,
 		CursorCreated: cursor.created,
 		CursorID:      cursor.id,
 		PageLimit:     int64(in.PageSize) + 1,
@@ -370,6 +443,7 @@ func imageFromRow(row sqlc.Image, tags map[string]string) Image {
 		OSVersion:    row.OsVersion,
 		DefaultUser:  row.DefaultUser,
 		MinDiskGB:    int(row.MinDiskGb),
+		Kind:         Kind(row.Kind),
 		CreatedAt:    parseTime(row.CreatedAt),
 		UpdatedAt:    parseTime(row.UpdatedAt),
 		Tags:         map[string]string{},
@@ -401,6 +475,14 @@ func imageFromRow(row sqlc.Image, tags map[string]string) Image {
 	if row.SizeBytes.Valid {
 		size := row.SizeBytes.Int64
 		image.SizeBytes = &size
+	}
+	if row.Engine.Valid {
+		engine := Engine(row.Engine.String)
+		image.Engine = &engine
+	}
+	if row.EngineVersion.Valid {
+		version := row.EngineVersion.String
+		image.EngineVersion = &version
 	}
 
 	return image

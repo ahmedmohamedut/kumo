@@ -1942,7 +1942,7 @@ components:
           type: integer
     SystemInfo:
       type: object
-      required: [version, needs_setup, hypervisor, object_storage]
+      required: [version, needs_setup, hypervisor, object_storage, databases]
       properties:
         version:
           type: string
@@ -1979,6 +1979,33 @@ components:
               enum: [none, rustfs, fake]
             ok:
               type: boolean
+        databases:
+          type: object
+          description: >-
+            The managed Postgres module (07-databases.md section 2). It needs
+            no server Kumo does not ship, so it is on unless `KUMO_DATABASES`
+            turns it off. `engines` is what a DB instance can actually be
+            created from; it is empty until an engine image is imported, which
+            is a state the console explains rather than a fault. Image ids are
+            not here, for the same reason the object store's endpoint is not:
+            this payload needs no token, and a create request names an engine
+            and a version rather than an image.
+          required: [enabled, engines]
+          properties:
+            enabled:
+              type: boolean
+            engines:
+              type: array
+              items:
+                type: object
+                required: [engine, version]
+                properties:
+                  engine:
+                    type: string
+                    enum: [postgres]
+                  version:
+                    type: string
+                    example: '18'
     SystemCapacity:
       type: object
       description: >-
@@ -2209,7 +2236,7 @@ components:
                 $ref: '#/components/schemas/KeyPair'
     Image:
       type: object
-      required: [id, name, state, created_at, updated_at]
+      required: [id, name, state, kind, created_at, updated_at]
       properties:
         id:
           type: string
@@ -2243,6 +2270,24 @@ components:
         default_user:
           type: string
           description: Login name injected into the image.
+        kind:
+          type: string
+          enum: [user, engine]
+          description: >-
+            `user` is an ordinary image, listed by `GET /images`. `engine` is a
+            golden image with a database engine installed, which a DB instance
+            boots from and which `GET /images` never returns
+            (07-databases.md section 3).
+        engine:
+          type: string
+          enum: [postgres]
+          nullable: true
+          description: Set on an engine image, null on any other.
+        engine_version:
+          type: string
+          example: '18'
+          nullable: true
+          description: Engine major version. Set on an engine image, null on any other.
         source_url:
           type: string
           format: uri
@@ -2316,6 +2361,25 @@ components:
         min_disk_gb:
           type: integer
           minimum: 1
+        kind:
+          type: string
+          enum: [user, engine]
+          description: >-
+            Omit it to import an ordinary image, which is how it defaults.
+            `engine` imports a golden
+            image for the databases module and requires `engine` and
+            `engine_version`; both are refused without it.
+        engine:
+          type: string
+          enum: [postgres]
+          description: 'Required with `kind: engine`, refused otherwise.'
+        engine_version:
+          type: string
+          pattern: '^[0-9]{1,3}$'
+          example: '18'
+          description: >-
+            Engine major version, digits only. Required with `kind: engine`,
+            refused otherwise.
         tags:
           $ref: '#/components/schemas/TagMap'
     UpdateImageRequest:

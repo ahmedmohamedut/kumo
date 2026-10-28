@@ -35,13 +35,15 @@ const createImage = `-- name: CreateImage :one
 INSERT INTO images (
   id, name, description, os_family, os_version, architecture, default_user,
   format, state, state_reason, progress, source_url, checksum_algo, checksum_value,
-  size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at
+  size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at,
+  kind, engine, engine_version
 ) VALUES (
   ?1, ?2, ?3, ?4, ?5, ?6, ?7,
   ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-  ?15, ?16, ?17, ?18, ?19, ?20, ?21
+  ?15, ?16, ?17, ?18, ?19, ?20, ?21,
+  ?22, ?23, ?24
 )
-RETURNING id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at
+RETURNING id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at, kind, engine, engine_version
 `
 
 type CreateImageParams struct {
@@ -66,6 +68,9 @@ type CreateImageParams struct {
 	CreatedBy        sql.NullString `json:"created_by"`
 	CreatedAt        string         `json:"created_at"`
 	UpdatedAt        string         `json:"updated_at"`
+	Kind             string         `json:"kind"`
+	Engine           sql.NullString `json:"engine"`
+	EngineVersion    sql.NullString `json:"engine_version"`
 }
 
 func (q *Queries) CreateImage(ctx context.Context, arg CreateImageParams) (Image, error) {
@@ -91,6 +96,9 @@ func (q *Queries) CreateImage(ctx context.Context, arg CreateImageParams) (Image
 		arg.CreatedBy,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.Kind,
+		arg.Engine,
+		arg.EngineVersion,
 	)
 	var i Image
 	err := row.Scan(
@@ -115,6 +123,9 @@ func (q *Queries) CreateImage(ctx context.Context, arg CreateImageParams) (Image
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Kind,
+		&i.Engine,
+		&i.EngineVersion,
 	)
 	return i, err
 }
@@ -141,7 +152,7 @@ SET state = 'failed',
     state_reason = ?2,
     updated_at = ?3
 WHERE id = ?1
-RETURNING id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at
+RETURNING id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at, kind, engine, engine_version
 `
 
 type FailImageParams struct {
@@ -175,6 +186,9 @@ func (q *Queries) FailImage(ctx context.Context, arg FailImageParams) (Image, er
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Kind,
+		&i.Engine,
+		&i.EngineVersion,
 	)
 	return i, err
 }
@@ -190,7 +204,7 @@ SET state = 'available',
     volume_name = ?5,
     updated_at = ?6
 WHERE id = ?1
-RETURNING id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at
+RETURNING id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at, kind, engine, engine_version
 `
 
 type FinalizeImageParams struct {
@@ -235,12 +249,66 @@ func (q *Queries) FinalizeImage(ctx context.Context, arg FinalizeImageParams) (I
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Kind,
+		&i.Engine,
+		&i.EngineVersion,
+	)
+	return i, err
+}
+
+const getAvailableEngineImage = `-- name: GetAvailableEngineImage :one
+SELECT id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at, kind, engine, engine_version FROM images
+WHERE kind = 'engine'
+  AND state = 'available'
+  AND engine = ?1
+  AND engine_version = ?2
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type GetAvailableEngineImageParams struct {
+	Engine        sql.NullString `json:"engine"`
+	EngineVersion sql.NullString `json:"engine_version"`
+}
+
+// The newest available image for one engine and version, which is what a
+// create request boots from. Newest, because a patched engine image is
+// imported alongside the old one and only new DB instances get it
+// (07-databases.md section 7).
+func (q *Queries) GetAvailableEngineImage(ctx context.Context, arg GetAvailableEngineImageParams) (Image, error) {
+	row := q.db.QueryRowContext(ctx, getAvailableEngineImage, arg.Engine, arg.EngineVersion)
+	var i Image
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.OsFamily,
+		&i.OsVersion,
+		&i.Architecture,
+		&i.DefaultUser,
+		&i.Format,
+		&i.State,
+		&i.StateReason,
+		&i.Progress,
+		&i.SourceUrl,
+		&i.ChecksumAlgo,
+		&i.ChecksumValue,
+		&i.SizeBytes,
+		&i.VirtualSizeBytes,
+		&i.MinDiskGb,
+		&i.VolumeName,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Kind,
+		&i.Engine,
+		&i.EngineVersion,
 	)
 	return i, err
 }
 
 const getImage = `-- name: GetImage :one
-SELECT id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at FROM images WHERE id = ?1
+SELECT id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at, kind, engine, engine_version FROM images WHERE id = ?1
 `
 
 type GetImageParams struct {
@@ -272,12 +340,15 @@ func (q *Queries) GetImage(ctx context.Context, arg GetImageParams) (Image, erro
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Kind,
+		&i.Engine,
+		&i.EngineVersion,
 	)
 	return i, err
 }
 
 const getImageByName = `-- name: GetImageByName :one
-SELECT id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at FROM images WHERE name = ?1
+SELECT id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at, kind, engine, engine_version FROM images WHERE name = ?1
 `
 
 type GetImageByNameParams struct {
@@ -309,24 +380,82 @@ func (q *Queries) GetImageByName(ctx context.Context, arg GetImageByNameParams) 
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Kind,
+		&i.Engine,
+		&i.EngineVersion,
 	)
 	return i, err
 }
 
+const listAvailableEngineImages = `-- name: ListAvailableEngineImages :many
+SELECT id, engine, engine_version, name, min_disk_gb, created_at FROM images
+WHERE kind = 'engine'
+  AND state = 'available'
+  AND engine IS NOT NULL
+  AND engine_version IS NOT NULL
+ORDER BY engine ASC, engine_version DESC, created_at DESC, id DESC
+`
+
+type ListAvailableEngineImagesRow struct {
+	ID            string         `json:"id"`
+	Engine        sql.NullString `json:"engine"`
+	EngineVersion sql.NullString `json:"engine_version"`
+	Name          string         `json:"name"`
+	MinDiskGb     int64          `json:"min_disk_gb"`
+	CreatedAt     string         `json:"created_at"`
+}
+
+// The engines a node can create a DB instance from: every available engine
+// image, newest first. /system/info reports the set, and a create request
+// resolves its engine and version against it (07-databases.md section 2).
+// Only 'available' images count: an engine image still downloading cannot boot
+// anything, so reporting it would offer an engine that is not there yet.
+func (q *Queries) ListAvailableEngineImages(ctx context.Context) ([]ListAvailableEngineImagesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAvailableEngineImages)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAvailableEngineImagesRow{}
+	for rows.Next() {
+		var i ListAvailableEngineImagesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Engine,
+			&i.EngineVersion,
+			&i.Name,
+			&i.MinDiskGb,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listImagesAsc = `-- name: ListImagesAsc :many
-SELECT id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at FROM images
+SELECT id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at, kind, engine, engine_version FROM images
 WHERE instr(lower(name), lower(?1)) > 0
   AND (CAST(?2 AS TEXT) = '' OR state = CAST(?2 AS TEXT))
-  AND (CAST(?3 AS TEXT) = ''
-       OR created_at > CAST(?3 AS TEXT)
-       OR (created_at = CAST(?3 AS TEXT) AND id > ?4))
+  AND (CAST(?3 AS TEXT) = '' OR kind = CAST(?3 AS TEXT))
+  AND (CAST(?4 AS TEXT) = ''
+       OR created_at > CAST(?4 AS TEXT)
+       OR (created_at = CAST(?4 AS TEXT) AND id > ?5))
 ORDER BY created_at ASC, id ASC
-LIMIT ?5
+LIMIT ?6
 `
 
 type ListImagesAscParams struct {
 	Query         string `json:"query"`
 	StateFilter   string `json:"state_filter"`
+	KindFilter    string `json:"kind_filter"`
 	CursorCreated string `json:"cursor_created"`
 	CursorID      string `json:"cursor_id"`
 	PageLimit     int64  `json:"page_limit"`
@@ -336,6 +465,7 @@ func (q *Queries) ListImagesAsc(ctx context.Context, arg ListImagesAscParams) ([
 	rows, err := q.db.QueryContext(ctx, listImagesAsc,
 		arg.Query,
 		arg.StateFilter,
+		arg.KindFilter,
 		arg.CursorCreated,
 		arg.CursorID,
 		arg.PageLimit,
@@ -369,6 +499,9 @@ func (q *Queries) ListImagesAsc(ctx context.Context, arg ListImagesAscParams) ([
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Kind,
+			&i.Engine,
+			&i.EngineVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -384,19 +517,21 @@ func (q *Queries) ListImagesAsc(ctx context.Context, arg ListImagesAscParams) ([
 }
 
 const listImagesDesc = `-- name: ListImagesDesc :many
-SELECT id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at FROM images
+SELECT id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at, kind, engine, engine_version FROM images
 WHERE instr(lower(name), lower(?1)) > 0
   AND (CAST(?2 AS TEXT) = '' OR state = CAST(?2 AS TEXT))
-  AND (CAST(?3 AS TEXT) = ''
-       OR created_at < CAST(?3 AS TEXT)
-       OR (created_at = CAST(?3 AS TEXT) AND id < ?4))
+  AND (CAST(?3 AS TEXT) = '' OR kind = CAST(?3 AS TEXT))
+  AND (CAST(?4 AS TEXT) = ''
+       OR created_at < CAST(?4 AS TEXT)
+       OR (created_at = CAST(?4 AS TEXT) AND id < ?5))
 ORDER BY created_at DESC, id DESC
-LIMIT ?5
+LIMIT ?6
 `
 
 type ListImagesDescParams struct {
 	Query         string `json:"query"`
 	StateFilter   string `json:"state_filter"`
+	KindFilter    string `json:"kind_filter"`
 	CursorCreated string `json:"cursor_created"`
 	CursorID      string `json:"cursor_id"`
 	PageLimit     int64  `json:"page_limit"`
@@ -406,10 +541,15 @@ type ListImagesDescParams struct {
 // so an empty query matches every row, and an empty state_filter matches every
 // state. The argument is not called "state" because that is a column name, and
 // sqlc would type the comparison as untyped.
+//
+// kind_filter follows the same idiom, but the service never leaves it empty for
+// a list anyone can reach: an engine image must not appear on the Images pages
+// (docs/design/07-databases.md section 3).
 func (q *Queries) ListImagesDesc(ctx context.Context, arg ListImagesDescParams) ([]Image, error) {
 	rows, err := q.db.QueryContext(ctx, listImagesDesc,
 		arg.Query,
 		arg.StateFilter,
+		arg.KindFilter,
 		arg.CursorCreated,
 		arg.CursorID,
 		arg.PageLimit,
@@ -443,6 +583,9 @@ func (q *Queries) ListImagesDesc(ctx context.Context, arg ListImagesDescParams) 
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Kind,
+			&i.Engine,
+			&i.EngineVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -500,7 +643,7 @@ UPDATE images
 SET state = 'deleting',
     updated_at = ?2
 WHERE id = ?1
-RETURNING id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at
+RETURNING id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at, kind, engine, engine_version
 `
 
 type MarkImageDeletingParams struct {
@@ -533,6 +676,9 @@ func (q *Queries) MarkImageDeleting(ctx context.Context, arg MarkImageDeletingPa
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Kind,
+		&i.Engine,
+		&i.EngineVersion,
 	)
 	return i, err
 }
@@ -544,7 +690,7 @@ SET state = 'pending',
     progress = 0,
     updated_at = ?2
 WHERE id = ?1
-RETURNING id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at
+RETURNING id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at, kind, engine, engine_version
 `
 
 type ResetImageToPendingParams struct {
@@ -579,6 +725,9 @@ func (q *Queries) ResetImageToPending(ctx context.Context, arg ResetImageToPendi
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Kind,
+		&i.Engine,
+		&i.EngineVersion,
 	)
 	return i, err
 }
@@ -589,7 +738,7 @@ SET name = ?2,
     description = ?3,
     updated_at = ?4
 WHERE id = ?1
-RETURNING id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at
+RETURNING id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at, kind, engine, engine_version
 `
 
 type UpdateImageMetadataParams struct {
@@ -632,6 +781,9 @@ func (q *Queries) UpdateImageMetadata(ctx context.Context, arg UpdateImageMetada
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Kind,
+		&i.Engine,
+		&i.EngineVersion,
 	)
 	return i, err
 }
@@ -643,7 +795,7 @@ SET state = ?2,
     progress = ?4,
     updated_at = ?5
 WHERE id = ?1
-RETURNING id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at
+RETURNING id, name, description, os_family, os_version, architecture, default_user, format, state, state_reason, progress, source_url, checksum_algo, checksum_value, size_bytes, virtual_size_bytes, min_disk_gb, volume_name, created_by, created_at, updated_at, kind, engine, engine_version
 `
 
 type UpdateImageProgressParams struct {
@@ -688,6 +840,9 @@ func (q *Queries) UpdateImageProgress(ctx context.Context, arg UpdateImageProgre
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Kind,
+		&i.Engine,
+		&i.EngineVersion,
 	)
 	return i, err
 }
