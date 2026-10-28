@@ -28,3 +28,6 @@ web/blob-report/
 
 # GoReleaser output
 dist/
+
+# Golden images built by packaging/images/*/build.sh (never committed)
+packaging/images/*/out/

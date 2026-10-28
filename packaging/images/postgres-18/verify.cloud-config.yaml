@@ -1,0 +1,150 @@
+#cloud-config
+# Hand-written stand-in for the seed internal/service/dbcloudinit will render at
+# launch (docs/design/07-databases.md §5). It exists to verify the golden image
+# and is read by ./verify.sh only; it never ships and kumod never reads it.
+#
+# It follows §5 step for step, with test values where a launch would substitute
+# the DB instance's own, so that what it proves about the image is what a real
+# first boot will rely on:
+#
+#   admin role      app        database  orders
+#   password        kumo-verify-pw-2026  (as a SCRAM verifier, never in cleartext)
+#   "VPC CIDR"      10.0.2.0/24          (QEMU's user-mode network)
+#   data disk       by-id serial kumodata
+#
+# The password is here as a pre-computed SCRAM-SHA-256 verifier, which is the
+# whole point of R8: kumod computes one and discards the password, so a seed
+# never carries a credential that can be replayed anywhere else. Postgres
+# accepting this string and then authenticating the original password is what
+# proves the format internal/service/dbcred must produce (M7.4).
+
+ssh_pwauth: false
+
+write_files:
+  # In /run, like the build's provision script, and run with `bash <path>`
+  # below because /run is mounted noexec: a first-boot script is not part
+  # of the running database and should not outlive the boot that needed it.
+  - path: /run/kumo-db-firstboot
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      export LC_ALL=C
+
+      trap 'printf "\nKUMO-DB-FAILED\n" >/dev/console; sync' ERR
+
+      # The data disk is found by its serial, not by enumeration order. /dev/vdb
+      # is whatever libvirt happened to attach second, and a boot that formats
+      # the wrong disk is not a failure anybody wants to debug twice.
+      DEV=/dev/disk/by-id/virtio-kumodata
+      LABEL=pgdata
+      ADMIN=app
+      DATABASE=orders
+      PORT=5432
+      VPC_CIDR=10.0.2.0/24
+      # 25% and 60% of the instance type's memory, which only the renderer knows
+      # (§7: the image records the knobs, never the values).
+      SHARED_BUFFERS=512MB
+      EFFECTIVE_CACHE_SIZE=1228MB
+      VERIFIER='SCRAM-SHA-256$4096:a3Vtb3ZlcmlmeXNhbHQxNg==$hiDQWkAbO/n9B7N0E+t3MMu7yW2/iznKlWrHTlhLak4=:6AV9UPNJrRLab9h/afybuQYged1b/uxraiwbnMww2sY='
+
+      CONFDIR=/etc/postgresql/18/main
+      DATADIR=/var/lib/postgresql/18/main
+
+      # 1. Format the data disk, but only if it carries no filesystem: a
+      #    requeued task re-runs this script against a disk that already holds a
+      #    cluster, and that must be a no-op rather than an erasure.
+      if ! blkid -p -s TYPE -o value "$DEV" >/dev/null 2>&1; then
+      	mkfs.ext4 -q -m 0 -L "$LABEL" "$DEV"
+      fi
+
+      # 2. Mount it at the postgres home, by label so it survives a device
+      #    rename, and own it before anything writes there.
+      install -d -m 0750 /var/lib/postgresql
+      grep -q "LABEL=$LABEL" /etc/fstab ||
+      	printf 'LABEL=%s /var/lib/postgresql ext4 defaults,noatime 0 2\n' "$LABEL" >>/etc/fstab
+      mountpoint -q /var/lib/postgresql || mount /var/lib/postgresql
+      chown postgres:postgres /var/lib/postgresql
+      chmod 0750 /var/lib/postgresql
+
+      # 3. Create the cluster on the data disk. The image ships without one, so
+      #    this is where a DB instance gets its own cluster identity.
+      if ! pg_lsclusters -h 18 main 2>/dev/null | grep -q .; then
+      	pg_createcluster 18 main --datadir="$DATADIR" -- \
+      		--encoding=UTF8 --locale=C.UTF-8 \
+      		--auth-local=peer --auth-host=scram-sha-256
+      fi
+
+      # 4. Configuration, as an include rather than edits to the generated
+      #    postgresql.conf, so the packaging's file stays the packaging's.
+      #    listen_addresses stays on localhost until step 7.
+      mkdir -p "$CONFDIR/conf.d"
+      cat >"$CONFDIR/conf.d/10-kumo.conf" <<-CONF
+      	listen_addresses = 'localhost'
+      	port = $PORT
+      	password_encryption = 'scram-sha-256'
+      	ssl = off
+      	shared_buffers = $SHARED_BUFFERS
+      	effective_cache_size = $EFFECTIVE_CACHE_SIZE
+      CONF
+
+      # 5. Only the VPC may reach it, and only with SCRAM. There is no network
+      #    policy behind this (R6): this file is the whole boundary.
+      cat >"$CONFDIR/pg_hba.conf" <<-HBA
+      	local   all   postgres          peer
+      	local   all   all               peer
+      	host    all   all   $VPC_CIDR   scram-sha-256
+      HBA
+      chown postgres:postgres "$CONFDIR/pg_hba.conf" "$CONFDIR/conf.d/10-kumo.conf"
+
+      # 6. Start on localhost and create the role and database. The verifier goes
+      #    in as the password: Postgres stores it verbatim, so the cleartext
+      #    never has to exist on this machine.
+      pg_ctlcluster 18 main start
+      # So postgresql-common's generator sees the new cluster and starts it on
+      # every later boot, which is what makes stop/start and reboot work.
+      systemctl daemon-reload
+      runuser -u postgres -- psql -v ON_ERROR_STOP=1 --no-psqlrc -q <<-SQL
+      	CREATE ROLE $ADMIN LOGIN CREATEDB PASSWORD '$VERIFIER';
+      	CREATE DATABASE $DATABASE OWNER $ADMIN;
+      	REVOKE ALL ON DATABASE $DATABASE FROM PUBLIC;
+      SQL
+
+      # 7. Open it to the VPC, last. Until this restart nothing outside the guest
+      #    can connect, so the port being open is proof that every step above
+      #    finished -- which is what lets kumod's readiness probe be a bare TCP
+      #    connect with no Postgres driver in the binary (§6).
+      sed -i "s/^listen_addresses = .*/listen_addresses = '*'/" "$CONFDIR/conf.d/10-kumo.conf"
+      pg_ctlcluster 18 main restart
+
+      # 8. Remove cloud-init's copies of this seed. obj.pkl is included because
+      #    the pickled datasource holds the user-data too. The seed disk itself
+      #    is still attached and is the host-side exposure §5 accounts for.
+      find /var/lib/cloud -type f \
+      	\( -name 'user-data*' -o -name 'vendor-data*' -o -name 'obj.pkl' \) \
+      	-exec shred -u {} + 2>/dev/null || true
+
+      # Everything below is the verification itself, and has no counterpart in
+      # what dbcloudinit will render.
+
+      # The cluster must be on the data disk, not on the root overlay (R4).
+      src=$(findmnt -no SOURCE --target "$DATADIR")
+      real=$(readlink -f "$DEV")
+      [ "$src" = "$real" ] || {
+      	printf 'datadir is on %s, expected %s\n' "$src" "$real" >/dev/console
+      	false
+      }
+
+      # A real login over TCP with the *cleartext* password, against the role
+      # created from the verifier. This is the check that proves R8's format.
+      addr=$(hostname -I | awk '{print $1}')
+      out=$(PGPASSWORD=kumo-verify-pw-2026 psql -h "$addr" -p "$PORT" -U "$ADMIN" \
+      	-d "$DATABASE" -tAc 'select current_user || (select setting from pg_settings where name = $$server_version$$)')
+      printf '\nKUMO-DB-LOGIN=%s\n' "$out" >/dev/console
+      printf 'KUMO-DB-DATADIR=%s\n' "$src" >/dev/console
+      printf 'KUMO-DB-DATADISK=%s\n' "$real" >/dev/console
+      printf 'KUMO-DB-ADDR=%s\n' "$addr" >/dev/console
+      printf 'KUMO-DB-READY\n' >/dev/console
+
+runcmd:
+  - [bash, /run/kumo-db-firstboot]
