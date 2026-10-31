@@ -92,3 +92,40 @@ func TestHasResourceShape(t *testing.T) {
 		})
 	}
 }
+
+func TestResourcePrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		value string
+		want  string
+		ok    bool
+	}{
+		{name: "instance", value: "i-0a1b2c3d4e5f60718", want: id.PrefixInstance, ok: true},
+		{name: "image", value: "img-0a1b2c3d4e5f60718", want: id.PrefixImage, ok: true},
+		{name: "key pair", value: "key-0a1b2c3d4e5f60718", want: id.PrefixKeyPair, ok: true},
+		{name: "task", value: "task-0a1b2c3d4e5f60718", want: id.PrefixTask, ok: true},
+		{name: "vpc", value: "vpc-0a1b2c3d4e5f60718", want: id.PrefixVPC, ok: true},
+		{name: "subnet", value: "subnet-0a1b2c3d4e5f60718", want: id.PrefixSubnet, ok: true},
+		{name: "network interface", value: "eni-0a1b2c3d4e5f60718", want: id.PrefixNetworkInterface, ok: true},
+		{name: "unknown prefix", value: "foo-0a1b2c3d4e5f60718", want: "", ok: false},
+		{name: "too short", value: "i-0a1b2c3d4e5f6071", want: "", ok: false},
+		{name: "uppercase hex", value: "i-0A1B2C3D4E5F60718", want: "", ok: false},
+		{name: "empty string", value: "", want: "", ok: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := id.ResourcePrefix(tt.value)
+			if ok != tt.ok {
+				t.Errorf("ResourcePrefix(%q) ok = %v, want %v", tt.value, ok, tt.ok)
+			}
+			if got != tt.want {
+				t.Errorf("ResourcePrefix(%q) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}
