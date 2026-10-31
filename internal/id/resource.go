@@ -46,6 +46,27 @@ func Subnet() string { return Resource(PrefixSubnet) }
 // NetworkInterface returns a network interface ID (eni-…).
 func NetworkInterface() string { return Resource(PrefixNetworkInterface) }
 
+// ResourcePrefix returns the prefix constant that matches value, or ("", false)
+// if no known prefix matches. It iterates the seven Prefix* constants and
+// delegates every shape check to HasResourceShape.
+func ResourcePrefix(value string) (string, bool) {
+	prefixes := [7]string{
+		PrefixInstance,
+		PrefixImage,
+		PrefixKeyPair,
+		PrefixTask,
+		PrefixVPC,
+		PrefixSubnet,
+		PrefixNetworkInterface,
+	}
+	for _, p := range prefixes {
+		if HasResourceShape(p, value) {
+			return p, true
+		}
+	}
+	return "", false
+}
+
 // HasResourceShape reports whether value looks like a resource ID with the
 // given prefix. It is a cheap guard for path parameters, not a check that the
 // resource exists.
