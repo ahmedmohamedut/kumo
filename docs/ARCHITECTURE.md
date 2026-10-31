@@ -44,3 +44,32 @@ docs/design/        design docs
 - Long operations are asynchronous: the handler creates a task and returns `202`.
 - Single binary, zero external services at runtime. No cgo (`CGO_ENABLED=0` builds must work).
 - No circular dependencies between packages.
+
+<!-- gestalt:architecture feature=e8e5ffd8-8d95-4824-be5d-8a1a6f74b301 START -->
+## Feature: Verification: id.ResourcePrefix
+
+### Summary
+Adds a pure utility function `ResourcePrefix(value string) (string, bool)` to `internal/id/resource.go`. It extracts the resource type prefix from a well-formed resource ID by delegating to the existing `HasResourceShape` function and the seven declared `Prefix*` constants.
+
+### Domain Impact
+- **Entity**: `ResourceID` (existing). No new entities or lifecycle states introduced.
+- **Business Rule**: `ResourcePrefix` strictly validates input against existing shape rules. Returns `(prefix, true)` on match, `("", false)` otherwise.
+
+### Data & Persistence
+- No SQL schemas, repositories, or transaction contracts required. This is a stateless utility addition.
+
+### Application & Modules
+- **Module**: `internal-id` (`internal/id`)
+- **Changes**:
+  - `internal/id/resource.go`: Append `ResourcePrefix` function.
+  - `internal/id/resource_test.go`: Append table-driven tests covering valid prefixes, unknown prefixes, length mismatches, uppercase hex, and empty strings.
+- **Dependencies**: None. Pure function, no external imports beyond standard library and existing package internals.
+
+### Contracts
+- `authContract`: N/A (No API endpoints)
+- `errorResponseContract`: N/A (No API endpoints)
+- `transactionContract`: N/A (No database writes)
+
+### Recommended Phases
+1. **Implement `ResourcePrefix` and Tests**: Add the function to `resource.go` and corresponding table-driven tests to `resource_test.go`. Verify stack compliance (Go 1.26, Gin/SQLite monolith context) and ensure no regression in existing `HasResourceShape` logic.
+<!-- gestalt:architecture feature=e8e5ffd8-8d95-4824-be5d-8a1a6f74b301 END -->
