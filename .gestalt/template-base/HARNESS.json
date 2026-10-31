@@ -2,7 +2,7 @@
   "name": "kumo",
   "version": "0.1.0",
   "tier": "tier1",
-  "description": "Kumo is an open-source, AWS-style private cloud for teams that find OpenStack too heavy and Proxmox too low-level. One Go binary, one web console, one SQLite file. No message bus cluster, no dozen microservices.",
+  "description": "test project",
   "stack": {
     "language": "typescript",
     "nodeVersion": "20",

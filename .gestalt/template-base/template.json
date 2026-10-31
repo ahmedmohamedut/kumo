@@ -4,7 +4,7 @@
   "templateBaseCommit": "",
   "seedVariables": {
     "agentPromptExtensionsYaml": "",
-    "architectureNotes": "Kumo is an open-source, AWS-style private cloud for teams that find OpenStack too heavy and Proxmox too low-level. One Go binary, one web console, one SQLite file. No message bus cluster, no dozen microservices.",
+    "architectureNotes": "test project",
     "buildCmd": "npx tsc --noEmit",
     "ciSetupSteps": "      - name: Set up Node\n        uses: actions/setup-node@v4\n        with:\n          node-version: '20'\n\n      - name: Install dependencies\n        run: npm install",
     "database": "postgres",
@@ -15,7 +15,7 @@
     "moduleStructure": "api/\nbin/\ncmd/\ninternal/\npackaging/\nscripts/\nweb/",
     "nodeVersion": "20",
     "packageManager": "npm",
-    "projectDescription": "Kumo is an open-source, AWS-style private cloud for teams that find OpenStack too heavy and Proxmox too low-level. One Go binary, one web console, one SQLite file. No message bus cluster, no dozen microservices.",
+    "projectDescription": "test project",
     "projectName": "kumo",
     "projectSlug": "kumo",
     "stackSection": "- **Language:** typescript\n- **Package manager:** npm\n- **Test framework:** jest\n- **Framework:** express",
