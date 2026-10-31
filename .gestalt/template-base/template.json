@@ -4,7 +4,7 @@
   "templateBaseCommit": "",
   "seedVariables": {
     "agentPromptExtensionsYaml": "",
-    "architectureNotes": "test project",
+    "architectureNotes": "kumo \u2014 managed by Gestalt.",
     "buildCmd": "npx tsc --noEmit",
     "ciSetupSteps": "      - name: Set up Node\n        uses: actions/setup-node@v4\n        with:\n          node-version: '20'\n\n      - name: Install dependencies\n        run: npm install",
     "database": "postgres",
@@ -15,7 +15,7 @@
     "moduleStructure": "api/\nbin/\ncmd/\ninternal/\npackaging/\nscripts/\nweb/",
     "nodeVersion": "20",
     "packageManager": "npm",
-    "projectDescription": "test project",
+    "projectDescription": "kumo \u2014 managed by Gestalt.",
     "projectName": "kumo",
     "projectSlug": "kumo",
     "stackSection": "- **Language:** typescript\n- **Package manager:** npm\n- **Test framework:** jest\n- **Framework:** express",

@@ -2,7 +2,7 @@
   "name": "kumo",
   "version": "0.1.0",
   "tier": "tier1",
-  "description": "test project",
+  "description": "kumo \u2014 managed by Gestalt.",
   "stack": {
     "language": "typescript",
     "nodeVersion": "20",
