@@ -1,0 +1,90 @@
+{
+  "scope": {
+    "affectedDomains": [
+      "internal-id"
+    ],
+    "affectedLayers": [
+      "unit"
+    ],
+    "isBreakingChange": false,
+    "estimatedComplexity": "small"
+  },
+  "successCriteria": [
+    {
+      "description": "The exported function ResourcePrefix(value string) (string, bool) exists in internal/id/resource.go and returns (prefix, true) when value matches the shape of a resource ID with one of the seven Prefix* constants, and (\"\", false) otherwise.",
+      "testable": true,
+      "layer": "unit"
+    },
+    {
+      "description": "Table-driven tests in internal/id/resource_test.go cover: a valid ID for each of the seven Prefix* constants, an unknown prefix, a value one hex character too short, a value with uppercase hex characters, and the empty string \u2014 each asserting the expected (prefix, ok) tuple.",
+      "testable": true,
+      "layer": "unit"
+    },
+    {
+      "description": "Existing tests in internal/id/resource_test.go continue to pass after the change, confirming no regression in HasResourceShape, Resource, or the existing helper functions.",
+      "testable": true,
+      "layer": "unit"
+    },
+    {
+      "description": "make test and make lint both succeed with the new code, confirming compilation, race-free execution, and lint compliance.",
+      "testable": true,
+      "layer": "unit"
+    }
+  ],
+  "constraints": [
+    "ResourcePrefix must reuse HasResourceShape and the seven existing Prefix* constants for all validation logic \u2014 no new shape-checking logic, no new imports, no new dependencies.",
+    "No new files, no new dependencies, and no modifications to existing functions or call sites are permitted.",
+    "Tests must follow the project convention: table-driven, in the id_test external package, with t.Parallel() on subtests.",
+    "The build must remain compatible with CGO_ENABLED=0 (no cgo dependencies introduced)."
+  ],
+  "outOfScope": [
+    "Any API endpoint or handler that consumes ResourcePrefix \u2014 this phase only adds the utility function and its tests.",
+    "Changes to the ResourceID entity shape, the Prefix* constants, or the HasResourceShape validation logic.",
+    "Frontend integration or console-side usage of ResourcePrefix."
+  ],
+  "ambiguities": [],
+  "entityInvariants": [
+    {
+      "entity": "ResourceID",
+      "mustExistOrExtend": true,
+      "invariant": "A ResourceID's prefix must be one of the seven Prefix* constants (PrefixInstance, PrefixImage, PrefixKeyPair, PrefixTask, PrefixVPC, PrefixSubnet, PrefixNetworkInterface), and its hex part must be exactly 17 lowercase hex characters."
+    },
+    {
+      "entity": "ResourceID",
+      "mustExistOrExtend": true,
+      "invariant": "ResourcePrefix must return the exact prefix constant that matched; it must never return a modified or aliased prefix string."
+    }
+  ],
+  "interfaceConstraints": [
+    {
+      "operation": "ResourcePrefix(value string) (string, bool)",
+      "authRule": "N/A \u2014 pure utility function, no authentication required.",
+      "idempotent": true,
+      "errorSemantics": "Returns (\"\", false) on no match rather than an error value; no panics on any input."
+    }
+  ],
+  "consistencyRequirements": [
+    {
+      "requirement": "ResourcePrefix must iterate the same seven Prefix* constants defined in internal/id/resource.go and delegate every shape check to HasResourceShape \u2014 the validation contract must remain identical to what HasResourceShape already enforces.",
+      "referencePath": "internal/id/resource.go"
+    },
+    {
+      "requirement": "Test cases must use the same valid ID format (prefix + \"-\" + 17 lowercase hex chars) that HasResourceShape accepts, and the same invalid inputs (too short, uppercase hex, empty string, unknown prefix) that HasResourceShape rejects.",
+      "referencePath": "internal/id/resource_test.go"
+    },
+    {
+      "requirement": "The test file must remain in the id_test external package and follow the existing table-driven pattern with t.Parallel() subtests, matching the style of TestHasResourceShape and TestResource.",
+      "referencePath": "internal/id/resource_test.go"
+    }
+  ],
+  "integrationPoints": [
+    {
+      "target": "internal/id/resource.go \u2014 append ResourcePrefix alongside existing functions without modifying HasResourceShape, Resource, or any Prefix* constant.",
+      "why": "The function must coexist with the existing id package API and reuse its constants and validation logic."
+    },
+    {
+      "target": "internal/id/resource_test.go \u2014 append a new TestResourcePrefix function in the id_test package.",
+      "why": "Tests must live alongside existing tests in the same package and file, following the established table-driven convention."
+    }
+  ]
+}
