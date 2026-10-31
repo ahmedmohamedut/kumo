@@ -1,0 +1,76 @@
+{
+  "scope": {
+    "affectedDomains": [
+      "id"
+    ],
+    "affectedLayers": [
+      "unit"
+    ],
+    "isBreakingChange": false,
+    "estimatedComplexity": "small"
+  },
+  "successCriteria": [
+    {
+      "description": "The exported function ResourcePrefix(value string) (string, bool) exists in internal/id/resource.go and returns (prefix, true) when value matches one of the seven Prefix* constants via HasResourceShape, and (\"\", false) otherwise.",
+      "testable": true,
+      "layer": "unit"
+    },
+    {
+      "description": "Table-driven tests in internal/id/resource_test.go cover: a valid ID for each of the seven prefixes, an unknown prefix, a value one hex character too short, a value with uppercase hex, and the empty string \u2014 each asserting the expected (prefix, ok) tuple.",
+      "testable": true,
+      "layer": "unit"
+    },
+    {
+      "description": "All existing tests in internal/id/resource_test.go continue to pass after the change (no regression in HasResourceShape, Resource, KeyPair, VPC, Subnet, or NetworkInterface).",
+      "testable": true,
+      "layer": "unit"
+    },
+    {
+      "description": "make lint test passes with no errors or warnings.",
+      "testable": true,
+      "layer": "unit"
+    }
+  ],
+  "constraints": [
+    "ResourcePrefix must reuse HasResourceShape and the existing Prefix* constants for all shape validation \u2014 no new validation logic may be introduced.",
+    "No new files, no new dependencies, and no changes to any existing function signatures, call sites, or exported API surface beyond the addition of ResourcePrefix.",
+    "Tests must be table-driven, live in the id_test package in resource_test.go, and follow the same t.Parallel() and subtest pattern as existing tests.",
+    "No CGO may be introduced; the build must remain compatible with CGO_ENABLED=0."
+  ],
+  "outOfScope": [
+    "Any API endpoint, handler, or route that uses ResourcePrefix \u2014 this phase adds only the utility function and its tests.",
+    "Any service-layer integration, refactoring of HasResourceShape, or changes to existing function behavior or call sites.",
+    "Adding new resource types or Prefix* constants beyond the seven already declared."
+  ],
+  "ambiguities": [],
+  "entityInvariants": [
+    {
+      "entity": "ResourceID",
+      "mustExistOrExtend": false,
+      "invariant": "ResourcePrefix must correctly identify the prefix of any valid resource ID by delegating exclusively to HasResourceShape and the seven existing Prefix* constants; it must return (\"\", false) for any value that does not match all seven."
+    }
+  ],
+  "interfaceConstraints": [
+    {
+      "operation": "ResourcePrefix(value string) (string, bool)",
+      "authRule": "N/A \u2014 pure utility function, no authentication required",
+      "idempotent": true,
+      "errorSemantics": "Returns (\"\", false) on no match rather than an error value; the bool return is the sole indicator of success/failure"
+    }
+  ],
+  "consistencyRequirements": [
+    {
+      "requirement": "ResourcePrefix must iterate the seven Prefix* constants in the same order they are declared in resource.go and delegate shape validation to HasResourceShape \u2014 the exact same validation logic already in HasResourceShape must be reused, not reimplemented.",
+      "referencePath": "internal/id/resource.go"
+    },
+    {
+      "requirement": "Tests must follow the same table-driven pattern, t.Parallel() usage, and subtest naming convention as the existing TestHasResourceShape and TestResource tests in resource_test.go.",
+      "referencePath": "internal/id/resource_test.go"
+    },
+    {
+      "requirement": "The id_test package import path and test file naming must remain consistent with the existing Go module github.com/ahmedmohamedut/kumo/internal/id.",
+      "referencePath": "internal/id/resource_test.go"
+    }
+  ],
+  "integrationPoints": []
+}
