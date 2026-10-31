@@ -1,0 +1,79 @@
+{
+  "scope": {
+    "affectedDomains": [
+      "internal-id"
+    ],
+    "affectedLayers": [
+      "unit"
+    ],
+    "isBreakingChange": false,
+    "estimatedComplexity": "small"
+  },
+  "successCriteria": [
+    {
+      "description": "The exported function ResourcePrefix(value string) (string, bool) exists in internal/id/resource.go with the exact signature and returns (prefix, true) when value matches any of the seven Prefix* constants via HasResourceShape, and (\"\", false) otherwise.",
+      "testable": true,
+      "layer": "unit"
+    },
+    {
+      "description": "Table-driven tests in internal/id/resource_test.go (id_test package) cover all seven valid prefixes (i-, img-, key-, task-, vpc-, subnet-, eni-), an unknown prefix (foo-), a too-short value, an uppercase-hex value, and the empty string \u2014 each asserting the correct (prefix, ok) tuple \u2014 and all tests pass.",
+      "testable": true,
+      "layer": "unit"
+    },
+    {
+      "description": "All existing tests in internal/id/resource_test.go (TestResource, TestKeyPair, TestNetworkResourceIDs, TestHasResourceShape) continue to pass with no regression.",
+      "testable": true,
+      "layer": "unit"
+    },
+    {
+      "description": "The code compiles with CGO_ENABLED=0 and passes make lint test.",
+      "testable": true,
+      "layer": "unit"
+    }
+  ],
+  "constraints": [
+    "ResourcePrefix must delegate shape validation entirely to the existing HasResourceShape(prefix, value string) bool function and must iterate the seven existing Prefix* constants (PrefixInstance, PrefixImage, PrefixKeyPair, PrefixTask, PrefixVPC, PrefixSubnet, PrefixNetworkInterface) \u2014 no new shape-validation logic may be introduced.",
+    "No new files, no new dependencies, and no modifications to any existing function, constant, or call site outside internal/id/resource.go and internal/id/resource_test.go.",
+    "Tests must use the id_test external package (package id_test) and the established table-driven test pattern, matching the style of TestHasResourceShape and TestResource in resource_test.go."
+  ],
+  "outOfScope": [
+    "No changes to existing functions (HasResourceShape, Resource, KeyPair, VPC, Subnet, NetworkInterface) or any existing call sites.",
+    "No integration with API handlers, services, or any other module \u2014 ResourcePrefix is a pure utility with no cross-module dependencies.",
+    "No documentation updates beyond inline code comments; no changes to openapi.yaml, ARCHITECTURE.md, or other design docs."
+  ],
+  "ambiguities": [],
+  "entityInvariants": [
+    {
+      "entity": "ResourceID",
+      "mustExistOrExtend": true,
+      "invariant": "ResourcePrefix must correctly identify the prefix of any well-formed ResourceID (prefix + \"-\" + 17 lowercase hex characters) by delegating to HasResourceShape; it must return (\"\", false) for any value that does not match one of the seven declared Prefix* constants."
+    }
+  ],
+  "interfaceConstraints": [
+    {
+      "operation": "ResourcePrefix(value string) (string, bool)",
+      "authRule": "N/A \u2014 pure utility function, no authentication required",
+      "idempotent": true,
+      "errorSemantics": "Returns (prefix, true) on match, (\"\", false) on no match \u2014 no error values, no wrapping"
+    }
+  ],
+  "consistencyRequirements": [
+    {
+      "requirement": "The ResourcePrefix function must reuse the existing HasResourceShape function for all shape validation \u2014 the validation logic must not be reimplemented.",
+      "referencePath": "internal/id/resource.go"
+    },
+    {
+      "requirement": "The ResourcePrefix function must iterate the seven existing Prefix* constants (PrefixInstance, PrefixImage, PrefixKeyPair, PrefixTask, PrefixVPC, PrefixSubnet, PrefixNetworkInterface) \u2014 no new constants or prefix values may be introduced.",
+      "referencePath": "internal/id/resource.go"
+    },
+    {
+      "requirement": "Tests must follow the established table-driven pattern with subtests (t.Run) and t.Parallel(), matching the style of TestHasResourceShape and TestResource in resource_test.go.",
+      "referencePath": "internal/id/resource_test.go"
+    },
+    {
+      "requirement": "Tests must use the id_test external package (package id_test) and import github.com/ahmedmohamedut/kumo/internal/id, matching the existing test file structure.",
+      "referencePath": "internal/id/resource_test.go"
+    }
+  ],
+  "integrationPoints": []
+}
