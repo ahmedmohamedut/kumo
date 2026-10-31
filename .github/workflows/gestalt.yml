@@ -69,54 +69,53 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+
+      # Same toolchain setup as ci.yml: go.mod is the single source of the Go version, and
+      # the console is built with the Node line ci.yml pins.
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
 
       - name: Install dependencies
-        run: npm install
+        run: make deps
 
       # ── Every check is NON-BLOCKING (continue-on-error) — the Gestalt CI-agent is the SOLE gate.
       # No individual check's exit code decides "does this phase proceed"; each check RUNS and
       # REPORTS its outcome (captured below into ci-results.json), and the CI-agent judges the
       # collected outcomes + logs by DevOps severity (blocking-defect / blocking-security /
-      # non-blocking-hygiene / infra-noise / flaky-inconclusive). This is where enforcement moved:
-      # a real compile/test/security failure still blocks (via the CI-agent), but an infra finding
-      # (e.g. mutable-action-tag on the workflow file) no longer fails the phase unrecoverably.
-      # Platform-provided pattern — see docs/guides/ci-cd/github-actions.md. Each check carries an
-      # `id:` so its `.outcome` is recorded even when it fails.
+      # non-blocking-hygiene / infra-noise / flaky-inconclusive). A real compile/test/security
+      # failure still blocks (via the CI-agent). Each check carries an `id:` so its `.outcome`
+      # is recorded even when it fails. The commands are Kumo's own Makefile targets, so green
+      # here means what green means on a developer's machine (see ci.yml).
       - name: Compile
         id: compile
         continue-on-error: true
-        run: |
-          if [ -f package.json ] || [ -f requirements.txt ] || [ -f pyproject.toml ] || [ -f go.mod ] || [ -f Cargo.toml ]; then
-            npx tsc --noEmit
-          else
-            echo "No project manifest found yet — skipping compile (run 'gestalt run' to scaffold the project)"
-          fi
+        # AGENTS.md architecture rule 7: Kumo builds with CGO_ENABLED=0. `./...` compiles every
+        # package, including tests' dependencies, without running anything.
+        run: CGO_ENABLED=0 go build ./... && CGO_ENABLED=0 go vet ./...
 
       - name: Test
         id: test
         continue-on-error: true
-        run: |
-          if [ -f package.json ] || [ -f requirements.txt ] || [ -f pyproject.toml ] || [ -f go.mod ] || [ -f Cargo.toml ]; then
-            npx jest --passWithNoTests
-          else
-            echo "No project manifest found yet — skipping tests (run 'gestalt run' to scaffold the project)"
-          fi
+        # `make test` stages the console first (internal/webui asserts one is embedded), then
+        # runs `go test ./... -race -count=1` and the web tests.
+        run: make test
 
       - name: Lint
         id: lint
         continue-on-error: true
-        run: |
-          if [ -f package.json ] || [ -f requirements.txt ] || [ -f pyproject.toml ] || [ -f go.mod ] || [ -f Cargo.toml ]; then
-            npx eslint@9 .
-          else
-            echo "No project manifest found yet — skipping lint"
-          fi
+        # golangci-lint, oxlint, prettier --check and tsc --noEmit.
+        run: make lint
 
       - name: Security scan
         id: semgrep

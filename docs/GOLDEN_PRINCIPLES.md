@@ -6,45 +6,46 @@ The breach RECORD is closed only by a human; a breach whose findings name a
 file may first get one bounded, audited corrective pass that must re-gate
 (platform GP-003 / ADR-075).
 
-Stylistic rules and architectural conventions (no-any, no-direct-db,
-no-hardcoded-secrets, etc.) live in `HARNESS.json` under
-`constraints.rules` and produce `CONSTRAINT_VIOLATION` signals that the
-platform can auto-retry. The eight principles below are the ones that
-get a human in the loop.
+Stylistic rules and architectural conventions (layering, no-cgo, sqlc, etc.)
+live in `HARNESS.json` under `constraints.rules` and produce
+`CONSTRAINT_VIOLATION` signals that the platform can auto-retry. The
+principles below are the ones that get a human in the loop. They restate
+the hard rules in `AGENTS.md`.
 
-## GP-001 — Repository pattern
+## GP-001 — Data access goes through the store layer
 
-All database access goes through repository interfaces.
-Never query the database directly from services or controllers.
+All database access goes through `internal/store` (sqlc-generated queries, goose
+migrations). Handlers and services never build or run SQL themselves.
 
-## GP-002 — Audit records
+## GP-002 — State changes are traceable
 
-All state-changing operations write an audit record.
+Every state-changing operation on a resource is recorded as a task or an audit
+event, so what happened to an instance, image or key pair can be reconstructed.
 
 ## GP-003 — Input validation
 
-Validate all inputs at API boundaries before processing.
+Validate and bound all input at the API boundary (names, sizes, URLs) before it
+reaches a service. Image import URLs allow only `http(s)` and block link-local
+and metadata ranges (SSRF).
 
 ## GP-004 — No sensitive data in logs
 
-Never log passwords, tokens, PII, or financial data.
+Never log passwords, tokens, private keys or `user_data`. A generated private
+key is returned exactly once, in the create response, and is never stored.
 
-## GP-005 — RBAC enforcement
+## GP-005 — Authentication on the API
 
-All API endpoints enforce role-based access control.
+All `/api/v1/*` routes except `/auth/login`, `/auth/refresh` and `/healthz`
+require a valid JWT. Refresh tokens are stored hashed.
 
-## GP-006 — Error handling
+## GP-006 — Errors are wrapped and mapped at the edge
 
-No unhandled promise rejections. All async errors are caught and handled.
+Errors are wrapped with `%w`; services return sentinel domain errors
+(`ErrNotFound`, `ErrConflict`, `ErrInvalid`, `ErrQuota`) and only `internal/api`
+maps them to HTTP status, using the error envelope in `docs/design/01-api.md`.
 
-## GP-007 — UUIDs in all external interfaces
+## GP-007 — Resource IDs follow the documented formats
 
-Internal database identifiers (auto-increment integers, sequences) are never
-exposed in API responses, URLs, or client-side code. All external identifiers
-are UUIDs.
-
-## GP-008 — Approval workflows are immutable once completed
-
-A completed approval cannot be modified or deleted. Status transitions are
-one-way (`draft → submitted → approved/rejected`); a reversal creates a new
-instance that references the original.
+External identifiers use the prefixed formats from `internal/id` (`i-`, `img-`,
+`key-`, `task-`) and UUIDv7 for users; internal auto-increment keys are never
+exposed in API responses or URLs.

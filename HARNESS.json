@@ -4,14 +4,14 @@
   "tier": "tier1",
   "description": "Kumo is an open-source, AWS-style private cloud for teams that find OpenStack too heavy and Proxmox too low-level. One Go binary, one web console, one SQLite file. No message bus cluster, no dozen microservices.",
   "stack": {
-    "language": "typescript",
-    "nodeVersion": "20",
-    "packageManager": "npm",
-    "testFramework": "jest",
-    "framework": "express",
+    "language": "go",
+    "goVersion": "1.26",
+    "packageManager": "go modules (backend), npm (web/)",
+    "testFramework": "go test",
+    "framework": "gin",
     "frontend": "react",
-    "database": "postgres",
-    "architectureStyle": "modular-monolith"
+    "database": "sqlite",
+    "architectureStyle": "layered-monolith"
   },
   "_comment_gate": "qualityGate: what the gate enforces. `applicationRoots` declares each BUILD in this repository so the dependency map in docs/ARCHITECTURE.md can describe more than one; `ownedDecisions` names symbols whose rule belongs to a single module. Both are read by the constraint agent's deterministic checks. See docs/guides/pipeline-yaml.md.",
   "qualityGate": {
@@ -28,24 +28,16 @@
       "TEST_FAILURE"
     ],
     "maxRetries": 3,
-    "_comment_applicationRoots": "Each BUILD whose module boundaries the dependency map describes. `prefix` keeps two builds' identically-named modules apart in one flat map; `containers` are the directories under the root that hold modules. Module names DERIVE from the path: <prefix><name> under `modules`, <prefix><container>-<name> elsewhere. Declare nothing and only the repository-root src/ is checked. The web/src root is declared because this template targets a web front end; a root that matches no directory yet is inert until the project creates one.",
+    "_comment_applicationRoots": "Only the web console is declared. The dependency-map check resolves RELATIVE imports (../module), which is how TypeScript imports modules; Go imports by module path, so the Go side (internal/*) is not mapped and its layering is enforced by the `layering` agent rule instead. Declared containers are the web/src directories that hold feature modules.",
     "applicationRoots": [
-      {
-        "path": "src",
-        "prefix": "",
-        "containers": [
-          "modules",
-          "shared"
-        ]
-      },
       {
         "path": "web/src",
         "prefix": "web-",
         "containers": [
-          "modules",
-          "shared",
-          "presentation",
-          "infrastructure"
+          "features",
+          "components",
+          "lib",
+          "app"
         ]
       }
     ],
@@ -53,23 +45,41 @@
     "ownedDecisions": []
   },
   "constraints": {
-    "_comment": "Project-wide rules. Every rule MUST name its enforcer — a rule that names none is policy nobody applies, which is the state all four of these were in until 2026-09-30. `ci` rules name a job in this project's own workflows; the gate CONFIRMS that job ran rather than re-checking, because re-implementing semgrep or eslint beside them would be strictly worse and would double every finding.",
+    "_comment": "Project-wide rules. Every rule MUST name its enforcer \u2014 a rule that names none is policy nobody applies, which is the state all four of these were in until 2026-09-30. `ci` rules name a job in this project's own workflows; the gate CONFIRMS that job ran rather than re-checking, because re-implementing semgrep or eslint beside them would be strictly worse and would double every finding.",
     "rules": [
       {
-        "id": "no-any",
-        "description": "Use unknown with type guards instead of any",
+        "id": "layering",
+        "description": "api -> service -> (store, hypervisor). Handlers never call libvirt or SQL directly; services never import gin; HTTP status mapping happens in internal/api only (AGENTS.md architecture rule 1)",
+        "severity": "high",
+        "enforcer": "agent"
+      },
+      {
+        "id": "no-cgo",
+        "description": "Kumo builds with CGO_ENABLED=0; no cgo dependency may be introduced (AGENTS.md architecture rule 7)",
         "severity": "high",
         "enforcer": "ci",
         "ciJob": "quality",
-        "ciStep": "Lint"
+        "ciStep": "Compile"
       },
       {
         "id": "no-hardcoded-secrets",
-        "description": "No hardcoded passwords, API keys, or tokens",
+        "description": "No hardcoded passwords, API keys, or tokens; never log secrets, tokens, private keys or user_data",
         "severity": "critical",
         "enforcer": "ci",
         "ciJob": "quality",
         "ciStep": "Security scan"
+      },
+      {
+        "id": "sql-via-sqlc",
+        "description": "SQL lives in internal/store/queries/*.sql and is generated with sqlc; no string-concatenated SQL; applied goose migrations are never edited",
+        "severity": "high",
+        "enforcer": "agent"
+      },
+      {
+        "id": "async-long-operations",
+        "description": "Long operations (image download, volume creation, VM boot) create a task and return 202; an HTTP request never blocks on them",
+        "severity": "high",
+        "enforcer": "agent"
       }
     ]
   },
@@ -95,8 +105,8 @@
   },
   "_comment_verification": "verification.command: the project's REAL install+compile+test invocation, run in the work dir after the code agent declares done and BEFORE the commit, so a compile error cannot reach CI. Ideally the same command CI runs. Absent or empty means verification is skipped.",
   "verification": {
-    "command": "if [ -f package.json ]; then npm install --include=dev && if [ -f tsconfig.json ]; then npx tsc --noEmit; fi && npx jest --passWithNoTests; else echo \"no package.json yet - skipping verification\"; fi",
-    "timeoutSeconds": 900
+    "command": "make test && make lint",
+    "timeoutSeconds": 1800
   },
   "maintenance": {
     "driftCheck": {
