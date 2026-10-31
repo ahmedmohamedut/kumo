@@ -1,0 +1,27 @@
+{
+  "templateId": "corporate-ops-web-mobile",
+  "templateVersion": "0.62.0",
+  "templateBaseCommit": "",
+  "seedVariables": {
+    "agentPromptExtensionsYaml": "",
+    "architectureNotes": "Kumo is an open-source, AWS-style private cloud for teams that find OpenStack too heavy and Proxmox too low-level. One Go binary, one web console, one SQLite file. No message bus cluster, no dozen microservices.",
+    "buildCmd": "npx tsc --noEmit",
+    "ciSetupSteps": "      - name: Set up Node\n        uses: actions/setup-node@v4\n        with:\n          node-version: '20'\n\n      - name: Install dependencies\n        run: npm install",
+    "database": "postgres",
+    "framework": "express",
+    "frontend": "react",
+    "language": "typescript",
+    "lintCmd": "npx eslint@9 .",
+    "moduleStructure": "api/\nbin/\ncmd/\ninternal/\npackaging/\nscripts/\nweb/",
+    "nodeVersion": "20",
+    "packageManager": "npm",
+    "projectDescription": "Kumo is an open-source, AWS-style private cloud for teams that find OpenStack too heavy and Proxmox too low-level. One Go binary, one web console, one SQLite file. No message bus cluster, no dozen microservices.",
+    "projectName": "kumo",
+    "projectSlug": "kumo",
+    "stackSection": "- **Language:** typescript\n- **Package manager:** npm\n- **Test framework:** jest\n- **Framework:** express",
+    "testCmd": "npx jest --passWithNoTests",
+    "testFramework": "jest",
+    "verificationCmd": "if [ -f package.json ]; then npm install --include=dev && if [ -f tsconfig.json ]; then npx tsc --noEmit; fi && npx jest --passWithNoTests; else echo \"no package.json yet - skipping verification\"; fi"
+  },
+  "_comment": "What the template said when this project was seeded \u2014 the BASE of the three-way merge `gestalt template upgrade` performs. Read-only to every agent, and kept by the merge purge. Do not edit by hand: editing it makes a template change look like your customization, or the reverse."
+}
