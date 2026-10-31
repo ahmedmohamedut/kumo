@@ -105,7 +105,7 @@
   },
   "_comment_verification": "verification.command: the project's REAL install+compile+test invocation, run in the work dir after the code agent declares done and BEFORE the commit, so a compile error cannot reach CI. Ideally the same command CI runs. Absent or empty means verification is skipped.",
   "verification": {
-    "command": "make test && make lint",
+    "command": "make deps && make test && make lint",
     "timeoutSeconds": 1800
   },
   "maintenance": {
