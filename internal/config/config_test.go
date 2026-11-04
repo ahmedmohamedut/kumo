@@ -450,8 +450,9 @@ func TestLoadObjectStore(t *testing.T) {
 // agree, or a service built directly in a test would enforce different rules than
 // the running node.
 func TestCapacityDefaultsMatchTheConfiguration(t *testing.T) {
-	t.Parallel()
-
+	// Not parallel: clearKumoEnv uses t.Setenv, which Go refuses to combine
+	// with t.Parallel. It only panicked on a machine that had a KUMO_*
+	// variable set, because that is when clearKumoEnv has anything to clear.
 	clearKumoEnv(t)
 	cfg, err := config.Load()
 	if err != nil {

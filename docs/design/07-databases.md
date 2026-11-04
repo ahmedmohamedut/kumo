@@ -186,8 +186,15 @@ Notes on what is **not** in the table:
   `template1`.
 - `storage_gb`: 5–2048, and at least the engine image's `min_disk_gb`.
 - The admin password: 10–128 chars, the same floor as a Kumo user's password
-  (`01-api.md` §Auth). Printable ASCII only, so that nothing downstream has to
-  think about normalization.
+  (`01-api.md` §Auth). **Printable ASCII only, and that is a correctness rule
+  rather than a convenience.** SCRAM runs the password through SASLprep
+  (RFC 4013) before deriving, in the client and inside Postgres alike. Kumo
+  pre-computes the verifier (§5) and does not implement SASLprep, which is safe
+  exactly while the password is printable ASCII, where SASLprep is the identity.
+  For anything else the client would derive from a normalized password and Kumo
+  from the raw one: the login would fail with a correct password, and nothing
+  would look broken until someone tried to connect. `internal/service/dbcred`
+  enforces it, so the rule holds even if an API layer forgets it.
 
 ## 4. Lifecycle
 
