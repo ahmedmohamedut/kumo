@@ -25,7 +25,7 @@ If code and design docs disagree, **stop and flag it**. Do not silently diverge.
 - Backend: Go, Gin, `github.com/digitalocean/go-libvirt`, SQLite (`modernc.org/sqlite`, pure Go, no CGO), JWT, `github.com/aws/aws-sdk-go-v2/service/s3` (object storage only, inside `internal/objectstore/rustfs`).
 - Frontend: React + Redux Toolkit (RTK Query) + Vite + TypeScript + Cloudscape Design System.
 - Production artifact: a single binary `bin/kumod` with the built frontend embedded via `go:embed`.
-- Scope of the current phase: **Instances, Images, Key Pairs, Auth**, plus **object storage (S3 via RustFS, M6)**. Managed Postgres is **approved and in progress** as M7 (`docs/design/07-databases.md`): M7.1-M7.5 are built, the console (M7.6) and the real-node run (M7.7) are not. Work one M7 task at a time, in order. Do not implement Redis, queues, secrets or Kubernetes yet.
+- Scope of the current phase: **Instances, Images, Key Pairs, Auth**, plus **object storage (S3 via RustFS, M6)**. Managed Postgres is **approved and in progress** as M7 (`docs/design/07-databases.md`): M7.1-M7.6 are built; the real-node run (M7.7) is not. Work one M7 task at a time, in order. Do not implement Redis, queues, secrets or Kubernetes yet.
 
 ## Commands
 

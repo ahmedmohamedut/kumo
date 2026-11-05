@@ -17,6 +17,19 @@ const storageSection: NavItem = {
 }
 
 /**
+ * The Databases section (07-databases.md). It is shown only on a node with the
+ * module on; see navigationFor. A node with the module on and no engine image
+ * keeps it: the pages explain the one import an operator has to do, which is
+ * the opposite of a section that could only fail.
+ */
+const databasesSection: NavItem = {
+  type: 'section',
+  text: 'Databases',
+  defaultExpanded: true,
+  items: [{ type: 'link', text: 'Databases', href: '/databases' }],
+}
+
+/**
  * Side navigation from 03-frontend.md §2: every section a node can have.
  * activeHref matches against all of it, so a Storage page is still the active
  * entry while the system info that reveals the section is loading.
@@ -44,15 +57,25 @@ export const navigationItems: ReadonlyArray<NavItem> = [
     ],
   },
   storageSection,
+  databasesSection,
 ]
 
 /**
  * navigationFor is the navigation a node shows: Storage only when object
- * storage is configured, because its pages would otherwise only explain that
- * it is off.
+ * storage is configured and Databases only when the databases module is on,
+ * because those pages would otherwise only explain that they are off.
  */
-export function navigationFor({ objectStorage }: { objectStorage: boolean }): NavItem[] {
-  return navigationItems.filter((entry) => objectStorage || entry !== storageSection)
+export function navigationFor({
+  objectStorage,
+  databases,
+}: {
+  objectStorage: boolean
+  databases: boolean
+}): NavItem[] {
+  return navigationItems.filter(
+    (entry) =>
+      (objectStorage || entry !== storageSection) && (databases || entry !== databasesSection),
+  )
 }
 
 /** activeHref is the navigation entry matching the current route, if any. */

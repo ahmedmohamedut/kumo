@@ -14,11 +14,11 @@ how to get one and nothing else works.
 
 ## 0. Status
 
-**Approved and in progress** as milestone M7 (`05-roadmap.md`). M7.1 to M7.5 are
+**Approved and in progress** as milestone M7 (`05-roadmap.md`). M7.1 to M7.6 are
 built: the golden image recipe, engine images, the data disk and the hidden VM,
-the credential and the seed, and the DB instances API with its tasks, its
-readiness probe and its reconcile pass. What is left is the console (M7.6) and
-the end-to-end run on a real node (M7.7).
+the credential and the seed, the DB instances API with its tasks, its readiness
+probe and its reconcile pass, and the Databases console (`03-frontend.md` §6.9).
+What is left is the end-to-end run on a real node (M7.7).
 
 ### Scope of the first version
 

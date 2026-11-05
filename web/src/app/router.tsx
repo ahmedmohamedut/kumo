@@ -29,6 +29,9 @@ import { NotFoundPage } from '@/features/system/NotFoundPage'
 import { BucketsListPage } from '@/features/buckets/BucketsListPage'
 import { CreateBucketPage } from '@/features/buckets/CreateBucketPage'
 import { BucketDetailPage } from '@/features/buckets/BucketDetailPage'
+import { DBInstancesListPage } from '@/features/dbinstances/DBInstancesListPage'
+import { CreateDBInstancePage } from '@/features/dbinstances/CreateDBInstancePage'
+import { DBInstanceDetailPage } from '@/features/dbinstances/DBInstanceDetailPage'
 import { AccessKeysListPage } from '@/features/accesskeys/AccessKeysListPage'
 import { CreateAccessKeyPage, EditAccessKeyPage } from '@/features/accesskeys/AccessKeyFormPage'
 
@@ -70,6 +73,9 @@ export const router = createBrowserRouter([
       { path: 'buckets', element: <BucketsListPage /> },
       { path: 'buckets/create', element: <CreateBucketPage /> },
       { path: 'buckets/:bucketName', element: <BucketDetailPage /> },
+      { path: 'databases', element: <DBInstancesListPage /> },
+      { path: 'databases/create', element: <CreateDBInstancePage /> },
+      { path: 'databases/:dbInstanceId', element: <DBInstanceDetailPage /> },
       { path: 'access-keys', element: <AccessKeysListPage /> },
       { path: 'access-keys/create', element: <CreateAccessKeyPage /> },
       { path: 'access-keys/:accessKeyId/edit', element: <EditAccessKeyPage /> },

@@ -22,13 +22,18 @@ const SERVICE_HOME: Record<string, string> = {
   compute: '/instances',
   storage: '/buckets',
   network: '/vpcs',
+  database: '/databases',
 }
 
 /**
  * servicesMenu lists the service groups. Storage is live on a node with object
- * storage on and marked "Not configured" otherwise.
+ * storage on and marked "Not configured" otherwise; Databases is live unless
+ * the module has been turned off.
  */
-function servicesMenu(objectStorage: boolean, onOpen: (href: string) => void): Utilities {
+function servicesMenu(
+  { objectStorage, databases }: { objectStorage: boolean; databases: boolean },
+  onOpen: (href: string) => void,
+): Utilities {
   return [
     {
       type: 'menu-dropdown',
@@ -39,6 +44,9 @@ function servicesMenu(objectStorage: boolean, onOpen: (href: string) => void): U
         objectStorage
           ? { id: 'storage', text: 'Storage', description: 'S3-compatible buckets' }
           : { id: 'storage', text: 'Storage', description: 'Not configured', disabled: true },
+        databases
+          ? { id: 'database', text: 'Databases', description: 'Managed Postgres' }
+          : { id: 'database', text: 'Databases', description: 'Turned off', disabled: true },
         { id: 'network', text: 'Network', description: 'VPCs and subnets' },
       ],
       onItemClick: ({ detail }) => {
@@ -94,7 +102,14 @@ export function ConsoleLayout() {
   const [logout] = useLogoutMutation()
   const { data: info } = useSystemInfoQuery()
   const objectStorage = info !== undefined && info.object_storage.backend !== 'none'
-  const navigation = useMemo(() => navigationFor({ objectStorage }), [objectStorage])
+  // The databases module is on by default, so an unknown answer shows the
+  // section rather than hiding it: a node that is still loading its info is
+  // far more likely to have databases than not.
+  const databases = info === undefined || info.databases.enabled
+  const navigation = useMemo(
+    () => navigationFor({ objectStorage, databases }),
+    [objectStorage, databases],
+  )
 
   const [navigationOpen, setNavigationOpen] = useState(true)
 
@@ -110,8 +125,8 @@ export function ConsoleLayout() {
   // TopNavigation re-measures itself whenever `utilities` changes identity, so
   // the list has to be stable across renders.
   const utilities = useMemo(
-    () => [...servicesMenu(objectStorage, navigate), ...userMenu(username, signOut)],
-    [objectStorage, navigate, username, signOut],
+    () => [...servicesMenu({ objectStorage, databases }, navigate), ...userMenu(username, signOut)],
+    [objectStorage, databases, navigate, username, signOut],
   )
 
   return (

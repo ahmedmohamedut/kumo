@@ -30,7 +30,7 @@ Stack: React 18, TypeScript (strict), Vite, Redux Toolkit + RTK Query, React Rou
 
 - `AppLayout` (navigation = `SideNavigation`, breadcrumbs, notifications = `Flashbar`, `toolsHide` for now, `headerSelector="#h"`, content type per page: `table`, `form`, `wizard`, `default`).
 - `TopNavigation`: logo + "Kumo", a **Services** utility menu listing the service groups, each opening its first page. Storage is disabled and marked "Not configured" on a node without object storage. User menu: profile, theme toggle, sign out.
-- Side navigation items: **Dashboard**, **Compute** (Instances, Instance types, Images, Key pairs), **Networking** (VPCs, Subnets) and **Storage** (Buckets, Access keys). Storage appears only when `/system/info` reports `object_storage.backend` other than `none` (`navigationFor`). Active item follows the route.
+- Side navigation items: **Dashboard**, **Compute** (Instances, Instance types, Images, Key pairs), **Networking** (VPCs, Subnets), **Storage** (Buckets, Access keys) and **Databases**. Storage appears only when `/system/info` reports `object_storage.backend` other than `none`, and Databases only when it reports `databases.enabled` (`navigationFor`). An info payload that has not arrived yet keeps Databases: the module is on by default, so hiding it while loading would flicker it away on most nodes. Active item follows the route.
 - Layout component: `components/layout/ConsoleLayout.tsx`; routes render inside via `<Outlet />`. Pages set breadcrumbs through a small context/hook (`usePageMeta({breadcrumbs})`).
 
 ## 3. Routes
@@ -58,6 +58,9 @@ Stack: React 18, TypeScript (strict), Vite, Redux Toolkit + RTK Query, React Rou
 | `/access-keys` | AccessKeysList | Table + Create/Edit/Delete (admin) |
 | `/access-keys/create` | CreateAccessKey | Shows the secret once in a modal |
 | `/access-keys/:id/edit` | EditAccessKey | Name, access, buckets; the secret is unchanged |
+| `/databases` | DBInstancesList | Table + Create/Actions (admin); behind the databases gate |
+| `/databases/create` | CreateDBInstance | Engine, identifier, credentials, size and storage |
+| `/databases/:id` | DBInstanceDetail | Details, Connect panel, activity |
 | `*` | NotFound | |
 
 Protected routes wrapped by `RequireAuth`.
@@ -85,7 +88,7 @@ src/features/auth/…
 src/features/notifications/   // flashbar slice + hooks
 ```
 
-RTK Query tags: `Instance`, `InstanceType`, `Image`, `KeyPair`, `Task`, `VPC`, `Subnet`. Mutations invalidate lists. Pages with transitional resources use `pollingInterval: 5000`, otherwise 30000.
+RTK Query tags: `Instance`, `InstanceType`, `Image`, `KeyPair`, `Task`, `VPC`, `Subnet`, `Bucket`, `BucketObjects`, `AccessKey`, `DBInstance`. Mutations invalidate lists. A DB instance mutation invalidates `Instance` as well: the hidden server behind it holds the node's vCPUs, memory and disk that `/system/capacity` reports. Pages with transitional resources use `pollingInterval: 5000`, otherwise 30000.
 
 The interval follows the data, not the route: the images and tasks pages pass `pollInterval(items)` to the hook, which returns 5000 while anything is `pending`/`downloading`/`deleting` (images) or `pending`/`running` (tasks) and 30000 once everything has settled. RTK Query types `pollingInterval` as a constant on the endpoint, so the value has to come from the cached copy of the query — read through `endpoints.<name>.select(args)` in a `useAppSelector` — and be passed as a per-hook option. An operator who leaves the tab open during an import watches it arrive, and does not then pay for a 5 s loop over a settled table forever.
 
@@ -215,6 +218,34 @@ Behind `ObjectStorageGate`, like the bucket pages.
 - `SecretKeyDialog` shows the access key and secret with copy buttons, plus `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_ENDPOINT_URL`/`AWS_REGION` lines. The endpoint and region come from the first granted bucket's detail.
 - The dialog cannot be dismissed until "I have saved the secret access key" is ticked.
 - It renders as a sibling of the form rather than inside it: a modal is portalled in the DOM but not in React, so its button would otherwise submit the form again.
+
+### 6.9 Databases (managed Postgres)
+Every Databases page renders inside `DatabasesGate` (`features/dbinstances`). It reads `/system/info`:
+- With `databases.enabled: false`, the page is an info alert explaining `KUMO_DATABASES=on` instead of a table whose every request answers `503`.
+- With the module on and `databases.engines` empty, the pages stay. That is the normal state of a fresh node: the list renders, **Create database** is disabled, and an info alert explains the one import an operator has to do (`packaging/images/postgres-18/`, then Import image with engine `postgres` and version `18`). Gating it would hide a working module behind a missing file.
+
+**List.**
+- Columns: Identifier (link), Status, Engine (`Postgres 18`), Endpoint (a dash until the guest has an address), Size, Storage, Created.
+- Status is the **database's** state, not the server's (`07-databases.md` §6): `creating`/`starting`/`stopping`/`rebooting`/`deleting` are in-progress, `available` is success, `stopped` is stopped, `failed` is error. A guest that is running with an engine that never answered reads as **Failed**.
+- Single selection, admin only. A `deleting` row cannot be selected. Header actions: Refresh, an **Actions** dropdown (Stop, Start, Reboot, Delete, each enabled only from the state it applies to) and **Create database**.
+- It polls at 5 s while anything is transitional **or failed**, and 30 s otherwise. `failed` is polled because the reconciler publishes a database whose engine answered late — that is the one state an operator waits to see change on its own.
+
+**Create.**
+- Engine version (from `databases.engines`, newest first), identifier, admin user, password and confirmation, initial database, size and storage.
+- Everything is checked locally first (`state.ts`), including the two rules a round trip would otherwise teach the hard way: a reserved Postgres name, and a password that is not printable ASCII. The ASCII rule is a correctness rule — SCRAM normalizes a password with SASLprep before deriving and Kumo does not, so another character would authenticate nowhere.
+- **Next to the password field, and again as an alert: Kumo does not keep it.** There is no password reset and no way to show it again, so a database whose password is lost has to be created again (`07-databases.md` R8).
+- A warning says connections are not encrypted and `sslmode=require` will not connect.
+- The API answers `202` with the database `creating`, so the page opens its detail page, which explains what is happening.
+
+**Detail.**
+- **Details**: status, engine, size, compute, storage, created, and the **server's instance id** — the VM is on no Instances page and refuses every write, but the console log and the orphan report are keyed by that id.
+- **Connect**: endpoint, port, database and admin user, plus a copyable `psql` command and a connection URI. Neither carries the password, and the panel says why: Kumo derived the engine's credential from it and discarded it, so `psql` prompts for it. The plain-connection warning repeats here, where someone is about to copy a command.
+- **Activity**: the tasks filed under the DB instance id.
+- A `failed` database gets an alert with the reason, the path of the guest's console log on the node, and what to do: try a reboot, else delete and create again. The server is left running on purpose.
+- Stop, Start, Reboot and Delete are buttons, each enabled only from the state it applies to; a viewer sees them all disabled and the connection details enabled.
+- A database that is gone (`404`) gets an info alert and a way back.
+
+**Delete** is `DeleteDBInstanceModal`, shared by the list and the detail page. The data disk goes with the server and there is no snapshot, so it says so in as many words and the confirm button stays disabled until the identifier is typed exactly.
 
 ## 7. UX details
 

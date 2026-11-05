@@ -16,6 +16,7 @@ type Subnet = components['schemas']['Subnet']
 type Bucket = components['schemas']['Bucket']
 type BucketDetail = components['schemas']['BucketDetail']
 type AccessKey = components['schemas']['AccessKey']
+type DBInstance = components['schemas']['DBInstance']
 
 /**
  * MSW handlers for the auth and system endpoints (03-frontend.md §8). The auth
@@ -59,13 +60,27 @@ let info: SystemInfo = {
   needs_setup: false,
   hypervisor: { type: 'fake', ok: true },
   object_storage: { backend: 'fake', ok: true },
-  databases: { enabled: true, engines: [] },
+  databases: { enabled: true, engines: [{ engine: 'postgres', version: '18' }] },
 }
 
 /** setMockObjectStorage switches the object storage module, e.g. to off. */
 export function setMockObjectStorage(objectStorage: SystemInfo['object_storage']): void {
   info = { ...info, object_storage: objectStorage }
 }
+
+/**
+ * setMockDatabases switches the databases module: off, or on with no engine
+ * image, which is the normal state of a node where nobody has imported one
+ * (07-databases.md section 2).
+ */
+export function setMockDatabases(databases: SystemInfo['databases']): void {
+  info = { ...info, databases }
+}
+
+/** MOCK_ENGINES is the engine list a node with the Postgres image reports. */
+export const MOCK_ENGINES: SystemInfo['databases']['engines'] = [
+  { engine: 'postgres', version: '18' },
+]
 
 /**
  * MockBucket is a bucket fixture plus what the server knows about it and the
@@ -277,6 +292,18 @@ function validateAccessKey(
       409,
       'already_exists',
       `already exists: an access key named "${body.name ?? ''}" already exists`,
+    )
+  }
+  return null
+}
+
+/** databasesRefusal is the 503 every /rds route answers with the module off. */
+function databasesRefusal() {
+  if (!info.databases.enabled) {
+    return apiError(
+      503,
+      'unavailable',
+      'unavailable: the databases module is off on this node; set KUMO_DATABASES=on',
     )
   }
   return null
@@ -748,6 +775,61 @@ function freshInstances(): Instance[] {
 }
 
 /**
+ * DB instance fixtures (07-databases.md). `orders` is the ordinary case:
+ * available, with an endpoint to connect to. `reports` is `failed` with the
+ * reason the reconciler writes, which is the state the detail page explains
+ * and the one an operator has to decide about.
+ */
+const INITIAL_DB_INSTANCES: DBInstance[] = [
+  {
+    id: 'db-0a1b2c3d4e5f60718',
+    identifier: 'orders',
+    state: 'available',
+    state_reason: null,
+    engine: 'postgres',
+    engine_version: '18',
+    image_id: 'img-0a1b2c3d4e5f60718',
+    instance_id: 'i-0a1b2c3d4e5f60718',
+    instance_type: 'kumo.medium',
+    vcpus: 2,
+    memory_mib: 4096,
+    storage_gb: 20,
+    port: 5432,
+    admin_username: 'app',
+    database_name: 'orders',
+    endpoint: 'orders.default',
+    task_id: 'task-0a1b2c3d4e5f60718',
+    created_at: '2026-01-05T10:00:00Z',
+    updated_at: '2026-01-05T10:02:00Z',
+  },
+  {
+    id: 'db-0b2c3d4e5f6071890',
+    identifier: 'reports',
+    state: 'failed',
+    state_reason: 'engine_not_responding: nothing answers on 10.0.0.9:5432',
+    engine: 'postgres',
+    engine_version: '18',
+    image_id: 'img-0a1b2c3d4e5f60718',
+    instance_id: 'i-0b2c3d4e5f6071890',
+    instance_type: 'kumo.small',
+    vcpus: 1,
+    memory_mib: 2048,
+    storage_gb: 10,
+    port: 5432,
+    admin_username: 'reader',
+    database_name: 'reports',
+    endpoint: 'reports.default',
+    task_id: null,
+    created_at: '2026-01-05T09:00:00Z',
+    updated_at: '2026-01-05T09:30:00Z',
+  },
+]
+
+function freshDBInstances(): DBInstance[] {
+  return INITIAL_DB_INSTANCES.map((dbInstance) => ({ ...dbInstance }))
+}
+
+/**
  * VPC and subnet fixtures. The default VPC and its default subnet are what the
  * backend bootstraps on first start, and web-1/web-2 hold addresses from the
  * default subnet while db-1 holds one from the `db` subnet — so the "in use"
@@ -866,6 +948,7 @@ export function setMockInstanceTypes(next: InstanceType[]): void {
 }
 let tasks: Task[] = freshTasks()
 let instances: Instance[] = freshInstances()
+let dbInstances: DBInstance[] = freshDBInstances()
 let vpcs: VPC[] = freshVPCs()
 let subnets: Subnet[] = freshSubnets()
 
@@ -901,7 +984,7 @@ export function addMockImageReference(id: string, instanceID: string): void {
  * plus 17 hex characters), derived from the shared counter so two fixtures minted
  * in the same test cannot collide.
  */
-function nextResourceID(prefix: 'img' | 'task' | 'i' | 'eni' | 'vpc' | 'subnet'): string {
+function nextResourceID(prefix: 'img' | 'task' | 'i' | 'eni' | 'vpc' | 'subnet' | 'db'): string {
   return `${prefix}-0f1e2d3c4b5a6${String((counter += 1)).padStart(5, '0')}`
 }
 
@@ -955,7 +1038,22 @@ export function resetMockState(): void {
   buckets = freshBuckets()
   listPageSize = 200
   accessKeys = freshAccessKeys()
-  info = { ...info, object_storage: { backend: 'fake', ok: true } }
+  dbInstances = freshDBInstances()
+  info = {
+    ...info,
+    object_storage: { backend: 'fake', ok: true },
+    databases: { enabled: true, engines: MOCK_ENGINES },
+  }
+}
+
+/** mockDBInstances reads the DB instance fixtures, e.g. to assert a delete. */
+export function mockDBInstances(): DBInstance[] {
+  return dbInstances
+}
+
+/** setMockDBInstances replaces the fixture table, e.g. to start from none. */
+export function setMockDBInstances(next: DBInstance[]): void {
+  dbInstances = next
 }
 
 /** mockInstances reads the instance fixtures, e.g. to assert a state change. */
@@ -2306,6 +2404,190 @@ export const handlers = [
     }
     accessKeys = accessKeys.filter((candidate) => candidate.access_key !== String(params.id))
     return new HttpResponse(null, { status: 204 })
+  }),
+
+  // ---------------------------------------------------------- db instances ---
+
+  http.get('/api/v1/rds/db-instances', ({ request }) => {
+    if (requireUser(request) === undefined) {
+      return unauthenticated()
+    }
+    const refusal = databasesRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const items = [...dbInstances].sort((a, b) => b.created_at.localeCompare(a.created_at))
+    return HttpResponse.json({ items, next_page_token: null })
+  }),
+
+  http.get('/api/v1/rds/db-instances/:id', ({ request, params }) => {
+    if (requireUser(request) === undefined) {
+      return unauthenticated()
+    }
+    const refusal = databasesRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const found = dbInstances.find((candidate) => candidate.id === String(params.id))
+    if (found === undefined) {
+      return apiError(404, 'not_found', `no DB instance "${String(params.id)}"`)
+    }
+    return HttpResponse.json(found)
+  }),
+
+  http.post('/api/v1/rds/db-instances', async ({ request }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const refusal = databasesRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    if (info.databases.engines.length === 0) {
+      return apiError(
+        409,
+        'no_engine_image',
+        'conflict: no engine image is available on this node (engine postgres)',
+      )
+    }
+
+    const body = (await request.json()) as Partial<{
+      identifier: string
+      engine_version: string
+      instance_type: string
+      storage_gb: number
+      admin_username: string
+      admin_password: string
+      database_name: string
+    }>
+    const identifier = body.identifier ?? ''
+    if (!/^[a-z]([-a-z0-9]*[a-z0-9])?$/.test(identifier)) {
+      return invalidArgument('identifier', 'must be a DNS label of 1-60 characters')
+    }
+    if (dbInstances.some((candidate) => candidate.identifier === identifier)) {
+      return apiError(409, 'already_exists', `a DB instance named "${identifier}" already exists`)
+    }
+    // The server refuses a password it cannot derive from, and the form is
+    // supposed to have caught it first: the mock enforces it so a test can
+    // prove the round trip is not what the field error depends on.
+    const password = body.admin_password ?? ''
+    if (password.length < 10) {
+      return invalidArgument('admin_password', 'must be at least 10 characters')
+    }
+
+    const created: DBInstance = {
+      id: nextResourceID('db'),
+      identifier,
+      state: 'creating',
+      state_reason: null,
+      engine: 'postgres',
+      engine_version: body.engine_version ?? '18',
+      image_id: 'img-0a1b2c3d4e5f60718',
+      instance_id: nextResourceID('i'),
+      instance_type: body.instance_type ?? 'kumo.small',
+      vcpus: 1,
+      memory_mib: 2048,
+      storage_gb: body.storage_gb ?? 20,
+      port: 5432,
+      admin_username: body.admin_username ?? 'app',
+      database_name: body.database_name ?? 'app',
+      endpoint: null,
+      task_id: nextResourceID('task'),
+      created_at: '2026-01-06T10:00:00Z',
+      updated_at: '2026-01-06T10:00:00Z',
+    }
+    dbInstances = [created, ...dbInstances]
+    tasks = [
+      {
+        id: created.task_id ?? nextResourceID('task'),
+        type: 'db.create',
+        resource_id: created.id,
+        state: 'pending',
+        progress: 0,
+        error: null,
+        created_at: created.created_at,
+        updated_at: created.created_at,
+      },
+      ...tasks,
+    ]
+    return HttpResponse.json(created, {
+      status: 202,
+      headers: { Location: `/api/v1/tasks/${String(created.task_id)}` },
+    })
+  }),
+
+  http.post('/api/v1/rds/db-instances/:id/:action', ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const refusal = databasesRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const found = dbInstances.find((candidate) => candidate.id === String(params.id))
+    if (found === undefined) {
+      return apiError(404, 'not_found', `no DB instance "${String(params.id)}"`)
+    }
+
+    const action = String(params.action)
+    const allowed: Record<string, { from: DBInstance['state'][]; next: DBInstance['state'] }> = {
+      stop: { from: ['available'], next: 'stopping' },
+      start: { from: ['stopped'], next: 'starting' },
+      reboot: { from: ['available'], next: 'rebooting' },
+    }
+    const rule = allowed[action]
+    if (rule === undefined) {
+      return apiError(404, 'not_found', `POST /rds/db-instances/${found.id}/${action}`)
+    }
+    if (!rule.from.includes(found.state)) {
+      return apiError(
+        409,
+        'conflict',
+        `the DB instance "${found.id}" is ${found.state}, and ${action} only applies to a ${rule.from.join(' or ')} one`,
+      )
+    }
+
+    const moved: DBInstance = { ...found, state: rule.next, task_id: nextResourceID('task') }
+    dbInstances = dbInstances.map((candidate) => (candidate.id === found.id ? moved : candidate))
+    return HttpResponse.json(moved, {
+      status: 202,
+      headers: { Location: `/api/v1/tasks/${String(moved.task_id)}` },
+    })
+  }),
+
+  http.delete('/api/v1/rds/db-instances/:id', ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const refusal = databasesRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const found = dbInstances.find((candidate) => candidate.id === String(params.id))
+    if (found === undefined) {
+      return apiError(404, 'not_found', `no DB instance "${String(params.id)}"`)
+    }
+    if (found.state === 'deleting') {
+      return apiError(409, 'conflict', `the DB instance "${found.id}" is already being deleted`)
+    }
+    const deleting: DBInstance = { ...found, state: 'deleting', task_id: nextResourceID('task') }
+    dbInstances = dbInstances.map((candidate) => (candidate.id === found.id ? deleting : candidate))
+    return HttpResponse.json(deleting, {
+      status: 202,
+      headers: { Location: `/api/v1/tasks/${String(deleting.task_id)}` },
+    })
   }),
 
   // --------------------------------------------------------------- buckets ---

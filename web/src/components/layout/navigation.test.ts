@@ -21,6 +21,9 @@ describe('activeHref', () => {
     ['/buckets/create', '/buckets'],
     ['/access-keys', '/access-keys'],
     ['/access-keys/KUMO1/edit', '/access-keys'],
+    ['/databases', '/databases'],
+    ['/databases/db-1', '/databases'],
+    ['/databases/create', '/databases'],
     ['/unknown', undefined],
     ['/instancesx', undefined],
   ])('maps %s to %s', (pathname, want) => {
@@ -52,6 +55,7 @@ describe('activeHref', () => {
       '/subnets',
       '/buckets',
       '/access-keys',
+      '/databases',
     ]) {
       expect(hrefs).toContain(route)
     }
@@ -59,16 +63,25 @@ describe('activeHref', () => {
 })
 
 describe('navigationFor', () => {
-  const sections = (objectStorage: boolean) =>
-    navigationFor({ objectStorage }).flatMap((entry) =>
+  const sections = (objectStorage: boolean, databases = true) =>
+    navigationFor({ objectStorage, databases }).flatMap((entry) =>
       entry.type === 'section' ? [entry.text] : [],
     )
 
   it('adds Storage when object storage is on', () => {
-    expect(sections(true)).toEqual(['Compute', 'Networking', 'Storage'])
+    expect(sections(true)).toEqual(['Compute', 'Networking', 'Storage', 'Databases'])
   })
 
   it('leaves Storage out when it is off', () => {
-    expect(sections(false)).toEqual(['Compute', 'Networking'])
+    expect(sections(false)).toEqual(['Compute', 'Networking', 'Databases'])
+  })
+
+  it('leaves Databases out when the module is off', () => {
+    expect(sections(true, false)).toEqual(['Compute', 'Networking', 'Storage'])
+  })
+
+  // A node with neither module is the smallest console there is.
+  it('keeps Compute and Networking with both modules off', () => {
+    expect(sections(false, false)).toEqual(['Compute', 'Networking'])
   })
 })
