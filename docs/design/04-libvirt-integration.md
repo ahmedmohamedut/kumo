@@ -58,7 +58,12 @@ image only where the path matches a known extension,
 alone is outside all of them, so the backing file of every root overlay is left
 out of the domain's generated profile and the guest dies on start with
 `Could not open '…': Permission denied` — with correct POSIX permissions on the
-file. A raw import is therefore `img-<id>.img`, not `img-<id>.raw`-less.
+file. A raw import is therefore `img-<id>.img`.
+
+`scripts/security-config.sh` grants the helper `$DATA_DIR/pools/images/* rk`,
+which covers a packaged node by path; the extension is what keeps a node
+working whose pools are somewhere those rules do not name — a development run,
+or a data directory that moved without the script being run again.
 
 Permissions: files owned by the libvirt QEMU user (`libvirt-qemu`/`qemu`) — don't hardcode; set via pool `<permissions>` and verify in the doctor check.
 

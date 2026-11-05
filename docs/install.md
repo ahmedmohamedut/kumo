@@ -150,6 +150,7 @@ knowing on day one:
 | `KUMO_DEFAULT_VPC_CIDR` | `192.168.100.0/24` | your LAN already uses that range |
 | `KUMO_MEMORY_RESERVE_MIB` | `1024` | the host needs more headroom for itself |
 | `KUMO_VCPU_OVERCOMMIT` | `4` | you do not want vCPUs oversubscribed |
+| `KUMO_DATABASES` | `on` | you do not want the Databases pages on this node |
 
 `systemctl restart kumod` after editing.
 
@@ -159,6 +160,65 @@ dashboard say so too. Either create a VPC in the console on a free range (the
 first one you create becomes the default) or set `KUMO_DEFAULT_VPC_CIDR` before
 the first start. The default VPC is created once, on the first boot, and
 changing the range afterwards means deleting it.
+
+## Databases (managed Postgres)
+
+Kumo can run Postgres servers for you: a **DB instance** is a Postgres the
+console creates, starts, stops and deletes, on a virtual machine that belongs
+to Kumo and never appears on the Instances pages. It needs no server you do not
+already have — unlike object storage, the module is **on by default**. The
+design is in [`07-databases.md`](design/07-databases.md).
+
+What it does need is a **golden image**: a qcow2 with Postgres already
+installed, so a database starts in about a minute instead of installing one on
+first boot. That image is built once, away from this host, and imported like
+any other image:
+
+```bash
+# On any machine with qemu (not necessarily this one):
+git clone https://github.com/ahmedmohamedut/kumo && cd kumo
+./packaging/images/postgres-18/build.sh          # ~15 minutes, needs qemu + KVM
+./packaging/images/postgres-18/verify.sh out/kumo-postgres-18-*.qcow2
+```
+
+Publish the qcow2 where this node can fetch it over HTTP, then import it as an
+**engine** image. The console's import form does not offer the engine fields,
+so this one import goes through the API:
+
+```bash
+TOKEN=$(curl -s -X POST http://127.0.0.1:8080/api/v1/auth/login   -H 'content-type: application/json'   -d '{"username":"you","password":"your-password"}' | jq -r .access_token)
+
+curl -s -X POST http://127.0.0.1:8080/api/v1/images/import   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json'   -d '{"name":"postgres-18","source_url":"https://your-mirror/kumo-postgres-18.qcow2",
+       "checksum":{"algorithm":"sha256","value":"<from the .sha256 beside it>"},
+       "os_family":"linux","architecture":"x86_64","default_user":"ubuntu",
+       "min_disk_gb":6,"kind":"engine","engine":"postgres","engine_version":"18"}'
+```
+
+A local mirror is a private address, which the import refuses by default as an
+SSRF guard: set `KUMO_IMAGE_ALLOW_PRIVATE_URLS=true` for that case. Once the
+image is `available`, **Databases → Create database** works, and `kumod doctor`
+stops warning.
+
+Three things about this release, all of them deliberate and all of them in the
+console where they matter:
+
+- **A DB instance is reachable from inside its VPC only.** The engine binds to
+  the VPC address and its `pg_hba.conf` admits that range and nothing else.
+  There is no public access and no port forwarding.
+- **Connections are not encrypted.** No TLS in this release, so
+  `sslmode=require` will not connect. Treat the VPC as the boundary.
+- **There is no password reset.** Kumo derives the engine's credential from the
+  password you type and discards the password: nothing on the node can show it
+  again or change it. A database whose password is lost has to be created
+  again.
+
+The endpoint is a DNS name, `<identifier>.<vpc-name>`, served by the VPC's own
+dnsmasq — so it resolves from instances in that VPC, which is where clients
+are. From a guest in the same VPC:
+
+```bash
+psql "host=orders.default port=5432 dbname=orders user=app"
+```
 
 ## Object storage (optional)
 
@@ -358,6 +418,20 @@ create a NAT network that would shadow a network you already use. The service
 runs; the dashboard shows a warning. Create a VPC on a free RFC 1918 range
 (Console → VPCs → Create): the first one becomes the default. Or set
 `KUMO_DEFAULT_VPC_CIDR` and restart on a fresh database.
+
+**No engine image for databases.** The module is on and nothing has been
+imported yet, which is the normal state of a fresh node: the Databases pages
+explain the import and Create is disabled. See
+[databases](#databases-managed-postgres), or set `KUMO_DATABASES=off` if this
+node is not meant to run them.
+
+**A database stays `creating`, then goes `failed`.** The guest booted but its
+engine never answered on the VPC address. The server is left running on purpose
+so it can be looked at: its serial log is
+`/var/lib/kumo/console/<instance-id>.log`, and the DB instance's page names that
+id. A reboot is worth trying; otherwise delete it and create it again. A
+`failed` database whose engine does answer later is published by the reconciler
+on its own.
 
 **An image import fails.** The reason is on the image's page. A `403` or `404`
 is usually the vendor having moved the file; paste a current URL into the import
