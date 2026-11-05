@@ -102,7 +102,9 @@ LIMIT sqlc.arg(page_limit);
 SELECT id, name FROM images WHERE id IN (sqlc.slice('ids'));
 
 -- task_id in the instance projection is the task of the most recent state change,
--- which is how the console finds out why an instance is still pending.
+-- which is how the console finds out why an instance is still pending. It is
+-- keyed on resource_id rather than on an instance, so the databases module
+-- reads a DB instance's own tasks through it too (07-databases.md section 8).
 -- name: GetLatestInstanceTask :one
 SELECT * FROM tasks
 WHERE resource_id = ?1

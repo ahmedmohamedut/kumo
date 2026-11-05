@@ -14,8 +14,11 @@ how to get one and nothing else works.
 
 ## 0. Status
 
-**Designed, not built.** Proposed as milestone M7 (`05-roadmap.md`), after the
-open M5 and M6 items unless explicitly approved ahead of them.
+**Approved and in progress** as milestone M7 (`05-roadmap.md`). M7.1 to M7.5 are
+built: the golden image recipe, engine images, the data disk and the hidden VM,
+the credential and the seed, and the DB instances API with its tasks, its
+readiness probe and its reconcile pass. What is left is the console (M7.6) and
+the end-to-end run on a real node (M7.7).
 
 ### Scope of the first version
 
@@ -230,6 +233,16 @@ on failure at step N: the instance rollback of 04-libvirt-integration.md §3, pl
   data disk, and db_instances → failed with the reason
 ```
 
+The reservation and the build are **borrowed from `service/instance`** rather
+than reimplemented: `WithManagedReservation` runs the capacity check, the subnet
+lock, the address allocation and the instance row inside a transaction this
+module extends with its own row and its task, and `LaunchManaged` runs steps 2
+to 5 with the seed this module rendered and the extra disk attached. The
+address allocation, the rollback, the adoption of a requeued task's volumes and
+the capacity arithmetic are what make a launch safe, and two implementations of
+them would drift. What stays here is what is this module's own: what the seed
+says, how big the data disk is, and when the service inside the guest is ready.
+
 Everything the launch flow already guarantees carries over unchanged, and must
 keep being true here: **every step adopts what is already there** (a requeued
 task finds its own volumes and its own domain), **a shutdown is not a failure**
@@ -284,6 +297,14 @@ db_instances → deleting; queue db.delete
 Idempotent step by step, like terminate. **The data is gone**: there is no final
 snapshot and no recovery, which is what the confirmation says in as many words.
 
+**The delete deliberately takes no lock on the DB instance.** A create that is
+waiting for an engine holds it for as long as the readiness timeout, and delete
+must not be the one action an operator cannot reach while something is stuck. So
+`DELETE` only writes `deleting` and the task, in one transaction; the create
+task notices the state on its next probe tick and stands down, leaving the row
+`deleting` rather than overwriting it with `failed`, and the delete task waits
+for that before it starts.
+
 `Undefine` removes every volume the domain declares, which now includes the data
 disk — so step 2 is the pass that cleans up when there was no domain left to read
 the disks from, exactly as the `-root.qcow2` pass is today.
@@ -322,6 +343,16 @@ What this buys, and what it does not:
 - The cleartext password exists only in the request body and in one local variable.
   It is not stored, not logged, not written to the task payload, and not placed in
   the seed.
+- **The verifier reaches the worker in memory**, in a map on the service keyed by
+  DB instance id, because a task payload is a row and nothing persists a
+  verifier. Two consequences, both deliberate: a task the worker requeues inside
+  the same process can render the seed again, and a create interrupted by a
+  **restart** cannot. The create then fails with "the admin credential of this
+  create is gone; delete the DB instance and create it again" rather than
+  booting a database nobody can log in to. A requeue that finds the seed ISO
+  already in the pool does not need the verifier at all, and adopts it: the seed
+  that exists is the one carrying it, which is why the volume is looked up
+  before anything is rendered.
 - The verifier **is** in the seed ISO, and a verifier is a password hash: an
   offline guessing target at 4096 PBKDF2 iterations, and enough to impersonate the
   server to a client, but not the password. The ISO is in `kumo-instances`, owned
@@ -385,24 +416,47 @@ The probe means "the engine is listening on the VPC address", and because of ste
 7 of §5 that implies setup finished. It does **not** mean a client can log in: a
 wrong password is indistinguishable from a right one, by design.
 
-**Who probes.** The `db.create` task, while it waits (step 6), and the existing
-reconciler loop, for every DB instance whose backing instance is `running`. The
-reconciler's job here is one transition in each direction:
+**Who probes.** The `db.create` task, while it waits (step 6), and the
+reconciler, for every DB instance whose backing instance is `running`.
+
+The reconciler pass over the DB instances is a **second pass** that runs after
+the instance one, in the same tick. The instance pass establishes what the
+guests are doing; this one reads that result off the `instances` row rather than
+asking libvirt again, so a guest an operator destroyed is already recorded as
+such by the time the database on top of it is judged.
 
 | Observed | DB instance state | Action |
 |---|---|---|
-| domain running, probe succeeds | `available` | none |
-| domain running, probe fails | `available` | → `failed`, reason "engine not responding" |
-| domain running, probe succeeds | `failed` | → `available`, reason cleared |
-| domain shutoff | `available` | → `stopped` (the VM was stopped out of band) |
-| domain missing | any | the existing orphan/`error` handling of the instance row; DB instance → `failed` |
+| server running, probe succeeds | `available` | none |
+| server running, probe fails | `available` | → `failed`, reason `engine_not_responding:` |
+| server running, probe succeeds | `failed` | → `available`, reason cleared |
+| server running, probe succeeds | `starting`, `rebooting`, `stopped` | → `available`: a database that answers is available, whoever started it |
+| server running, probe succeeds, no endpoint yet | `failed` | → `available` **and the endpoint is written**: a create that failed at the probe never got that far, and the name already resolves |
+| server running, probe fails | `starting`, `rebooting` | none until the state is older than `KUMO_DB_READY_TIMEOUT`, then → `failed` |
+| server stopped | anything but `stopped` | → `stopped` (a stop that was asked for, or one made out of band) |
+| server in `error` (domain missing or crashed) | any | → `failed`, reason `server_failed:`; the instance row already says why |
+| server `pending`, `stopping`, `terminating` | any | none: the VM is mid-change and its own pass owns it |
+| any | `creating`, `deleting` | none: the task that wrote the state owns the row |
+
+Two guards beyond the table, both of which exist because a transitional state
+has to resolve to something:
+
+- **A DB instance whose server has an unfinished task is skipped.** Stop, start
+  and reboot are the instance service's tasks, so the DB instance lock says
+  nothing about them. Judging a database while one is in flight would publish
+  one that is about to go down, or stop one that is coming up.
+- **A transitional state is a failure only after `KUMO_DB_READY_TIMEOUT`**,
+  measured from the row's `updated_at` — the same bound a create waits under.
+  Without it a `starting` DB instance whose engine never comes back would stay
+  `starting` for ever.
 
 A probe failure is never a reason to touch the guest. The reconciler reports; the
 operator or a reboot acts.
 
-**Rate.** One probe per DB instance per `KUMO_DB_PROBE_INTERVAL`, in the pass that
-already walks the instances, so the cost is one dial per database per tick and a
-node with no databases does no work.
+**Rate.** One probe per DB instance per `KUMO_DB_PROBE_INTERVAL`, kept by the
+service rather than by the loop, so a pass that runs more often than the
+interval does not dial more often. The cost is one dial per database per
+interval, and a node with no databases does no work.
 
 ## 7. The golden image
 
@@ -508,9 +562,16 @@ a redesign".
   without a reboot, logical backups to an M6 bucket, engine and query metrics, and
   a readiness signal stronger than "the port is open".
 
-The seed ISO should therefore carry a per-DB-instance random token and the kumod
-callback URL from the start, even though nothing reads them in v1, so that adding
-an agent does not mean rebuilding and re-publishing every image.
+This document used to say the seed ISO should carry a per-DB-instance token and
+the kumod callback URL from the start, so that adding an agent would not mean
+re-publishing every image. **M7.5 left them out, and the reason that paragraph
+gave does not hold:** the seed is rendered per DB instance by kumod and written
+to a volume at create time, not baked into the golden image, so a token added
+the day an agent arrives reaches every DB instance created from then on without
+touching the image at all. What an agent would need from the image is the agent
+itself, which a token in the seed does nothing to help. Carrying an unused
+secret in every seed in the meantime is the only thing that choice would
+actually buy, and a secret nothing reads is a secret nobody is protecting.
 
 **Would need a redesign:**
 - **HA and failover** — one DB instance is one VM by construction here, and

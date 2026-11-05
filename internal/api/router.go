@@ -14,6 +14,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/service/accesskey"
 	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
 	"github.com/ahmedmohamedut/kumo/internal/service/bucket"
+	"github.com/ahmedmohamedut/kumo/internal/service/dbinstance"
 	"github.com/ahmedmohamedut/kumo/internal/service/image"
 	"github.com/ahmedmohamedut/kumo/internal/service/instance"
 	"github.com/ahmedmohamedut/kumo/internal/service/instancetype"
@@ -59,6 +60,9 @@ type Options struct {
 	// AccessKeys answers the /api/v1/s3/access-keys endpoints; nil when
 	// object storage is off.
 	AccessKeys *accesskey.Service
+	// DBInstances answers the /api/v1/rds/db-instances endpoints. Nil means
+	// the databases module is off, and every /rds route answers 503.
+	DBInstances *dbinstance.Service
 	// Tasks answers the /api/v1/tasks endpoints, which is where the Location
 	// header of an asynchronous image operation points.
 	Tasks *task.Service
@@ -92,6 +96,7 @@ type Handler struct {
 	subnets        *subnet.Service
 	buckets        *bucket.Service
 	accessKeys     *accesskey.Service
+	dbInstances    *dbinstance.Service
 	tasks          *task.Service
 	signer         *auth.Signer
 	refreshTTL     time.Duration
@@ -116,6 +121,7 @@ func NewHandler(opts Options) *Handler {
 		subnets:        opts.Subnets,
 		buckets:        opts.Buckets,
 		accessKeys:     opts.AccessKeys,
+		dbInstances:    opts.DBInstances,
 		tasks:          opts.Tasks,
 		signer:         opts.Signer,
 		refreshTTL:     opts.RefreshTTL,
@@ -272,6 +278,25 @@ func (h *Handler) Router() *gin.Engine {
 		write.POST("/access-keys", h.createAccessKey)
 		write.PATCH("/access-keys/:id", h.updateAccessKey)
 		write.DELETE("/access-keys/:id", h.deleteAccessKey)
+	}
+
+	// Databases (docs/design/07-databases.md section 8). Like the object
+	// storage routes these exist on every node, so a node with the module off
+	// answers 503 and says why instead of a 404 that reads like a typo. Reads
+	// are open to both roles; every write is admin only, because creating one
+	// claims the vCPUs, memory and disk of the node exactly as a launch does.
+	rds := secured.Group("/rds")
+	if h.dbInstances == nil {
+		rds.Any("/*path", h.databasesOff)
+	} else {
+		rds.GET("/db-instances", h.listDBInstances)
+		rds.GET("/db-instances/:id", h.getDBInstance)
+		write := rds.Group("", middleware.RequireRole(auth.RoleAdmin))
+		write.POST("/db-instances", h.createDBInstance)
+		write.DELETE("/db-instances/:id", h.deleteDBInstance)
+		write.POST("/db-instances/:id/stop", h.stopDBInstance)
+		write.POST("/db-instances/:id/start", h.startDBInstance)
+		write.POST("/db-instances/:id/reboot", h.rebootDBInstance)
 	}
 
 	// Host capacity. A launch form shows it next to the instance type, so both

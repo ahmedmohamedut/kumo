@@ -104,8 +104,15 @@
 | `KUMO_S3_CREDENTIALS_FILE` | `$KUMO_DATA_DIR/s3.credentials` | RustFS admin keys, mode `0600` or stricter |
 | `KUMO_S3_CORS_ORIGINS` | *(empty)* | console origins allowed to use presigned URLs |
 | `KUMO_S3_PRESIGN_TTL` | `15m` | presigned URL lifetime, at most `168h` |
+| `KUMO_DATABASES` | `on` | managed Postgres module: `on` or `off`; with `off` every `/api/v1/rds/*` route answers `503` and the console hides the Databases pages |
+| `KUMO_DB_PROBE_INTERVAL` | `10s` | how often the readiness probe dials a creating or running DB instance |
+| `KUMO_DB_READY_TIMEOUT` | `10m` | how long a `db.create` task waits for the engine before the DB instance is `failed`; must be longer than the probe interval |
 
-The object storage variables are explained in `06-object-storage.md` §2.
+The object storage variables are explained in `06-object-storage.md` §2, the
+database ones in `07-databases.md` §2. Unlike object storage, the databases
+module is **on by default**: it needs no server Kumo does not ship, so there is
+nothing for an operator to turn on. What it does need is an engine image, which
+is a state `/system/info` reports rather than a configuration error.
 
 ## 6. Capacity accounting
 

@@ -25,7 +25,7 @@ If code and design docs disagree, **stop and flag it**. Do not silently diverge.
 - Backend: Go, Gin, `github.com/digitalocean/go-libvirt`, SQLite (`modernc.org/sqlite`, pure Go, no CGO), JWT, `github.com/aws/aws-sdk-go-v2/service/s3` (object storage only, inside `internal/objectstore/rustfs`).
 - Frontend: React + Redux Toolkit (RTK Query) + Vite + TypeScript + Cloudscape Design System.
 - Production artifact: a single binary `bin/kumod` with the built frontend embedded via `go:embed`.
-- Scope of the current phase: **Instances, Images, Key Pairs, Auth**, plus **object storage (S3 via RustFS, M6)**. Managed Postgres is **approved and in progress** as M7 (`docs/design/07-databases.md`): work one M7 task at a time, in order. Do not implement Redis, queues, secrets or Kubernetes yet.
+- Scope of the current phase: **Instances, Images, Key Pairs, Auth**, plus **object storage (S3 via RustFS, M6)**. Managed Postgres is **approved and in progress** as M7 (`docs/design/07-databases.md`): M7.1-M7.5 are built, the console (M7.6) and the real-node run (M7.7) are not. Work one M7 task at a time, in order. Do not implement Redis, queues, secrets or Kubernetes yet.
 
 ## Commands
 
@@ -150,4 +150,5 @@ docs/design/                design docs
 - Leaving orphaned volumes/domains after a failed launch.
 - Using AWS-specific names that don't fit (we mimic UX and vocabulary, **not** the AWS API; there is no EC2-compatible API in this phase).
 - Reaching for localStorage for the access token; keep it in memory, and use the refresh cookie to restore the session.
+- Writing a second launch for a module that needs its own VM. `internal/service/instance/managed.go` is the seam: `WithManagedReservation` reserves capacity, an address and the instance row inside a transaction the calling module extends with its own row and task, and `LaunchManaged` builds the guest with the module's seed and extra disks. The rollback, the adoption of a requeued task's volumes and the capacity arithmetic live there once. A managed VM is hidden from every Instances page, so a copy of that logic would be a copy nobody is watching.
 - Putting a non-ASCII character in `internal/store/queries/*.sql`, even inside a comment. sqlc mixes rune and byte offsets when it rewrites a query, so one multi-byte character silently corrupts the SQL of **every query after it in the file** and `make sqlc` fails with a parse error naming the wrong line (`mismatched input 'SELECTid'`). Write `section 3`, not a section sign. Keep those files ASCII.

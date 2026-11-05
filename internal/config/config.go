@@ -90,6 +90,12 @@ type Config struct {
 	// need is an engine image, which is a state /system/info reports rather
 	// than a configuration error (docs/design/07-databases.md §2).
 	Databases bool
+	// DBProbeInterval is how often the readiness probe checks a creating or
+	// running DB instance, and DBReadyTimeout is how long a create waits for
+	// the engine before the DB instance is failed
+	// (docs/design/07-databases.md §2).
+	DBProbeInterval time.Duration
+	DBReadyTimeout  time.Duration
 
 	// Object storage. See docs/design/06-object-storage.md §2.
 	ObjectStore string
@@ -159,6 +165,14 @@ const (
 	DefaultObjectStore    = ObjectStoreNone
 	// DefaultDatabases leaves the managed Postgres module on.
 	DefaultDatabases = true
+	// DefaultDBProbeInterval is how often a DB instance's port is dialed. It
+	// matches the reconcile interval: one dial per database per pass.
+	DefaultDBProbeInterval = 10 * time.Second
+	// DefaultDBReadyTimeout bounds a create. A first boot creates a cluster on
+	// an empty disk, which is slower than a boot and far faster than this; the
+	// slack is for a node under load rather than for a database that is going
+	// to work eventually.
+	DefaultDBReadyTimeout = 10 * time.Minute
 	// DefaultS3Region is signed into every S3 request. RustFS accepts any
 	// region; us-east-1 is what clients assume when none is given.
 	DefaultS3Region = "us-east-1"
@@ -195,6 +209,8 @@ func Load() (*Config, error) {
 		LogLevel:         DefaultLogLevel,
 		AllowedOrigins:   nil,
 		Databases:        DefaultDatabases,
+		DBProbeInterval:  DefaultDBProbeInterval,
+		DBReadyTimeout:   DefaultDBReadyTimeout,
 		ObjectStore:      DefaultObjectStore,
 		S3Region:         DefaultS3Region,
 		S3PresignTTL:     DefaultS3PresignTTL,
@@ -335,6 +351,20 @@ func (c *Config) loadDurations() error {
 		}
 		c.StopTimeout = d
 	}
+	if v, ok := os.LookupEnv("KUMO_DB_PROBE_INTERVAL"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("%w: KUMO_DB_PROBE_INTERVAL: %w", ErrInvalidDuration, err)
+		}
+		c.DBProbeInterval = d
+	}
+	if v, ok := os.LookupEnv("KUMO_DB_READY_TIMEOUT"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("%w: KUMO_DB_READY_TIMEOUT: %w", ErrInvalidDuration, err)
+		}
+		c.DBReadyTimeout = d
+	}
 	if v, ok := os.LookupEnv("KUMO_S3_PRESIGN_TTL"); ok {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -438,6 +468,16 @@ func (c *Config) Validate() error {
 	if c.StopTimeout <= 0 {
 		return fmt.Errorf("%w: KUMO_STOP_TIMEOUT must be positive, got %s",
 			ErrInvalidDuration, c.StopTimeout)
+	}
+	if c.DBProbeInterval <= 0 {
+		return fmt.Errorf("%w: KUMO_DB_PROBE_INTERVAL must be positive, got %s",
+			ErrInvalidDuration, c.DBProbeInterval)
+	}
+	if c.DBReadyTimeout <= c.DBProbeInterval {
+		// A timeout inside one probe interval would fail every create before
+		// the first dial it is supposed to wait for.
+		return fmt.Errorf("%w: KUMO_DB_READY_TIMEOUT must be longer than "+
+			"KUMO_DB_PROBE_INTERVAL, got %s", ErrInvalidDuration, c.DBReadyTimeout)
 	}
 	if c.ImageMaxBytes <= 0 {
 		return fmt.Errorf("%w: KUMO_IMAGE_MAX_BYTES must be positive, got %d",

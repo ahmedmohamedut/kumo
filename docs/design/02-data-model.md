@@ -149,7 +149,7 @@ CREATE TABLE tags (
 
 CREATE TABLE tasks (
   id          TEXT PRIMARY KEY,                  -- task-<17 hex>
-  type        TEXT NOT NULL,                     -- instance.launch, instance.terminate, image.import, bucket.delete, ...
+  type        TEXT NOT NULL,                     -- instance.launch, instance.terminate, image.import, bucket.delete, db.create, ...
   resource_id TEXT,
   state       TEXT NOT NULL CHECK (state IN ('pending','running','succeeded','failed')),
   progress    INTEGER NOT NULL DEFAULT 0,
@@ -210,6 +210,58 @@ CREATE TABLE access_key_buckets (
 - **Each row is a RustFS user** with the access key as its name, plus a policy named `kumo-<lowercased access key>`. RustFS is the truth for whether the key works, and the API reports a key RustFS has lost as `missing`.
 - **No foreign key from `access_key_buckets.bucket`:** buckets have no row of their own until Kumo changes them (`buckets` above). Deleting a bucket leaves the grant in place.
 - **The access key is the id.** It is a credential id in the shape S3 clients expect, not an `<prefix>-<17 hex>` resource id.
+
+## Engine images (0006_engine_images.sql)
+
+```sql
+ALTER TABLE images ADD COLUMN kind TEXT NOT NULL DEFAULT 'user'
+  CHECK (kind IN ('user','engine'));
+ALTER TABLE images ADD COLUMN engine TEXT;
+ALTER TABLE images ADD COLUMN engine_version TEXT;
+CREATE INDEX idx_images_engine ON images(kind, engine, engine_version);
+```
+
+- An **engine image** is an ordinary image the user does not launch: `kind='engine'` marks a golden image the databases module boots (`07-databases.md` §7). `engine`/`engine_version` are set on one and `NULL` otherwise, and they are how a create request resolves "Postgres 18" to a volume.
+- Every image list query filters on `kind`, and the service substitutes `user` for an empty filter, so a caller that does not think about it cannot publish engine images on a page the console reaches. `GET /images/{id}` still serves one: an operator debugging a database needs the row.
+- The columns arrive in a migration of their own rather than with `db_instances` below, because the two were separate tasks and an applied migration is never edited.
+
+## DB instances (0007_db_instances.sql)
+
+```sql
+ALTER TABLE instances ADD COLUMN managed_by TEXT NOT NULL DEFAULT '';
+CREATE INDEX idx_instances_managed ON instances(managed_by);
+
+CREATE TABLE db_instances (
+  id             TEXT PRIMARY KEY,               -- db-<17 hex>
+  identifier     TEXT NOT NULL,                  -- user-chosen, immutable; seeds the endpoint name
+  state          TEXT NOT NULL CHECK (state IN
+                  ('creating','available','starting','stopping','stopped',
+                   'rebooting','deleting','failed')),
+  state_reason   TEXT,
+  engine         TEXT NOT NULL CHECK (engine IN ('postgres')),
+  engine_version TEXT NOT NULL,
+  image_id       TEXT NOT NULL REFERENCES images(id),
+  instance_id    TEXT NOT NULL REFERENCES instances(id),
+  instance_type  TEXT NOT NULL REFERENCES instance_types(id),
+  storage_gb     INTEGER NOT NULL,               -- the data disk, not the root disk
+  port           INTEGER NOT NULL DEFAULT 5432,
+  admin_username TEXT NOT NULL,
+  database_name  TEXT NOT NULL,
+  endpoint       TEXT,                           -- <identifier>.<vpc name>
+  created_by     TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+);
+CREATE UNIQUE INDEX idx_db_instances_identifier ON db_instances(identifier);
+CREATE UNIQUE INDEX idx_db_instances_instance ON db_instances(instance_id);
+```
+
+- **`instances.managed_by`** says which Kumo module owns a VM: `''` is a user's own instance, `'rds'` is one the databases module created. Every instance list and search query filters on it, so a managed VM cannot appear on the Instances pages, while capacity accounting, the reconciler and the orphan report go on counting it exactly as before (`07-databases.md` R7). `AllocatedCapacity` and `ListInstancesForReconcile` are deliberately unfiltered for that reason.
+- **No password column, and no password hash column.** The verifier kumod computes from the admin password is written into the guest's cloud-init seed and then dropped; nothing persists either. A `db_instances` row therefore cannot be used to authenticate to its own database, which is the point.
+- **No `vcpus`/`memory_mib` snapshot.** The backing `instances` row already snapshots them at launch, and that row is the one capacity sums.
+- **`instance_id` is `NOT NULL` with no cascade.** A DB instance without its server is not a state worth representing, so a delete removes the two rows in one transaction, `db_instances` first because of the foreign key.
+- **`identifier` is immutable**, because it is the endpoint. It is also the backing instance's name, so it shares `idx_instances_name_live` with every user instance: an identifier that collides with a live instance name is refused.
+- Tags are not wired up for a DB instance in this version. The generic `tags` table keyed on `db-<id>` is what it would use.
 
 ## Notes
 

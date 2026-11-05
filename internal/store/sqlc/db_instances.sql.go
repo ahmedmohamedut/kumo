@@ -7,7 +7,131 @@ package sqlc
 
 import (
 	"context"
+	"database/sql"
+	"strings"
 )
+
+const createDBInstance = `-- name: CreateDBInstance :one
+INSERT INTO db_instances (
+  id, identifier, state, state_reason, engine, engine_version,
+  image_id, instance_id, instance_type, storage_gb, port,
+  admin_username, database_name, endpoint, created_by, created_at, updated_at
+) VALUES (
+  ?1, ?2, ?3, NULL, ?4, ?5,
+  ?6, ?7, ?8, ?9, ?10,
+  ?11, ?12, NULL, ?13, ?14, ?14
+)
+RETURNING id, identifier, state, state_reason, engine, engine_version, image_id, instance_id, instance_type, storage_gb, port, admin_username, database_name, endpoint, created_by, created_at, updated_at
+`
+
+type CreateDBInstanceParams struct {
+	ID            string         `json:"id"`
+	Identifier    string         `json:"identifier"`
+	State         string         `json:"state"`
+	Engine        string         `json:"engine"`
+	EngineVersion string         `json:"engine_version"`
+	ImageID       string         `json:"image_id"`
+	InstanceID    string         `json:"instance_id"`
+	InstanceType  string         `json:"instance_type"`
+	StorageGb     int64          `json:"storage_gb"`
+	Port          int64          `json:"port"`
+	AdminUsername string         `json:"admin_username"`
+	DatabaseName  string         `json:"database_name"`
+	CreatedBy     sql.NullString `json:"created_by"`
+	CreatedAt     string         `json:"created_at"`
+}
+
+func (q *Queries) CreateDBInstance(ctx context.Context, arg CreateDBInstanceParams) (DbInstance, error) {
+	row := q.db.QueryRowContext(ctx, createDBInstance,
+		arg.ID,
+		arg.Identifier,
+		arg.State,
+		arg.Engine,
+		arg.EngineVersion,
+		arg.ImageID,
+		arg.InstanceID,
+		arg.InstanceType,
+		arg.StorageGb,
+		arg.Port,
+		arg.AdminUsername,
+		arg.DatabaseName,
+		arg.CreatedBy,
+		arg.CreatedAt,
+	)
+	var i DbInstance
+	err := row.Scan(
+		&i.ID,
+		&i.Identifier,
+		&i.State,
+		&i.StateReason,
+		&i.Engine,
+		&i.EngineVersion,
+		&i.ImageID,
+		&i.InstanceID,
+		&i.InstanceType,
+		&i.StorageGb,
+		&i.Port,
+		&i.AdminUsername,
+		&i.DatabaseName,
+		&i.Endpoint,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const deleteDBInstance = `-- name: DeleteDBInstance :execrows
+DELETE FROM db_instances WHERE id = ?1
+`
+
+type DeleteDBInstanceParams struct {
+	ID string `json:"id"`
+}
+
+// The last write of a delete. The db_instances row goes before the instances
+// row it references, which is the order the foreign key demands
+// (docs/design/07-databases.md section 4).
+func (q *Queries) DeleteDBInstance(ctx context.Context, arg DeleteDBInstanceParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteDBInstance, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const getDBInstance = `-- name: GetDBInstance :one
+SELECT id, identifier, state, state_reason, engine, engine_version, image_id, instance_id, instance_type, storage_gb, port, admin_username, database_name, endpoint, created_by, created_at, updated_at FROM db_instances WHERE id = ?1
+`
+
+type GetDBInstanceParams struct {
+	ID string `json:"id"`
+}
+
+func (q *Queries) GetDBInstance(ctx context.Context, arg GetDBInstanceParams) (DbInstance, error) {
+	row := q.db.QueryRowContext(ctx, getDBInstance, arg.ID)
+	var i DbInstance
+	err := row.Scan(
+		&i.ID,
+		&i.Identifier,
+		&i.State,
+		&i.StateReason,
+		&i.Engine,
+		&i.EngineVersion,
+		&i.ImageID,
+		&i.InstanceID,
+		&i.InstanceType,
+		&i.StorageGb,
+		&i.Port,
+		&i.AdminUsername,
+		&i.DatabaseName,
+		&i.Endpoint,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
 
 const getDBInstanceByInstance = `-- name: GetDBInstanceByInstance :one
 
@@ -24,14 +148,394 @@ type GetDBInstanceByInstanceRow struct {
 }
 
 // Queries of the managed Postgres module (docs/design/07-databases.md).
-// The service that owns them arrives in M7.5; this one exists because the
-// instance service has to name the DB instance when it refuses a lifecycle
-// action on the VM behind it.
+//
+// There is no password column and no password hash column to write: the admin
+// credential reaches the guest as a SCRAM verifier in the seed and nothing
+// persists it (section 3). Nothing in this file selects one, because there is
+// nothing to select.
 // The DB instance a managed VM belongs to. There is at most one, by the unique
 // index on instance_id.
 func (q *Queries) GetDBInstanceByInstance(ctx context.Context, arg GetDBInstanceByInstanceParams) (GetDBInstanceByInstanceRow, error) {
 	row := q.db.QueryRowContext(ctx, getDBInstanceByInstance, arg.InstanceID)
 	var i GetDBInstanceByInstanceRow
 	err := row.Scan(&i.ID, &i.Identifier)
+	return i, err
+}
+
+const listDBInstanceServers = `-- name: ListDBInstanceServers :many
+SELECT d.id AS db_instance_id, i.id AS instance_id, i.state, i.vcpus, i.memory_mib,
+       i.private_ip, i.root_disk_gb
+FROM db_instances d
+JOIN instances i ON i.id = d.instance_id
+WHERE d.id IN (/*SLICE:db_instance_ids*/?)
+`
+
+type ListDBInstanceServersParams struct {
+	DbInstanceIds []string `json:"db_instance_ids"`
+}
+
+type ListDBInstanceServersRow struct {
+	DbInstanceID string         `json:"db_instance_id"`
+	InstanceID   string         `json:"instance_id"`
+	State        string         `json:"state"`
+	Vcpus        int64          `json:"vcpus"`
+	MemoryMib    int64          `json:"memory_mib"`
+	PrivateIp    sql.NullString `json:"private_ip"`
+	RootDiskGb   int64          `json:"root_disk_gb"`
+}
+
+// The vCPUs, the memory and the backing VM's state are read with the DB
+// instance, because they live on the instances row the module owns rather than
+// being snapshotted here (docs/design/07-databases.md section 3). One query
+// per page beats one per row.
+func (q *Queries) ListDBInstanceServers(ctx context.Context, arg ListDBInstanceServersParams) ([]ListDBInstanceServersRow, error) {
+	query := listDBInstanceServers
+	var queryParams []interface{}
+	if len(arg.DbInstanceIds) > 0 {
+		for _, v := range arg.DbInstanceIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:db_instance_ids*/?", strings.Repeat(",?", len(arg.DbInstanceIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:db_instance_ids*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDBInstanceServersRow{}
+	for rows.Next() {
+		var i ListDBInstanceServersRow
+		if err := rows.Scan(
+			&i.DbInstanceID,
+			&i.InstanceID,
+			&i.State,
+			&i.Vcpus,
+			&i.MemoryMib,
+			&i.PrivateIp,
+			&i.RootDiskGb,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDBInstancesAsc = `-- name: ListDBInstancesAsc :many
+SELECT id, identifier, state, state_reason, engine, engine_version, image_id, instance_id, instance_type, storage_gb, port, admin_username, database_name, endpoint, created_by, created_at, updated_at FROM db_instances
+WHERE instr(lower(identifier), lower(?1)) > 0
+  AND (CAST(?2 AS TEXT) = '' OR state = CAST(?2 AS TEXT))
+  AND (CAST(?3 AS TEXT) = ''
+       OR created_at > CAST(?3 AS TEXT)
+       OR (created_at = CAST(?3 AS TEXT) AND id > ?4))
+ORDER BY created_at ASC, id ASC
+LIMIT ?5
+`
+
+type ListDBInstancesAscParams struct {
+	Query         string `json:"query"`
+	StateFilter   string `json:"state_filter"`
+	CursorCreated string `json:"cursor_created"`
+	CursorID      string `json:"cursor_id"`
+	PageLimit     int64  `json:"page_limit"`
+}
+
+func (q *Queries) ListDBInstancesAsc(ctx context.Context, arg ListDBInstancesAscParams) ([]DbInstance, error) {
+	rows, err := q.db.QueryContext(ctx, listDBInstancesAsc,
+		arg.Query,
+		arg.StateFilter,
+		arg.CursorCreated,
+		arg.CursorID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DbInstance{}
+	for rows.Next() {
+		var i DbInstance
+		if err := rows.Scan(
+			&i.ID,
+			&i.Identifier,
+			&i.State,
+			&i.StateReason,
+			&i.Engine,
+			&i.EngineVersion,
+			&i.ImageID,
+			&i.InstanceID,
+			&i.InstanceType,
+			&i.StorageGb,
+			&i.Port,
+			&i.AdminUsername,
+			&i.DatabaseName,
+			&i.Endpoint,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDBInstancesDesc = `-- name: ListDBInstancesDesc :many
+SELECT id, identifier, state, state_reason, engine, engine_version, image_id, instance_id, instance_type, storage_gb, port, admin_username, database_name, endpoint, created_by, created_at, updated_at FROM db_instances
+WHERE instr(lower(identifier), lower(?1)) > 0
+  AND (CAST(?2 AS TEXT) = '' OR state = CAST(?2 AS TEXT))
+  AND (CAST(?3 AS TEXT) = ''
+       OR created_at < CAST(?3 AS TEXT)
+       OR (created_at = CAST(?3 AS TEXT) AND id < ?4))
+ORDER BY created_at DESC, id DESC
+LIMIT ?5
+`
+
+type ListDBInstancesDescParams struct {
+	Query         string `json:"query"`
+	StateFilter   string `json:"state_filter"`
+	CursorCreated string `json:"cursor_created"`
+	CursorID      string `json:"cursor_id"`
+	PageLimit     int64  `json:"page_limit"`
+}
+
+// Keyset pagination over (created_at, id), the same shape every other
+// collection uses; instr(haystack, ”) is 1 in SQLite, so an empty query
+// matches every row and an empty state_filter matches every state.
+func (q *Queries) ListDBInstancesDesc(ctx context.Context, arg ListDBInstancesDescParams) ([]DbInstance, error) {
+	rows, err := q.db.QueryContext(ctx, listDBInstancesDesc,
+		arg.Query,
+		arg.StateFilter,
+		arg.CursorCreated,
+		arg.CursorID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DbInstance{}
+	for rows.Next() {
+		var i DbInstance
+		if err := rows.Scan(
+			&i.ID,
+			&i.Identifier,
+			&i.State,
+			&i.StateReason,
+			&i.Engine,
+			&i.EngineVersion,
+			&i.ImageID,
+			&i.InstanceID,
+			&i.InstanceType,
+			&i.StorageGb,
+			&i.Port,
+			&i.AdminUsername,
+			&i.DatabaseName,
+			&i.Endpoint,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDBInstancesForReconcile = `-- name: ListDBInstancesForReconcile :many
+SELECT d.id, d.identifier, d.state, d.state_reason, d.engine, d.engine_version, d.image_id, d.instance_id, d.instance_type, d.storage_gb, d.port, d.admin_username, d.database_name, d.endpoint, d.created_by, d.created_at, d.updated_at, i.state AS instance_state, i.private_ip, v.name AS vpc_name
+FROM db_instances d
+JOIN instances i ON i.id = d.instance_id
+LEFT JOIN network_interfaces ni ON ni.instance_id = i.id AND ni.device_index = 0
+LEFT JOIN subnets sn ON sn.id = ni.subnet_id
+LEFT JOIN vpcs v ON v.id = sn.vpc_id
+ORDER BY d.id
+`
+
+type ListDBInstancesForReconcileRow struct {
+	ID            string         `json:"id"`
+	Identifier    string         `json:"identifier"`
+	State         string         `json:"state"`
+	StateReason   sql.NullString `json:"state_reason"`
+	Engine        string         `json:"engine"`
+	EngineVersion string         `json:"engine_version"`
+	ImageID       string         `json:"image_id"`
+	InstanceID    string         `json:"instance_id"`
+	InstanceType  string         `json:"instance_type"`
+	StorageGb     int64          `json:"storage_gb"`
+	Port          int64          `json:"port"`
+	AdminUsername string         `json:"admin_username"`
+	DatabaseName  string         `json:"database_name"`
+	Endpoint      sql.NullString `json:"endpoint"`
+	CreatedBy     sql.NullString `json:"created_by"`
+	CreatedAt     string         `json:"created_at"`
+	UpdatedAt     string         `json:"updated_at"`
+	InstanceState string         `json:"instance_state"`
+	PrivateIp     sql.NullString `json:"private_ip"`
+	VpcName       sql.NullString `json:"vpc_name"`
+}
+
+// The reconciler's input: every DB instance with the backing VM's observed
+// state and address, so one pass can decide the transitions of section 6
+// without a read per row. Deliberately unpaginated, like the instance pass.
+// The VPC name comes with it because the pass may be the one that publishes a
+// DB instance, and the endpoint is the identifier under that name (R9). The
+// joins to it are outer: a server whose interface is gone is a DB instance the
+// pass still has to judge.
+func (q *Queries) ListDBInstancesForReconcile(ctx context.Context) ([]ListDBInstancesForReconcileRow, error) {
+	rows, err := q.db.QueryContext(ctx, listDBInstancesForReconcile)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDBInstancesForReconcileRow{}
+	for rows.Next() {
+		var i ListDBInstancesForReconcileRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Identifier,
+			&i.State,
+			&i.StateReason,
+			&i.Engine,
+			&i.EngineVersion,
+			&i.ImageID,
+			&i.InstanceID,
+			&i.InstanceType,
+			&i.StorageGb,
+			&i.Port,
+			&i.AdminUsername,
+			&i.DatabaseName,
+			&i.Endpoint,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.InstanceState,
+			&i.PrivateIp,
+			&i.VpcName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markDBInstanceAvailable = `-- name: MarkDBInstanceAvailable :one
+UPDATE db_instances
+SET state = 'available',
+    state_reason = NULL,
+    endpoint = ?2,
+    updated_at = ?3
+WHERE id = ?1
+RETURNING id, identifier, state, state_reason, engine, engine_version, image_id, instance_id, instance_type, storage_gb, port, admin_username, database_name, endpoint, created_by, created_at, updated_at
+`
+
+type MarkDBInstanceAvailableParams struct {
+	ID        string         `json:"id"`
+	Endpoint  sql.NullString `json:"endpoint"`
+	UpdatedAt string         `json:"updated_at"`
+}
+
+// The end of a successful create: the endpoint only exists once the guest has
+// an address, so it is written with the state that publishes it
+// (docs/design/07-databases.md section 4 step 7).
+func (q *Queries) MarkDBInstanceAvailable(ctx context.Context, arg MarkDBInstanceAvailableParams) (DbInstance, error) {
+	row := q.db.QueryRowContext(ctx, markDBInstanceAvailable, arg.ID, arg.Endpoint, arg.UpdatedAt)
+	var i DbInstance
+	err := row.Scan(
+		&i.ID,
+		&i.Identifier,
+		&i.State,
+		&i.StateReason,
+		&i.Engine,
+		&i.EngineVersion,
+		&i.ImageID,
+		&i.InstanceID,
+		&i.InstanceType,
+		&i.StorageGb,
+		&i.Port,
+		&i.AdminUsername,
+		&i.DatabaseName,
+		&i.Endpoint,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const setDBInstanceState = `-- name: SetDBInstanceState :one
+UPDATE db_instances
+SET state = ?2,
+    state_reason = ?3,
+    updated_at = ?4
+WHERE id = ?1
+RETURNING id, identifier, state, state_reason, engine, engine_version, image_id, instance_id, instance_type, storage_gb, port, admin_username, database_name, endpoint, created_by, created_at, updated_at
+`
+
+type SetDBInstanceStateParams struct {
+	ID          string         `json:"id"`
+	State       string         `json:"state"`
+	StateReason sql.NullString `json:"state_reason"`
+	UpdatedAt   string         `json:"updated_at"`
+}
+
+// The state and the reason are written together, so a DB instance cannot end
+// up 'failed' with nothing to say about it.
+func (q *Queries) SetDBInstanceState(ctx context.Context, arg SetDBInstanceStateParams) (DbInstance, error) {
+	row := q.db.QueryRowContext(ctx, setDBInstanceState,
+		arg.ID,
+		arg.State,
+		arg.StateReason,
+		arg.UpdatedAt,
+	)
+	var i DbInstance
+	err := row.Scan(
+		&i.ID,
+		&i.Identifier,
+		&i.State,
+		&i.StateReason,
+		&i.Engine,
+		&i.EngineVersion,
+		&i.ImageID,
+		&i.InstanceID,
+		&i.InstanceType,
+		&i.StorageGb,
+		&i.Port,
+		&i.AdminUsername,
+		&i.DatabaseName,
+		&i.Endpoint,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
 	return i, err
 }

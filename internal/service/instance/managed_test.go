@@ -9,6 +9,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/hypervisor"
 	"github.com/ahmedmohamedut/kumo/internal/service"
 	"github.com/ahmedmohamedut/kumo/internal/service/instance"
+	"github.com/ahmedmohamedut/kumo/internal/store"
 	"github.com/ahmedmohamedut/kumo/internal/store/sqlc"
 )
 
@@ -355,5 +356,57 @@ func TestCreateDataDiskValidatesItsSpec(t *testing.T) {
 				t.Error("CreateDataDisk() accepted a spec it should refuse")
 			}
 		})
+	}
+}
+
+// The seam another module launches a VM through refuses the three things that
+// would make a managed VM unaccountable: a reservation with no owner (a user's
+// instance that no page shows), a build on an instance that is somebody's own,
+// and a teardown of a row this module does not own.
+func TestTheManagedSeamRefusesWhatItDoesNotOwn(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	source := h.availableImage(t, "postgres-18")
+
+	err := h.svc.WithManagedReservation(t.Context(), instance.ManagedReservation{
+		Name:         "orders",
+		ImageID:      source.ID,
+		InstanceType: instanceType,
+		RootDiskGB:   imageDiskGB,
+	}, func(context.Context, *store.Tx, instance.ManagedReserved) error { return nil })
+	if !errors.Is(err, service.ErrInvalid) {
+		t.Errorf("WithManagedReservation() with no owner: error = %v, want ErrInvalid", err)
+	}
+
+	// An ordinary instance is not a managed VM, in either direction.
+	mine := launchRunning(t, h, "web-1")
+	if _, err := h.svc.LaunchManaged(t.Context(), mine, instance.ManagedLaunch{}); !errors.Is(
+		err, service.ErrConflict) {
+		t.Errorf("LaunchManaged() on a user's instance: error = %v, want ErrConflict", err)
+	}
+	if err := h.svc.TeardownManaged(t.Context(), mine,
+		instance.ManagedByDatabases); !errors.Is(err, service.ErrConflict) {
+		t.Errorf("TeardownManaged() on a user's instance: error = %v, want ErrConflict", err)
+	}
+
+	// And the user's instance is untouched by the refusals.
+	if state, _ := h.state(t, mine); state != string(instance.StateRunning) {
+		t.Errorf("state = %q after the refusals, want running", state)
+	}
+	if _, err := h.hv.GetDomain(t.Context(), mine); err != nil {
+		t.Errorf("GetDomain(): %v, want the guest left alone", err)
+	}
+}
+
+// A teardown of a VM that is already gone is where a requeued delete lands, and
+// must not be a failure it has no way to undo.
+func TestTeardownManagedIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	if err := h.svc.TeardownManaged(t.Context(), "i-0a1b2c3d4e5f60718",
+		instance.ManagedByDatabases); err != nil {
+		t.Errorf("TeardownManaged() on an instance that is gone: %v", err)
 	}
 }

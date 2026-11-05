@@ -10,6 +10,7 @@ import (
 
 	"github.com/ahmedmohamedut/kumo/internal/api/middleware"
 	"github.com/ahmedmohamedut/kumo/internal/service"
+	"github.com/ahmedmohamedut/kumo/internal/service/dbinstance"
 )
 
 // Error codes of the API error envelope (docs/design/01-api.md §Conventions).
@@ -24,6 +25,11 @@ const (
 	CodeInternal         = "internal"
 	CodeUnavailable      = "unavailable"
 	CodeMethodNotAllowed = "method_not_allowed"
+	// CodeNoEngineImage is the one code outside the standard set: a create on
+	// a node where the databases module is on and no engine image has been
+	// imported yet. It is a 409 the console answers with an explanation of the
+	// import rather than with an error (docs/design/07-databases.md section 8).
+	CodeNoEngineImage = "no_engine_image"
 )
 
 // FieldError describes why a single request field was rejected.
@@ -132,6 +138,10 @@ func describeError(err error) (int, errorBody) {
 		return http.StatusNotFound, errorBody{Code: CodeNotFound, Message: err.Error()}
 	case errors.Is(err, service.ErrAlreadyExists):
 		return http.StatusConflict, errorBody{Code: CodeAlreadyExists, Message: err.Error()}
+	case errors.Is(err, dbinstance.ErrNoEngineImage):
+		// Checked before the generic conflict it wraps, because the code is
+		// what tells the Databases pages which of the two this is.
+		return http.StatusConflict, errorBody{Code: CodeNoEngineImage, Message: err.Error()}
 	case errors.Is(err, service.ErrConflict):
 		return http.StatusConflict, errorBody{Code: CodeConflict, Message: err.Error()}
 	case errors.Is(err, service.ErrQuota):

@@ -203,9 +203,9 @@ func (s *Service) launchAllocate(ctx context.Context, tx *store.Tx, in LaunchInp
 		}
 		return fmt.Errorf("read the VPC %q: %w", allocSubnet.VpcID, err)
 	}
-	gateway, err := netip.ParseAddr(vpcRow.GatewayIp)
+	gateway, err := parseGateway(vpcRow)
 	if err != nil {
-		return fmt.Errorf("parse the gateway %q of VPC %q: %w", vpcRow.GatewayIp, vpcRow.ID, err)
+		return err
 	}
 
 	allocated, err := tx.ListAllocatedIPsInSubnet(ctx, sqlc.ListAllocatedIPsInSubnetParams{SubnetID: allocSubnet.ID})
@@ -337,6 +337,18 @@ func (s *Service) resolveLaunchSubnet(ctx context.Context, subnetID string) (sql
 		return sqlc.Subnet{}, fmt.Errorf("read the subnet %q: %w", subnetID, err)
 	}
 	return subnetRow, nil
+}
+
+// parseGateway reads the one address of a VPC that is never for sale. The
+// subnet row carries its own CIDR but not the gateway, so the allocator needs
+// the VPC row to know what to skip.
+func parseGateway(vpcRow sqlc.Vpc) (netip.Addr, error) {
+	gateway, err := netip.ParseAddr(vpcRow.GatewayIp)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("parse the gateway %q of VPC %q: %w",
+			vpcRow.GatewayIp, vpcRow.ID, err)
+	}
+	return gateway, nil
 }
 
 // allocateIP chooses the lowest free address of a subnet, given the addresses

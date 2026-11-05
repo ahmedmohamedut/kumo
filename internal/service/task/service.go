@@ -48,6 +48,12 @@ const (
 	// TypeBucketDelete empties an object storage bucket of every object and
 	// version, then deletes it.
 	TypeBucketDelete = "bucket.delete"
+	// TypeDBInstanceCreate builds the server behind a DB instance: the data
+	// disk, the VM, and the wait for the engine to answer.
+	TypeDBInstanceCreate = "db.create"
+	// TypeDBInstanceDelete removes the server, the data disk and both rows of
+	// a deleted DB instance.
+	TypeDBInstanceDelete = "db.delete"
 )
 
 // State is the lifecycle of a task. The values mirror the CHECK constraint on

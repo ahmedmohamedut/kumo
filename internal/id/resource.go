@@ -21,6 +21,7 @@ const (
 	PrefixVPC              = "vpc"
 	PrefixSubnet           = "subnet"
 	PrefixNetworkInterface = "eni"
+	PrefixDBInstance       = "db"
 )
 
 // Resource returns "<prefix>-<17 random hex chars>". It panics only if the
@@ -45,6 +46,11 @@ func Subnet() string { return Resource(PrefixSubnet) }
 
 // NetworkInterface returns a network interface ID (eni-…).
 func NetworkInterface() string { return Resource(PrefixNetworkInterface) }
+
+// DBInstance returns a DB instance ID (db-…). It names the data disk volume as
+// well, which is why it is minted once and never derived from the backing
+// instance (docs/design/07-databases.md §3).
+func DBInstance() string { return Resource(PrefixDBInstance) }
 
 // HasResourceShape reports whether value looks like a resource ID with the
 // given prefix. It is a cheap guard for path parameters, not a check that the

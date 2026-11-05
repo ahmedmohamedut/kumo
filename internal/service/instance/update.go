@@ -47,7 +47,7 @@ func (s *Service) Update(ctx context.Context, instanceID string, in UpdateInput,
 		// be harmless, but the row is not the caller's to edit either way.
 		if ManagedBy(existing.ManagedBy) != ManagedByNone {
 			// tx, not the store: see errManaged on the single writer connection.
-			return s.errManaged(ctx, tx, existing)
+			return s.errManaged(ctx, tx, existing, ManagedByNone)
 		}
 
 		if in.Name != nil {

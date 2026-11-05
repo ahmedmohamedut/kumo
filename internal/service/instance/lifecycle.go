@@ -76,6 +76,12 @@ type action struct {
 	next State
 	// force records ?force=true in the task payload.
 	force bool
+	// owner is the module the caller acts as. The zero value is a user's own
+	// request, which may only touch an unmanaged instance; a module passes its
+	// own value and may only touch a row it owns (docs/design/07-databases.md
+	// section 4). One field covers both directions, so there is no path on
+	// which a user reaches a managed VM or a module reaches somebody else's.
+	owner ManagedBy
 }
 
 // allows reports whether the action may be queued from state.
@@ -180,7 +186,14 @@ type ownerReader interface {
 // connection, so a read issued against the store from inside a transaction
 // waits for a connection the transaction is holding, and the call deadlocks
 // instead of failing.
-func (s *Service) errManaged(ctx context.Context, q ownerReader, row sqlc.Instance) error {
+func (s *Service) errManaged(ctx context.Context, q ownerReader, row sqlc.Instance, want ManagedBy) error {
+	if want != ManagedByNone {
+		// The caller is a module acting on a row it does not own. Nothing a
+		// user did can produce this, so the message is for whoever wired the
+		// module rather than for an operator.
+		return fmt.Errorf("%w: instance %q is managed by %q, not by %q",
+			service.ErrConflict, row.ID, row.ManagedBy, want)
+	}
 	if ManagedBy(row.ManagedBy) != ManagedByDatabases {
 		return fmt.Errorf("%w: instance %q is managed by %q and cannot be changed directly",
 			service.ErrConflict, row.ID, row.ManagedBy)
@@ -225,8 +238,8 @@ func (s *Service) queue(ctx context.Context, act action) (Instance, error) {
 	}
 	// Before the lock: a request that cannot proceed should not hold a key
 	// the owning module may need.
-	if ManagedBy(existing.ManagedBy) != ManagedByNone {
-		return Instance{}, s.errManaged(ctx, s.store, existing)
+	if ManagedBy(existing.ManagedBy) != act.owner {
+		return Instance{}, s.errManaged(ctx, s.store, existing, act.owner)
 	}
 
 	release, err := s.locks.TryAcquire(LockKey(act.instanceID), act.taskType)

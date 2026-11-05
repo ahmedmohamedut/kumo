@@ -27,6 +27,7 @@ import (
 	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
 	"github.com/ahmedmohamedut/kumo/internal/service/bucket"
 	"github.com/ahmedmohamedut/kumo/internal/service/capacity"
+	"github.com/ahmedmohamedut/kumo/internal/service/dbinstance"
 	"github.com/ahmedmohamedut/kumo/internal/service/image"
 	"github.com/ahmedmohamedut/kumo/internal/service/instance"
 	"github.com/ahmedmohamedut/kumo/internal/service/instancetype"
@@ -280,6 +281,27 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		return fmt.Errorf("build the instance service: %w", err)
 	}
 
+	// The databases module is wired only when it is on; a nil service makes
+	// every /rds route answer 503. It needs no engine image to be built: a
+	// node with none answers 409 no_engine_image on a create and explains the
+	// import in the console (docs/design/07-databases.md section 2).
+	var dbInstances *dbinstance.Service
+	if cfg.Databases {
+		dbInstances, err = dbinstance.New(dbinstance.Options{
+			Logger:        logger,
+			Store:         db,
+			Hypervisor:    hv,
+			Instances:     instances,
+			Tasks:         tasks,
+			InstancesPool: cfg.PoolInstances,
+			ProbeInterval: cfg.DBProbeInterval,
+			ReadyTimeout:  cfg.DBReadyTimeout,
+		})
+		if err != nil {
+			return fmt.Errorf("build the DB instance service: %w", err)
+		}
+	}
+
 	// Object storage is wired only when the module is on; a nil service makes
 	// every /s3 route answer 503.
 	var buckets *bucket.Service
@@ -308,6 +330,9 @@ func serve(ctx context.Context, stdout io.Writer) error {
 	handlers := []worker.Registry{images.Handler(), instances.Handler(), vpcs.Handler()}
 	if buckets != nil {
 		handlers = append(handlers, buckets.Handler())
+	}
+	if dbInstances != nil {
+		handlers = append(handlers, dbInstances.Handler())
 	}
 
 	// The worker drains the tasks table. Recover runs before the first claim, so
@@ -347,6 +372,22 @@ func serve(ctx context.Context, stdout io.Writer) error {
 					"rows", report.Rows, "domains", report.Domains,
 					"updated", report.Updated, "skipped", report.Skipped,
 					"orphans", report.Orphans)
+			}
+			// The databases pass runs after the instance one and inside the
+			// same tick, so a guest an operator destroyed is already recorded
+			// as such by the time the database on top of it is judged
+			// (docs/design/07-databases.md section 6).
+			if dbInstances == nil {
+				return nil
+			}
+			databases, err := dbInstances.Reconcile(ctx)
+			if err != nil {
+				return err
+			}
+			if databases.Updated > 0 {
+				logger.InfoContext(ctx, "reconciled the databases",
+					"rows", databases.Rows, "probed", databases.Probed,
+					"updated", databases.Updated, "skipped", databases.Skipped)
 			}
 			return nil
 		},
@@ -390,6 +431,7 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		Subnets:       subnets,
 		Buckets:       buckets,
 		AccessKeys:    accessKeys,
+		DBInstances:   dbInstances,
 		Tasks:         tasks,
 		Signer:        signer,
 		ReadyChecks: []api.Check{

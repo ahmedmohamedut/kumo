@@ -211,7 +211,7 @@ func (q *Queries) ListAllocatedIPsInSubnet(ctx context.Context, arg ListAllocate
 
 const listInterfacesByInstances = `-- name: ListInterfacesByInstances :many
 SELECT ni.id, ni.instance_id, ni.subnet_id, ni.device_index, ni.mac_address, ni.private_ip, ni.created_at, s.cidr AS subnet_cidr, s.is_default AS subnet_is_default,
-       v.id AS vpc_id, v.cidr AS vpc_cidr, v.gateway_ip, v.libvirt_network
+       v.id AS vpc_id, v.name AS vpc_name, v.cidr AS vpc_cidr, v.gateway_ip, v.libvirt_network
 FROM network_interfaces ni
 JOIN subnets s ON s.id = ni.subnet_id
 JOIN vpcs v ON v.id = s.vpc_id
@@ -234,6 +234,7 @@ type ListInterfacesByInstancesRow struct {
 	SubnetCidr      string `json:"subnet_cidr"`
 	SubnetIsDefault int64  `json:"subnet_is_default"`
 	VpcID           string `json:"vpc_id"`
+	VpcName         string `json:"vpc_name"`
 	VpcCidr         string `json:"vpc_cidr"`
 	GatewayIp       string `json:"gateway_ip"`
 	LibvirtNetwork  string `json:"libvirt_network"`
@@ -241,7 +242,9 @@ type ListInterfacesByInstancesRow struct {
 
 // The launch and terminate workflows resolve the network behind an instance's
 // interfaces. The join reads the VPC row so the DHCP host can be placed on the
-// right libvirt network and rolled back off it.
+// right libvirt network and rolled back off it. The VPC name comes with it
+// because it is the DNS domain dnsmasq serves, and so the second half of a DB
+// instance's endpoint (07-databases.md R9).
 func (q *Queries) ListInterfacesByInstances(ctx context.Context, arg ListInterfacesByInstancesParams) ([]ListInterfacesByInstancesRow, error) {
 	query := listInterfacesByInstances
 	var queryParams []interface{}
@@ -272,6 +275,7 @@ func (q *Queries) ListInterfacesByInstances(ctx context.Context, arg ListInterfa
 			&i.SubnetCidr,
 			&i.SubnetIsDefault,
 			&i.VpcID,
+			&i.VpcName,
 			&i.VpcCidr,
 			&i.GatewayIp,
 			&i.LibvirtNetwork,

@@ -391,6 +391,48 @@ Objects: the bytes of a console upload or download never pass through kumod. The
 - Keys are 1–1024 bytes of UTF-8, with no control characters and no leading `/`. An upload key must not end in `/`, which is a folder.
 - Uploads, folders and deletes are `409` while the bucket is `deleting`. Downloads stay open.
 
+## Databases (managed Postgres)
+
+The module of `07-databases.md`. Every `/rds` route answers `503 unavailable` when `KUMO_DATABASES` is `off`, after authentication, so a client learns the module is off rather than that the path is wrong. The virtual machine behind a DB instance is Kumo's: it is absent from `GET /instances` and its own lifecycle endpoints answer `409` naming the DB instance (`07-databases.md` R7).
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/rds/db-instances` | List, paged and sorted like every collection; `?q=` matches the identifier, `?state=` one state |
+| POST | `/rds/db-instances` | (admin) Create → `202` with the DB instance `creating` and `Location: /api/v1/tasks/<id>` |
+| GET | `/rds/db-instances/{id}` | Detail: the endpoint, the port, the admin username, the database name and the server's id |
+| POST | `/rds/db-instances/{id}/stop` | (admin) → `202`. `409` unless `available`. An ACPI shutdown, so Postgres checkpoints |
+| POST | `/rds/db-instances/{id}/start` | (admin) → `202`. `409` unless `stopped`. The endpoint does not move |
+| POST | `/rds/db-instances/{id}/reboot` | (admin) → `202`. `409` unless `available` |
+| DELETE | `/rds/db-instances/{id}` | (admin) → `202`, state `deleting`. Allowed from every state except `deleting` |
+
+```json
+{ "id": "db-0a1b2c3d4e5f60718", "identifier": "orders", "state": "available",
+  "state_reason": null, "engine": "postgres", "engine_version": "18",
+  "image_id": "img-…", "instance_id": "i-…", "instance_type": "kumo.medium",
+  "vcpus": 2, "memory_mib": 4096, "storage_gb": 20, "port": 5432,
+  "admin_username": "app", "database_name": "orders",
+  "endpoint": "orders.default", "task_id": "task-…",
+  "created_at": "…", "updated_at": "…" }
+```
+
+Create body:
+
+```json
+{ "identifier": "orders", "engine": "postgres", "engine_version": "18",
+  "instance_type": "kumo.medium", "storage_gb": 20, "subnet_id": "subnet-…",
+  "admin_username": "app", "admin_password": "…", "database_name": "orders" }
+```
+
+- **Nothing in a response ever carries the password, the verifier or the salt**, because none of them is stored. kumod derives a SCRAM-SHA-256 verifier from `admin_password`, writes it into the guest's cloud-init seed and discards the password (`07-databases.md` §5). So there is **no password reset** and no way to read it back; the console says so next to the password field.
+- **Validation:** `identifier` is a DNS label of 1–60 characters that must not collide with a live instance name (`409 already_exists` either way, because the backing VM shares `idx_instances_name_live`); `admin_username` and `database_name` are unquoted Postgres identifiers of 1–63 characters and may not be `postgres`, a `pg_` prefix, `template0`, `template1`, `rdsadmin` or `kumo`; `storage_gb` is 5–2048 and at least the engine image's `min_disk_gb`; `admin_password` is 10–128 **printable ASCII** characters. The ASCII rule is a correctness rule rather than a convenience: SCRAM applies SASLprep before deriving, in the client and inside Postgres, and Kumo does not, so anything else would fail to authenticate with a correct password.
+- `engine_version` may be omitted, which takes the newest available version; `subnet_id` may be omitted, which attaches the server the way a launch does. `port` is not accepted in this version.
+- **`409 no_engine_image`** is the one error code outside the standard set of §Conventions. It means the module is on and no engine image is `available` yet, which is the normal state of a fresh node: the Databases pages explain the import rather than reporting a fault (`07-databases.md` §2).
+- **`endpoint` is a DNS name**, `<identifier>.<vpc name>`, resolvable from inside the VPC and nowhere else: dnsmasq serves it for the static DHCP host Kumo writes. It is `null` until the guest has an address, and it survives a stop, a start and a reboot.
+- **`state` is the database's, not the server's.** A guest that is running while the engine inside it has never answered is `creating` or `failed`, never `available`. What Kumo knows about the engine comes from a TCP connect and nothing else (`07-databases.md` §6), so `available` means "the port answers", not "your password works".
+- **`state_reason`** carries the grep-able prefixes `engine_not_responding:` and `server_failed:` when the reconciler wrote the state.
+- **`instance_id` is returned on purpose.** The server is not reachable through `/instances`, but the console log and the orphan report are keyed by its id, and hiding it would make the module harder to support without making it safer.
+- **Delete takes the data with it.** The data disk is deleted with the server; there is no final snapshot and no recovery, which is what the console's confirmation says in as many words.
+
 ## Tasks
 
 | Method | Path | Description |
@@ -409,4 +451,4 @@ Objects: the bytes of a console upload or download never pass through kumod. The
 | `admin` | ✅ | ✅ |
 | `viewer` | ✅ (no `user_data`) | ❌ (`403`) |
 
-Object storage follows the same matrix: both roles list and read buckets; every write is admin only.
+Object storage follows the same matrix: both roles list and read buckets; every write is admin only. So does the databases module: both roles list and read DB instances, and creating, stopping, starting, rebooting and deleting one is admin only, because a DB instance claims the vCPUs, memory and disk of the node exactly as a launch does.

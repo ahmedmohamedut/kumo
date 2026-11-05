@@ -33,6 +33,11 @@ tags:
     description: >-
       Object storage buckets on the RustFS server Kumo manages
       (06-object-storage.md). Every route answers 503 when the module is off.
+  - name: DBInstances
+    description: >-
+      Managed Postgres servers (07-databases.md). The virtual machine behind
+      each one belongs to Kumo and is not on the Instances pages. Every route
+      answers 503 when the module is off.
 security:
   - bearerAuth: []
 paths:
@@ -1174,6 +1179,224 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+  /rds/db-instances:
+    get:
+      tags: [DBInstances]
+      operationId: listDBInstances
+      summary: List DB instances
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+        - $ref: '#/components/parameters/Sort'
+        - $ref: '#/components/parameters/Query'
+        - name: state
+          in: query
+          description: Restrict the page to one DB instance state.
+          schema:
+            $ref: '#/components/schemas/DBInstanceState'
+      responses:
+        '200':
+          description: A page of DB instances.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DBInstanceList'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      tags: [DBInstances]
+      operationId: createDBInstance
+      summary: Create a DB instance
+      description: |
+        Runs as a task and answers `202` with the DB instance `creating`.
+
+        `admin_password` is the only field Kumo does not keep: a
+        SCRAM-SHA-256 verifier is derived from it, the password is discarded
+        before the response, and neither it nor the verifier is ever stored,
+        logged or put in a task payload (07-databases.md R8). There is
+        therefore **no password reset** in this version.
+
+        Validation: `identifier` is a DNS label of 1-60 characters that must
+        not collide with a live instance name, `admin_username` and
+        `database_name` are unquoted Postgres identifiers of 1-63 characters
+        and may not be reserved (`postgres`, `pg_*`, `template0`,
+        `template1`, `rdsadmin`, `kumo`), `storage_gb` is 5-2048 and at least
+        the engine image's `min_disk_gb`, and `admin_password` is 10-128
+        **printable ASCII** characters. The ASCII rule is a correctness rule:
+        SCRAM applies SASLprep before deriving and Kumo does not, so anything
+        else would authenticate nowhere.
+
+        `engine_version` may be omitted, which takes the newest available
+        version; `subnet_id` may be omitted, which attaches the server to the
+        default subnet. `port` is not accepted in this version.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDBInstanceRequest'
+      responses:
+        '202':
+          description: The create was accepted.
+          headers:
+            Location:
+              description: The task that tracks the create.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DBInstance'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '409':
+          description: >-
+            The identifier is taken, or no engine image is available on this
+            node. The latter carries the code `no_engine_image`, which is the
+            one code outside the standard set: it means the module is on and
+            an operator still has to import an engine image, rather than that
+            anything failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /rds/db-instances/{id}:
+    parameters:
+      - $ref: '#/components/parameters/DBInstanceID'
+    get:
+      tags: [DBInstances]
+      operationId: getDBInstance
+      summary: DB instance detail
+      description: >-
+        Carries the endpoint, the port, the admin username and the database
+        name, which is what a client needs to connect, and `instance_id`, which
+        is what an operator needs to read the server's console log. It never
+        carries the password, the verifier or the salt.
+      responses:
+        '200':
+          description: The DB instance.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DBInstance'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      tags: [DBInstances]
+      operationId: deleteDBInstance
+      summary: Delete a DB instance
+      description: >-
+        Runs as a task and answers `202` with the DB instance `deleting`. It is
+        allowed from every state but `deleting`, because it is also the way out
+        of one that is stuck. **The data is gone**: the data disk is deleted
+        with the server, and there is no final snapshot and no recovery.
+      responses:
+        '202':
+          description: The delete was accepted.
+          headers:
+            Location:
+              description: The task that tracks the delete.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DBInstance'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /rds/db-instances/{id}/stop:
+    parameters:
+      - $ref: '#/components/parameters/DBInstanceID'
+    post:
+      tags: [DBInstances]
+      operationId: stopDBInstance
+      summary: Stop a DB instance
+      description: >-
+        An ACPI shutdown of the server, never a destroy, so Postgres gets its
+        shutdown checkpoint. `409` unless the DB instance is `available`. The
+        endpoint and the data disk survive a stop.
+      responses:
+        '202':
+          $ref: '#/components/responses/DBInstanceAccepted'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /rds/db-instances/{id}/start:
+    parameters:
+      - $ref: '#/components/parameters/DBInstanceID'
+    post:
+      tags: [DBInstances]
+      operationId: startDBInstance
+      summary: Start a stopped DB instance
+      description: >-
+        `409` unless the DB instance is `stopped`. The address and the MAC are
+        stable across a stop, so the endpoint does not move; the readiness
+        probe is what publishes the DB instance as `available` again.
+      responses:
+        '202':
+          $ref: '#/components/responses/DBInstanceAccepted'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /rds/db-instances/{id}/reboot:
+    parameters:
+      - $ref: '#/components/parameters/DBInstanceID'
+    post:
+      tags: [DBInstances]
+      operationId: rebootDBInstance
+      summary: Reboot a DB instance
+      description: '`409` unless the DB instance is `available`.'
+      responses:
+        '202':
+          $ref: '#/components/responses/DBInstanceAccepted'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /tasks:
     get:
       tags: [Tasks]
@@ -1756,6 +1979,14 @@ components:
       schema:
         type: string
         pattern: '^i-[0-9a-f]{17}$'
+    DBInstanceID:
+      name: id
+      in: path
+      description: DB instance id.
+      required: true
+      schema:
+        type: string
+        pattern: '^db-[0-9a-f]{17}$'
     TaskID:
       name: id
       in: path
@@ -1829,6 +2060,17 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    DBInstanceAccepted:
+      description: The action was accepted and runs as a task on the server.
+      headers:
+        Location:
+          description: The task that tracks the action.
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/DBInstance'
     NotImplemented:
       description: The endpoint is documented but not implemented yet.
       content:
@@ -1877,6 +2119,7 @@ components:
         - quota_exceeded
         - internal
         - unavailable
+        - no_engine_image
     ErrorDetail:
       type: object
       required: [field, reason]
@@ -2618,6 +2861,175 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/Instance'
+    DBInstance:
+      type: object
+      description: >-
+        A managed Postgres server. It never carries the admin password, the
+        SCRAM verifier or its salt, because none of them is stored (R8).
+      required:
+        - id
+        - identifier
+        - state
+        - engine
+        - engine_version
+        - image_id
+        - instance_id
+        - instance_type
+        - storage_gb
+        - port
+        - admin_username
+        - database_name
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          example: db-0a1b2c3d4e5f60718
+        identifier:
+          type: string
+          description: >-
+            The user-chosen name. It is immutable, because it is the DNS label
+            the endpoint resolves under.
+          example: orders
+        state:
+          $ref: '#/components/schemas/DBInstanceState'
+        state_reason:
+          type: string
+          nullable: true
+          description: >-
+            Why a DB instance is `failed`. The prefixes are tokens an operator
+            can grep for: `engine_not_responding:` and `server_failed:`.
+        engine:
+          $ref: '#/components/schemas/DBEngine'
+        engine_version:
+          type: string
+          example: '18'
+        image_id:
+          type: string
+          description: The engine image the server booted from.
+        instance_id:
+          type: string
+          description: >-
+            The server behind this DB instance. It is not on the Instances
+            pages and its lifecycle endpoints answer 409, but the id is
+            returned: the console log and the orphan report are keyed by it,
+            and hiding it would make the module harder to support without
+            making it safer.
+          example: i-0a1b2c3d4e5f60718
+        instance_type:
+          type: string
+          example: kumo.medium
+        vcpus:
+          type: integer
+          description: Read from the server, which is where the compute shape lives.
+        memory_mib:
+          type: integer
+        storage_gb:
+          type: integer
+          description: The data disk, not the root disk.
+        port:
+          type: integer
+          example: 5432
+        admin_username:
+          type: string
+        database_name:
+          type: string
+        endpoint:
+          type: string
+          nullable: true
+          description: >-
+            `<identifier>.<vpc name>`, resolvable inside the VPC and nowhere
+            else. Null until the guest has an address.
+          example: orders.default
+        task_id:
+          type: string
+          nullable: true
+          description: The task of the most recent state change.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    DBInstanceState:
+      type: string
+      description: >-
+        The database's state, not the server's: a guest that is running while
+        the engine inside it has never answered is `creating` or `failed`,
+        never `available`.
+      enum: [creating, available, starting, stopping, stopped, rebooting, deleting, failed]
+    DBEngine:
+      type: string
+      description: One engine in this version, as a column rather than an assumption.
+      enum: [postgres]
+    CreateDBInstanceRequest:
+      type: object
+      required: [identifier, instance_type, admin_username, admin_password, database_name]
+      properties:
+        identifier:
+          type: string
+          minLength: 1
+          maxLength: 60
+          pattern: '^[a-z]([-a-z0-9]*[a-z0-9])?$'
+        engine:
+          $ref: '#/components/schemas/DBEngine'
+        engine_version:
+          type: string
+          pattern: '^[0-9]{1,3}$'
+          description: Omitted, the newest available version is used.
+          example: '18'
+        instance_type:
+          type: string
+          example: kumo.medium
+        storage_gb:
+          type: integer
+          minimum: 5
+          maximum: 2048
+          description: >-
+            The data disk, and at least the engine image's `min_disk_gb`.
+            Defaults to the floor.
+        subnet_id:
+          type: string
+          description: >-
+            Attaches the server to one subnet. Omitted, it attaches to the
+            default subnet of the default VPC.
+        admin_username:
+          type: string
+          minLength: 1
+          maxLength: 63
+          pattern: '^[a-z_][a-z0-9_]*$'
+          description: >-
+            The role first boot creates, owning `database_name`. Reserved
+            names are refused.
+          example: app
+        admin_password:
+          type: string
+          format: password
+          minLength: 10
+          maxLength: 128
+          description: >-
+            Printable ASCII only. A SCRAM-SHA-256 verifier is derived from it
+            and the password is discarded: it is never stored, logged or put
+            in a task payload, and there is no way to read it back or reset it
+            (R8). The ASCII rule is a correctness rule, not a convenience --
+            SCRAM normalises a password with SASLprep before deriving and Kumo
+            does not, so anything else would authenticate nowhere.
+        database_name:
+          type: string
+          minLength: 1
+          maxLength: 63
+          pattern: '^[a-z_][a-z0-9_]*$'
+          example: orders
+    DBInstanceList:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/DBInstance'
     ConsoleOutput:
       type: object
       required: [instance_id, output]

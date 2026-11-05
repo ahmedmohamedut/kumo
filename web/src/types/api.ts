@@ -412,7 +412,10 @@ export interface paths {
       path?: never
       cookie?: never
     }
-    /** List instances */
+    /**
+     * List instances
+     * @description The servers behind DB instances are not returned: they belong to the databases module rather than the Instances pages, while still counting against `/system/capacity` (07-databases.md R7). Their lifecycle endpoints answer `409` for the same reason.
+     */
     get: operations['listInstances']
     put?: never
     /**
@@ -683,6 +686,143 @@ export interface paths {
      * @description `name`, `cidr` and `vpc_id` are immutable; only tags move.
      */
     patch: operations['updateSubnet']
+    trace?: never
+  }
+  '/rds/db-instances': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** List DB instances */
+    get: operations['listDBInstances']
+    put?: never
+    /**
+     * Create a DB instance
+     * @description Runs as a task and answers `202` with the DB instance `creating`.
+     *
+     *     `admin_password` is the only field Kumo does not keep: a
+     *     SCRAM-SHA-256 verifier is derived from it, the password is discarded
+     *     before the response, and neither it nor the verifier is ever stored,
+     *     logged or put in a task payload (07-databases.md R8). There is
+     *     therefore **no password reset** in this version.
+     *
+     *     Validation: `identifier` is a DNS label of 1-60 characters that must
+     *     not collide with a live instance name, `admin_username` and
+     *     `database_name` are unquoted Postgres identifiers of 1-63 characters
+     *     and may not be reserved (`postgres`, `pg_*`, `template0`,
+     *     `template1`, `rdsadmin`, `kumo`), `storage_gb` is 5-2048 and at least
+     *     the engine image's `min_disk_gb`, and `admin_password` is 10-128
+     *     **printable ASCII** characters. The ASCII rule is a correctness rule:
+     *     SCRAM applies SASLprep before deriving and Kumo does not, so anything
+     *     else would authenticate nowhere.
+     *
+     *     `engine_version` may be omitted, which takes the newest available
+     *     version; `subnet_id` may be omitted, which attaches the server to the
+     *     default subnet. `port` is not accepted in this version.
+     */
+    post: operations['createDBInstance']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/rds/db-instances/{id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description DB instance id. */
+        id: components['parameters']['DBInstanceID']
+      }
+      cookie?: never
+    }
+    /**
+     * DB instance detail
+     * @description Carries the endpoint, the port, the admin username and the database name, which is what a client needs to connect, and `instance_id`, which is what an operator needs to read the server's console log. It never carries the password, the verifier or the salt.
+     */
+    get: operations['getDBInstance']
+    put?: never
+    post?: never
+    /**
+     * Delete a DB instance
+     * @description Runs as a task and answers `202` with the DB instance `deleting`. It is allowed from every state but `deleting`, because it is also the way out of one that is stuck. **The data is gone**: the data disk is deleted with the server, and there is no final snapshot and no recovery.
+     */
+    delete: operations['deleteDBInstance']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/rds/db-instances/{id}/stop': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description DB instance id. */
+        id: components['parameters']['DBInstanceID']
+      }
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Stop a DB instance
+     * @description An ACPI shutdown of the server, never a destroy, so Postgres gets its shutdown checkpoint. `409` unless the DB instance is `available`. The endpoint and the data disk survive a stop.
+     */
+    post: operations['stopDBInstance']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/rds/db-instances/{id}/start': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description DB instance id. */
+        id: components['parameters']['DBInstanceID']
+      }
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Start a stopped DB instance
+     * @description `409` unless the DB instance is `stopped`. The address and the MAC are stable across a stop, so the endpoint does not move; the readiness probe is what publishes the DB instance as `available` again.
+     */
+    post: operations['startDBInstance']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/rds/db-instances/{id}/reboot': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description DB instance id. */
+        id: components['parameters']['DBInstanceID']
+      }
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Reboot a DB instance
+     * @description `409` unless the DB instance is `available`.
+     */
+    post: operations['rebootDBInstance']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
     trace?: never
   }
   '/tasks': {
@@ -988,6 +1128,7 @@ export interface components {
       | 'quota_exceeded'
       | 'internal'
       | 'unavailable'
+      | 'no_engine_image'
     ErrorDetail: {
       field: string
       reason: string
@@ -1399,6 +1540,99 @@ export interface components {
     InstanceList: components['schemas']['Page'] & {
       items: components['schemas']['Instance'][]
     }
+    /** @description A managed Postgres server. It never carries the admin password, the SCRAM verifier or its salt, because none of them is stored (R8). */
+    DBInstance: {
+      /** @example db-0a1b2c3d4e5f60718 */
+      id: string
+      /**
+       * @description The user-chosen name. It is immutable, because it is the DNS label the endpoint resolves under.
+       * @example orders
+       */
+      identifier: string
+      state: components['schemas']['DBInstanceState']
+      /** @description Why a DB instance is `failed`. The prefixes are tokens an operator can grep for: `engine_not_responding:` and `server_failed:`. */
+      state_reason?: string | null
+      engine: components['schemas']['DBEngine']
+      /** @example 18 */
+      engine_version: string
+      /** @description The engine image the server booted from. */
+      image_id: string
+      /**
+       * @description The server behind this DB instance. It is not on the Instances pages and its lifecycle endpoints answer 409, but the id is returned: the console log and the orphan report are keyed by it, and hiding it would make the module harder to support without making it safer.
+       * @example i-0a1b2c3d4e5f60718
+       */
+      instance_id: string
+      /** @example kumo.medium */
+      instance_type: string
+      /** @description Read from the server, which is where the compute shape lives. */
+      vcpus?: number
+      memory_mib?: number
+      /** @description The data disk, not the root disk. */
+      storage_gb: number
+      /** @example 5432 */
+      port: number
+      admin_username: string
+      database_name: string
+      /**
+       * @description `<identifier>.<vpc name>`, resolvable inside the VPC and nowhere else. Null until the guest has an address.
+       * @example orders.default
+       */
+      endpoint?: string | null
+      /** @description The task of the most recent state change. */
+      task_id?: string | null
+      /** Format: date-time */
+      created_at: string
+      /** Format: date-time */
+      updated_at: string
+    }
+    /**
+     * @description The database's state, not the server's: a guest that is running while the engine inside it has never answered is `creating` or `failed`, never `available`.
+     * @enum {string}
+     */
+    DBInstanceState:
+      | 'creating'
+      | 'available'
+      | 'starting'
+      | 'stopping'
+      | 'stopped'
+      | 'rebooting'
+      | 'deleting'
+      | 'failed'
+    /**
+     * @description One engine in this version, as a column rather than an assumption.
+     * @enum {string}
+     */
+    DBEngine: 'postgres'
+    CreateDBInstanceRequest: {
+      identifier: string
+      engine?: components['schemas']['DBEngine']
+      /**
+       * @description Omitted, the newest available version is used.
+       * @example 18
+       */
+      engine_version?: string
+      /** @example kumo.medium */
+      instance_type: string
+      /** @description The data disk, and at least the engine image's `min_disk_gb`. Defaults to the floor. */
+      storage_gb?: number
+      /** @description Attaches the server to one subnet. Omitted, it attaches to the default subnet of the default VPC. */
+      subnet_id?: string
+      /**
+       * @description The role first boot creates, owning `database_name`. Reserved names are refused.
+       * @example app
+       */
+      admin_username: string
+      /**
+       * Format: password
+       * @description Printable ASCII only. A SCRAM-SHA-256 verifier is derived from it and the password is discarded: it is never stored, logged or put in a task payload, and there is no way to read it back or reset it (R8). The ASCII rule is a correctness rule, not a convenience -- SCRAM normalises a password with SASLprep before deriving and Kumo does not, so anything else would authenticate nowhere.
+       */
+      admin_password: string
+      /** @example orders */
+      database_name: string
+    }
+    DBInstanceList: components['schemas']['Page'] & {
+      items: components['schemas']['DBInstance'][]
+    }
     ConsoleOutput: {
       instance_id: string
       /** @description The tail of the serial console log. */
@@ -1743,6 +1977,17 @@ export interface components {
         'application/json': components['schemas']['ErrorResponse']
       }
     }
+    /** @description The action was accepted and runs as a task on the server. */
+    DBInstanceAccepted: {
+      headers: {
+        /** @description The task that tracks the action. */
+        Location?: string
+        [name: string]: unknown
+      }
+      content: {
+        'application/json': components['schemas']['DBInstance']
+      }
+    }
     /** @description The endpoint is documented but not implemented yet. */
     NotImplemented: {
       headers: {
@@ -1785,6 +2030,8 @@ export interface components {
     ImageID: string
     /** @description Instance id. */
     InstanceID: string
+    /** @description DB instance id. */
+    DBInstanceID: string
     /** @description Task id. */
     TaskID: string
     /** @description VPC id. */
@@ -3069,6 +3316,196 @@ export interface operations {
       401: components['responses']['Unauthorized']
       403: components['responses']['PermissionDenied']
       404: components['responses']['NotFound']
+    }
+  }
+  listDBInstances: {
+    parameters: {
+      query?: {
+        /** @description Items per page. */
+        page_size?: components['parameters']['PageSize']
+        /** @description Continuation token from a previous page; absent on the first page. */
+        page_token?: components['parameters']['PageToken']
+        /** @description Sort order as `field:direction`, e.g. `created_at:desc`. */
+        sort?: components['parameters']['Sort']
+        /** @description Case-insensitive substring of the resource name. */
+        q?: components['parameters']['Query']
+        /** @description Restrict the page to one DB instance state. */
+        state?: components['schemas']['DBInstanceState']
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description A page of DB instances. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['DBInstanceList']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      503: components['responses']['Unavailable']
+    }
+  }
+  createDBInstance: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CreateDBInstanceRequest']
+      }
+    }
+    responses: {
+      /** @description The create was accepted. */
+      202: {
+        headers: {
+          /** @description The task that tracks the create. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['DBInstance']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      /** @description The identifier is taken, or no engine image is available on this node. The latter carries the code `no_engine_image`, which is the one code outside the standard set: it means the module is on and an operator still has to import an engine image, rather than that anything failed. */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ErrorResponse']
+        }
+      }
+      429: components['responses']['TooManyRequests']
+      503: components['responses']['Unavailable']
+    }
+  }
+  getDBInstance: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description DB instance id. */
+        id: components['parameters']['DBInstanceID']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The DB instance. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['DBInstance']
+        }
+      }
+      401: components['responses']['Unauthorized']
+      404: components['responses']['NotFound']
+      503: components['responses']['Unavailable']
+    }
+  }
+  deleteDBInstance: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description DB instance id. */
+        id: components['parameters']['DBInstanceID']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The delete was accepted. */
+      202: {
+        headers: {
+          /** @description The task that tracks the delete. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['DBInstance']
+        }
+      }
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+      503: components['responses']['Unavailable']
+    }
+  }
+  stopDBInstance: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description DB instance id. */
+        id: components['parameters']['DBInstanceID']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      202: components['responses']['DBInstanceAccepted']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+      503: components['responses']['Unavailable']
+    }
+  }
+  startDBInstance: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description DB instance id. */
+        id: components['parameters']['DBInstanceID']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      202: components['responses']['DBInstanceAccepted']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+      503: components['responses']['Unavailable']
+    }
+  }
+  rebootDBInstance: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description DB instance id. */
+        id: components['parameters']['DBInstanceID']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      202: components['responses']['DBInstanceAccepted']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+      503: components['responses']['Unavailable']
     }
   }
   listTasks: {

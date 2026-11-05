@@ -46,6 +46,8 @@ func TestLoadDefaults(t *testing.T) {
 		MemoryReserveMiB: config.DefaultMemoryReserveMiB,
 		VCPUOvercommit:   config.DefaultVCPUOvercommit,
 		Databases:        config.DefaultDatabases,
+		DBProbeInterval:  config.DefaultDBProbeInterval,
+		DBReadyTimeout:   config.DefaultDBReadyTimeout,
 		ObjectStore:      config.ObjectStoreNone,
 		S3Region:         "us-east-1",
 		S3PresignTTL:     15 * time.Minute,
@@ -159,6 +161,22 @@ func TestLoadFromEnv(t *testing.T) {
 				t.Helper()
 				if cfg.StopTimeout != 30*time.Second {
 					t.Errorf("StopTimeout = %s, want 30s", cfg.StopTimeout)
+				}
+			},
+		},
+		{
+			name: "database probe timings",
+			env: map[string]string{
+				"KUMO_DB_PROBE_INTERVAL": "2s",
+				"KUMO_DB_READY_TIMEOUT":  "4m",
+			},
+			check: func(t *testing.T, cfg *config.Config) {
+				t.Helper()
+				if cfg.DBProbeInterval != 2*time.Second {
+					t.Errorf("DBProbeInterval = %s, want 2s", cfg.DBProbeInterval)
+				}
+				if cfg.DBReadyTimeout != 4*time.Minute {
+					t.Errorf("DBReadyTimeout = %s, want 4m", cfg.DBReadyTimeout)
 				}
 			},
 		},
@@ -318,6 +336,19 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		{name: "zero stop timeout", env: map[string]string{"KUMO_STOP_TIMEOUT": "0s"}},
 		{name: "negative stop timeout", env: map[string]string{"KUMO_STOP_TIMEOUT": "-90s"}},
 		{name: "cookie secure not a bool", env: map[string]string{"KUMO_COOKIE_SECURE": "yes-please"}},
+		{name: "db probe interval not a duration", env: map[string]string{
+			"KUMO_DB_PROBE_INTERVAL": "ten seconds",
+		}},
+		{name: "zero db probe interval", env: map[string]string{"KUMO_DB_PROBE_INTERVAL": "0s"}},
+		{name: "db ready timeout not a duration", env: map[string]string{
+			"KUMO_DB_READY_TIMEOUT": "ten minutes",
+		}},
+		// A timeout inside one probe interval would fail every create before
+		// the first dial it is meant to wait for.
+		{name: "db ready timeout shorter than the probe interval", env: map[string]string{
+			"KUMO_DB_PROBE_INTERVAL": "30s",
+			"KUMO_DB_READY_TIMEOUT":  "10s",
+		}},
 		{name: "image max bytes not a size", env: map[string]string{"KUMO_IMAGE_MAX_BYTES": "20 gigs"}},
 		{name: "negative image max bytes", env: map[string]string{"KUMO_IMAGE_MAX_BYTES": "-1"}},
 		{
