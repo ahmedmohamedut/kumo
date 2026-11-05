@@ -296,6 +296,7 @@ func serve(ctx context.Context, stdout io.Writer) error {
 			InstancesPool: cfg.PoolInstances,
 			ProbeInterval: cfg.DBProbeInterval,
 			ReadyTimeout:  cfg.DBReadyTimeout,
+			Probe:         databaseProbe(cfg.Hypervisor),
 		})
 		if err != nil {
 			return fmt.Errorf("build the DB instance service: %w", err)
@@ -453,6 +454,25 @@ func serve(ctx context.Context, stdout io.Writer) error {
 	logger.InfoContext(context.WithoutCancel(ctx), "kumod stopped")
 
 	return nil
+}
+
+// databaseProbe is the readiness probe of the databases module.
+//
+// On a real node it is nil, which gives the service its own TCP connect to the
+// guest's address (docs/design/07-databases.md section 6).
+//
+// On the fake hypervisor it answers instead. The fake's domains are rows in a
+// map: there is no guest, so nothing can ever be listening on the address a
+// real probe would dial, and every DB instance would sit in `creating` until
+// the readiness timeout and then fail. Answering is the same promise the fake
+// already makes about a domain it reports as running -- without it the
+// databases module is the one part of Kumo that `KUMO_HYPERVISOR=fake` cannot
+// be used to work on, which is what that backend exists for.
+func databaseProbe(hypervisorKind string) dbinstance.Prober {
+	if hypervisorKind != config.HypervisorFake {
+		return nil
+	}
+	return func(context.Context, string) error { return nil }
 }
 
 // consoleDir is where the serial console log of every instance is written. It is

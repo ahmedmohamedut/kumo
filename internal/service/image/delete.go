@@ -54,7 +54,13 @@ func (s *Service) DeleteHandler(ctx context.Context, t worker.Task) error {
 			service.ErrConflict, len(inUse), row.ID, formatInstanceRefs(inUse))
 	}
 
-	name := volumeName(row.ID)
+	// The row records the volume the import created, which is what a delete
+	// has to remove: deriving it again would miss an image imported before
+	// the name carried the format's extension (volumeName).
+	name := row.VolumeName.String
+	if name == "" {
+		name = volumeName(row.ID, row.Format)
+	}
 	if err := s.hv.DeleteVolume(ctx, s.imagesPool, name); err != nil &&
 		!errors.Is(err, hypervisor.ErrNotFound) {
 		return fmt.Errorf("delete the volume of image %q: %w", row.ID, err)

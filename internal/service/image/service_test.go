@@ -119,6 +119,19 @@ func (h *harness) serveImage(t *testing.T, body []byte) (url, sum string) {
 }
 
 // runImport executes the import task of an image the way the worker does.
+// volumeOf is the libvirt volume an image's row records. The projection does
+// not carry it -- where an image lives inside libvirt is not an API client's
+// business -- so a test that wants to look the volume up reads the row.
+func (h *harness) volumeOf(t *testing.T, imageID string) string {
+	t.Helper()
+
+	row, err := h.store.GetImage(t.Context(), sqlc.GetImageParams{ID: imageID})
+	if err != nil {
+		t.Fatalf("GetImage(%q): %v", imageID, err)
+	}
+	return row.VolumeName.String
+}
+
 func (h *harness) runImport(t *testing.T, imageID string) error {
 	t.Helper()
 	return h.svc.ImportHandler(t.Context(), worker.Task{
@@ -332,7 +345,14 @@ func TestImportHandlerPublishesTheImage(t *testing.T) {
 
 	// The volume must exist in the images pool under a name derived from the
 	// image id, and carry the fixture bytes.
-	info, err := h.hv.ImageInfo(t.Context(), got.ID)
+	volume := h.volumeOf(t, got.ID)
+	// The extension is load-bearing: libvirt's AppArmor helper will not read a
+	// backing file whose name has none, and every guest booting from an
+	// overlay on this volume then fails to start (see image.volumeName).
+	if want := got.ID + ".qcow2"; volume != want {
+		t.Errorf("volume = %q, want %q", volume, want)
+	}
+	info, err := h.hv.ImageInfo(t.Context(), volume)
 	if err != nil {
 		t.Fatalf("ImageInfo(): %v", err)
 	}
@@ -945,7 +965,8 @@ func TestDeleteRemovesTheVolumeAndTheRow(t *testing.T) {
 	}
 
 	// The volume is still there until the worker runs.
-	if _, err := h.hv.ImageInfo(t.Context(), img.ID); err != nil {
+	volume := h.volumeOf(t, img.ID)
+	if _, err := h.hv.ImageInfo(t.Context(), volume); err != nil {
 		t.Fatalf("ImageInfo() before the task ran: %v", err)
 	}
 
@@ -953,7 +974,7 @@ func TestDeleteRemovesTheVolumeAndTheRow(t *testing.T) {
 		t.Fatalf("DeleteHandler(): %v", err)
 	}
 
-	if _, err := h.hv.ImageInfo(t.Context(), img.ID); !errors.Is(err, hypervisor.ErrNotFound) {
+	if _, err := h.hv.ImageInfo(t.Context(), volume); !errors.Is(err, hypervisor.ErrNotFound) {
 		t.Errorf("ImageInfo() after the task ran: error = %v, want ErrNotFound", err)
 	}
 	if _, err := h.svc.Get(t.Context(), img.ID); !errors.Is(err, service.ErrNotFound) {

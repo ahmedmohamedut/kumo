@@ -45,7 +45,20 @@ Two **directory** storage pools, created by `EnsureInfra`:
 | Pool | Path | Contents |
 |---|---|---|
 | `kumo-images` | `$KUMO_DATA_DIR/pools/images` | Base images `img-<id>.qcow2` (read-only after import) |
-| `kumo-instances` | `$KUMO_DATA_DIR/pools/instances` | `i-<id>-root.qcow2`, `i-<id>-seed.iso` |
+| `kumo-instances` | `$KUMO_DATA_DIR/pools/instances` | `i-<id>-root.qcow2`, `i-<id>-seed.iso`, `db-<id>-data.qcow2` |
+
+**Every volume name ends in a file extension, and that is load-bearing.** On a
+host with AppArmor — every Ubuntu, which is the platform this project targets —
+libvirt runs `virt-aa-helper` to work out which files qemu may open for a
+domain, and that helper is itself confined: outside the directories its profile
+names (`/var/lib/libvirt/images/**` and a handful of others) it may read an
+image only where the path matches a known extension,
+`/**.qcow{,2}`, `/**.img`, `/**.raw`, `/**.[iI][sS][oO]`
+(`/etc/apparmor.d/usr.lib.libvirt.virt-aa-helper`). A volume named after its id
+alone is outside all of them, so the backing file of every root overlay is left
+out of the domain's generated profile and the guest dies on start with
+`Could not open '…': Permission denied` — with correct POSIX permissions on the
+file. A raw import is therefore `img-<id>.img`, not `img-<id>.raw`-less.
 
 Permissions: files owned by the libvirt QEMU user (`libvirt-qemu`/`qemu`) — don't hardcode; set via pool `<permissions>` and verify in the doctor check.
 
@@ -54,7 +67,7 @@ Permissions: files owned by the libvirt QEMU user (`libvirt-qemu`/`qemu`) — do
 2. Download to a temp file in `$KUMO_IMAGE_TEMP_DIR` (stream, enforce `KUMO_IMAGE_MAX_BYTES`, update `progress` from `Content-Length`).
 3. Verify checksum if provided (`sha256`/`sha512`).
 4. Inspect format/virtual size in pure Go (`internal/imagefmt`): parse the qcow2 header (magic `QFI\xfb`, virtual size at offset 24, big-endian u64). Reject backing-file images (the chain would dangle once the pool changes); if `raw`, accept and record the rounded-up sector size.
-5. Create the volume in `kumo-images`, named `img-<id>.qcow2`, via one of two paths:
+5. Create the volume in `kumo-images`, named `img-<id>.qcow2` (or `img-<id>.img` for a raw image — the extension is not decoration, see the pool table above), via one of two paths:
    - **Directory pool (preferred):** `os.Rename` the staged file into the pool directory, `chmod` it readable by the pool's QEMU user, then `StoragePoolRefresh` so libvirt sees it. This is a metadata operation, not a copy.
    - **Fallback:** `StorageVolCreateXML` + `StorageVolUpload`, for a pool whose path is not local to kumod.
 6. Update row: `available`, `size_bytes`, `virtual_size_bytes`, `volume_name`. On any failure: delete the partial volume/temp file; set `failed` + `state_reason`.

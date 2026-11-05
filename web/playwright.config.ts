@@ -17,6 +17,16 @@ const consolePort = Number(process.env.KUMO_E2E_PORT ?? 8099)
 const fixturePort = Number(process.env.KUMO_E2E_FIXTURE_PORT ?? 8098)
 const consoleURL = `http://127.0.0.1:${consolePort}`
 
+/**
+ * The range the suite's default VPC is created with, pinned away from Kumo's
+ * own default (192.168.100.0/24) because that is a common home-router range:
+ * the bootstrap refuses a default VPC that would shadow a host route, and the
+ * node then comes up with no default subnet and refuses every launch. The
+ * specs assert addresses from this range, so it is defined once here and read
+ * by both the server script and the tests.
+ */
+const vpcCIDR = process.env.KUMO_E2E_VPC_CIDR ?? '10.111.0.0/24'
+
 export default defineConfig({
   testDir: './e2e',
 
@@ -73,7 +83,7 @@ export default defineConfig({
     {
       command: 'bash ../scripts/e2e-serve.sh',
       url: `${consoleURL}/healthz`,
-      env: { KUMO_E2E_PORT: String(consolePort) },
+      env: { KUMO_E2E_PORT: String(consolePort), KUMO_E2E_VPC_CIDR: vpcCIDR },
       /**
        * Never reused, unlike the mirror. The suite starts at the first-run
        * screen, which only exists while no user has been created, so a kumod

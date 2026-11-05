@@ -14,11 +14,14 @@ how to get one and nothing else works.
 
 ## 0. Status
 
-**Approved and in progress** as milestone M7 (`05-roadmap.md`). M7.1 to M7.6 are
-built: the golden image recipe, engine images, the data disk and the hidden VM,
-the credential and the seed, the DB instances API with its tasks, its readiness
-probe and its reconcile pass, and the Databases console (`03-frontend.md` §6.9).
-What is left is the end-to-end run on a real node (M7.7).
+**Built.** Milestone M7 is complete (`05-roadmap.md`): the golden image recipe,
+engine images, the data disk and the hidden VM, the credential and the seed, the
+DB instances API with its tasks, its readiness probe and its reconcile pass, the
+Databases console (`03-frontend.md` §6.9), and the end-to-end runs — a Playwright
+journey through the console on `KUMO_HYPERVISOR=fake`, and
+`TestDatabaseJourney` (`make test-libvirt`) against a real libvirtd and a real
+Postgres, which is where the claims below about SCRAM and `pg_hba.conf` are
+actually proven.
 
 ### Scope of the first version
 
@@ -457,6 +460,16 @@ operator or a reboot acts.
 service rather than by the loop, so a pass that runs more often than the
 interval does not dial more often. The cost is one dial per database per
 interval, and a node with no databases does no work.
+
+**On `KUMO_HYPERVISOR=fake` the probe answers instead of dialing.** The fake's
+domains are rows in a map: there is no guest, so nothing can ever be listening
+on the address a real probe would dial, and every DB instance would sit in
+`creating` until the readiness timeout and then fail. Answering is the same
+promise the fake already makes about a domain it reports as running, and without
+it the databases module would be the one part of Kumo that the fake backend
+cannot be used to work on — which is what that backend exists for. It is wired
+in `internal/cli/serve.go` (`databaseProbe`) and nowhere else: a real node gets
+the TCP connect above.
 
 ## 7. The golden image
 

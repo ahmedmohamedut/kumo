@@ -88,6 +88,18 @@ test-rustfs: ## Run the opt-in object storage tests against a real RustFS (or an
 # TestLaunchBootsCirrOS downloads and boots a guest, so it is opt-in: point
 # KUMO_TEST_CIRROS_URL at a CirrOS cloud image (the 0.6.x qcow2 files) to run it.
 # KUMO_TEST_LIBVIRT_URI and KUMO_TEST_LIBVIRT_SOCKET override the daemon it uses.
+#
+# TestDatabaseJourney is the managed Postgres end-to-end run (07-databases.md
+# M7.7): point KUMO_TEST_ENGINE_IMAGE at the qcow2 that
+# packaging/images/postgres-18/build.sh produces. It boots the real engine, so
+# it needs a few gigabytes of pool space: KUMO_TEST_DATA_DIR puts the pools
+# somewhere other than $TMPDIR, which matters on a host whose /tmp is tmpfs,
+# and KUMO_TEST_VPC_CIDR moves its VPC off 10.177.0.0/24. The test creates and
+# removes its own network, volumes and domain; the two pools it defines are
+# adopted on the next run.
+#
+#   KUMO_TEST_ENGINE_IMAGE=$PWD/packaging/images/postgres-18/out/*.qcow2 \
+#   KUMO_TEST_DATA_DIR=/var/tmp/kumo-it make test-libvirt
 
 .PHONY: lint
 lint: ## Run golangci-lint, oxlint, prettier --check and tsc

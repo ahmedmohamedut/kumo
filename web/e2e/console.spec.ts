@@ -28,6 +28,17 @@ const fixturePort = process.env.KUMO_E2E_FIXTURE_PORT ?? '8098'
 const IMAGE_URL = `http://127.0.0.1:${fixturePort}/tiny.qcow2`
 
 /**
+ * The address prefix of the suite's default VPC, from the same variable
+ * playwright.config.ts hands the server. An instance's address is allocated
+ * out of that subnet, so asserting on it is what proves the VPC wiring ran
+ * rather than only that the row was written -- and reading it from the
+ * configuration is what keeps the assertion true on a host whose own LAN
+ * forced the suite onto a different range.
+ */
+const vpcCIDR = process.env.KUMO_E2E_VPC_CIDR ?? '10.111.0.0/24'
+const ADDRESS_PREFIX = vpcCIDR.replace(/\.\d+\/\d+$/, '.')
+
+/**
  * userMenu is the signed-in marker in the top navigation. Its accessible name
  * is the ariaLabel rather than the username, and TopNavigation renders every
  * utility twice — the visible one and the offscreen copy it measures — so the
@@ -190,7 +201,7 @@ test.describe.serial('the console against a real kumod', () => {
 
     // The launch allocated an address from the default subnet, which is what
     // proves the VPC wiring ran rather than just the row being written.
-    await expect(page.getByText(/192\.168\.100\./).first()).toBeVisible()
+    await expect(page.getByText(ADDRESS_PREFIX, { exact: false }).first()).toBeVisible()
   })
 
   test('the instance is listed with its address and image', async ({ page }) => {
@@ -202,7 +213,7 @@ test.describe.serial('the console against a real kumod', () => {
     const row = instanceRow(page, INSTANCE)
     await expect(row.getByText('Running')).toBeVisible()
     await expect(row).toContainText('kumo.nano')
-    await expect(row).toContainText('192.168.100.')
+    await expect(row).toContainText(ADDRESS_PREFIX)
     await expect(row).toContainText(IMAGE)
   })
 

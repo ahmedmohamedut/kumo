@@ -75,7 +75,12 @@ func (s *Service) ImportHandler(ctx context.Context, t worker.Task) error {
 		return nil
 	}
 
-	name := volumeName(row.ID)
+	// The volume's name carries the format's extension, which only the
+	// inspection below knows, so it starts as the bare id and is refined once
+	// the file is on disk. The deferred discard closes over the variable
+	// rather than its value, so it always removes the volume that was really
+	// created.
+	name := volumeName(row.ID, "")
 
 	if err := s.setProgress(ctx, row.ID, StateDownloading, "", 0); err != nil {
 		return err
@@ -101,6 +106,7 @@ func (s *Service) ImportHandler(ctx context.Context, t worker.Task) error {
 		s.failImport(ctx, row.ID, t.ID, err)
 		return fmt.Errorf("inspect the image %q: %w", row.ID, err)
 	}
+	name = volumeName(row.ID, string(info.Format))
 
 	file, err := os.Open(path) //nolint:gosec // the path is inside our own temp dir
 	if err != nil {

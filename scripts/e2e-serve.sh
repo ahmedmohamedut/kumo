@@ -30,10 +30,17 @@ mkdir -p "$DATA_DIR"
 #
 # KUMO_COOKIE_SECURE is false because the suite speaks plain HTTP; a Secure
 # cookie would never be stored and every session would end at the first reload.
+#
+# KUMO_DEFAULT_VPC_CIDR is pinned away from the default 192.168.100.0/24, which
+# is a common home-router range: the bootstrap refuses to create a default VPC
+# that would shadow a host route, so on such a machine the node comes up with
+# no default subnet and every launch is refused with a conflict. The suite must
+# not depend on what the developer's LAN happens to use.
 exec env \
 	KUMO_LISTEN="127.0.0.1:${KUMO_E2E_PORT:-8099}" \
 	KUMO_DATA_DIR="$DATA_DIR" \
 	KUMO_HYPERVISOR=fake \
+	KUMO_DEFAULT_VPC_CIDR="${KUMO_E2E_VPC_CIDR:-10.111.0.0/24}" \
 	KUMO_COOKIE_SECURE=false \
 	KUMO_IMAGE_ALLOW_PRIVATE_URLS=true \
 	KUMO_LOG_LEVEL="${KUMO_E2E_LOG_LEVEL:-warn}" \

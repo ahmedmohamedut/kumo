@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ahmedmohamedut/kumo/internal/hypervisor"
 	"github.com/ahmedmohamedut/kumo/internal/id"
 	"github.com/ahmedmohamedut/kumo/internal/service"
 	"github.com/ahmedmohamedut/kumo/internal/service/task"
@@ -501,10 +502,36 @@ func parseTime(value string) time.Time {
 	return parsed.UTC()
 }
 
-// volumeName is the libvirt volume of an image: the image id itself. It is
-// derived rather than stored so a retry of the same task always targets the same
-// volume.
-func volumeName(imageID string) string { return imageID }
+// volumeName is the libvirt volume of an image: the image id, with the file
+// extension of the format it holds. It is derived rather than stored so a retry
+// of the same task always targets the same volume.
+//
+// The extension is not decoration. On a host with AppArmor -- which is every
+// Ubuntu, the platform the golden image of docs/design/07-databases.md is built
+// on -- libvirt runs virt-aa-helper to decide which files qemu may open for a
+// domain, and that helper is itself confined: it may read an image file only
+// where the path matches one of its allowances, which for an arbitrary
+// directory means an extension it knows (`/**.qcow{,2} r` in
+// /etc/apparmor.d/usr.lib.libvirt.virt-aa-helper). A volume named after the id
+// alone is outside all of them, so the backing file of every root overlay is
+// left out of the domain's profile and the guest dies on start with
+// "Could not open ...: Permission denied".
+//
+// An empty format is a volume that does not exist yet (nothing has inspected
+// the download), which is the one case the bare id is right for: there is
+// nothing to open.
+func volumeName(imageID, format string) string {
+	switch hypervisor.ImageFormat(format) {
+	case hypervisor.FormatQCOW2:
+		return imageID + ".qcow2"
+	case hypervisor.FormatRaw:
+		// .img rather than .raw: both are in the helper's list, and .img is
+		// what a plain disk image is usually called.
+		return imageID + ".img"
+	default:
+		return imageID
+	}
+}
 
 // Handler returns the worker handlers for the image workflows, keyed by task
 // type. The worker registry is built from this, so a missing type fails at
