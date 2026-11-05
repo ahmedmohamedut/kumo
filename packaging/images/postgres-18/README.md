@@ -107,12 +107,22 @@ Host the `.qcow2` and its `.sha256` wherever Kumo nodes can reach them over
 HTTPS, then import:
 
 ```sh
-curl -X POST https://kumo.example/api/v1/images/import \
+curl -sS -X POST https://kumo.example/api/v1/images/import \
   -H 'Authorization: Bearer <admin jwt>' \
-  -d '{"name":"postgres-18","kind":"engine","engine":"postgres",
-       "engine_version":"18","source_url":"https://.../kumo-postgres-18-<date>.qcow2",
-       "checksum_algo":"sha256","checksum_value":"<from the .sha256 file>"}'
+  -H 'content-type: application/json' \
+  -d '{
+    "name": "postgres-18",
+    "source_url": "https://.../kumo-postgres-18-<date>.qcow2",
+    "checksum": {"algorithm": "sha256", "value": "<from the .sha256 file>"},
+    "min_disk_gb": 6,
+    "kind": "engine", "engine": "postgres", "engine_version": "18"
+  }' | jq .
 ```
+
+The checksum is a nested object, not two flat fields: an unknown field is
+ignored, so a body with `checksum_algo`/`checksum_value` imports **without
+verifying anything**. `docs/install.md` has the same call with the login in
+front of it.
 
 `kind=engine` keeps it off the Images pages and makes it eligible for
 `POST /rds/db-instances` (M7.2). Use the `min_disk_gb` the manifest reports: a

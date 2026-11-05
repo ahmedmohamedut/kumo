@@ -171,28 +171,58 @@ design is in [`07-databases.md`](design/07-databases.md).
 
 What it does need is a **golden image**: a qcow2 with Postgres already
 installed, so a database starts in about a minute instead of installing one on
-first boot. That image is built once, away from this host, and imported like
-any other image:
+first boot. It is built once, on any machine with qemu and KVM — not
+necessarily this one — and the recipe is in the repository:
 
 ```bash
-# On any machine with qemu (not necessarily this one):
-git clone https://github.com/ahmedmohamedut/kumo && cd kumo
-./packaging/images/postgres-18/build.sh          # ~15 minutes, needs qemu + KVM
-./packaging/images/postgres-18/verify.sh out/kumo-postgres-18-*.qcow2
+git clone https://github.com/ahmedmohamedut/kumo && cd kumo/packaging/images/postgres-18
+./build.sh                                        # ~15 minutes, 1.2 GiB of downloads
+./verify.sh --image out/kumo-postgres-18-*.qcow2  # boots it the way Kumo will
 ```
 
-Publish the qcow2 where this node can fetch it over HTTP, then import it as an
-**engine** image. The console's import form does not offer the engine fields,
-so this one import goes through the API:
+`build.sh` writes three files into `out/`: the `.qcow2`, its `.sha256`, and a
+`.manifest` naming the engine release and the `min_disk_gb` to import with.
+`verify.sh` boots the result on an overlay with a blank second disk and checks
+what the image has to make true — the cluster lands on the data disk, a role
+created from a pre-computed SCRAM verifier authenticates the original password,
+the port answers from outside the guest, and booting does not modify the
+published file. `packaging/images/postgres-18/README.md` has the details.
+
+Publish the `.qcow2` and its `.sha256` where this node can fetch them over
+HTTP, then import it as an **engine** image. The console's import form does not
+offer the engine fields, so this one import goes through the API:
 
 ```bash
-TOKEN=$(curl -s -X POST http://127.0.0.1:8080/api/v1/auth/login   -H 'content-type: application/json'   -d '{"username":"you","password":"your-password"}' | jq -r .access_token)
+# Prompted rather than inline: a copy-pasted placeholder gets a 401 that is
+# easy to miss, because the import then answers with an error envelope rather
+# than an image.
+read -rp 'Kumo admin username: ' KUMO_USER
+read -rsp 'Kumo admin password: ' KUMO_PASS; echo
 
-curl -s -X POST http://127.0.0.1:8080/api/v1/images/import   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json'   -d '{"name":"postgres-18","source_url":"https://your-mirror/kumo-postgres-18.qcow2",
-       "checksum":{"algorithm":"sha256","value":"<from the .sha256 beside it>"},
-       "os_family":"linux","architecture":"x86_64","default_user":"ubuntu",
-       "min_disk_gb":6,"kind":"engine","engine":"postgres","engine_version":"18"}'
+TOKEN=$(curl -sS -X POST http://127.0.0.1:8080/api/v1/auth/login \
+  -H 'content-type: application/json' \
+  -d "$(jq -nc --arg u "$KUMO_USER" --arg p "$KUMO_PASS" '{username:$u,password:$p}')" \
+  | jq -r '.access_token // empty')
+unset KUMO_PASS
+[ -n "$TOKEN" ] || echo 'login failed: the username or password is wrong'
+
+curl -sS -X POST http://127.0.0.1:8080/api/v1/images/import \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{
+    "name": "postgres-18",
+    "source_url": "https://your-mirror/kumo-postgres-18-20261105.qcow2",
+    "checksum": {"algorithm": "sha256", "value": "<the .sha256 beside it>"},
+    "os_family": "linux", "architecture": "x86_64", "default_user": "ubuntu",
+    "min_disk_gb": 6,
+    "kind": "engine", "engine": "postgres", "engine_version": "18"
+  }' | jq .
 ```
+
+Print the whole answer, as above, rather than picking fields out of it: a
+refusal is an error envelope, and `jq '{id, state}'` turns one into a row of
+nulls that reads like a no-op. The import is a task — poll
+`GET /api/v1/images/<id>` until it is `available`, or watch
+`GET /api/v1/system/info` until `databases.engines` lists the engine.
 
 A local mirror is a private address, which the import refuses by default as an
 SSRF guard: set `KUMO_IMAGE_ALLOW_PRIVATE_URLS=true` for that case. Once the
