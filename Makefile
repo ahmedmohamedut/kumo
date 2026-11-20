@@ -85,6 +85,10 @@ test-libvirt: ## Run the opt-in integration tests against a real libvirtd
 test-k8s-image: ## Boot the Kubernetes engine image with kumod's seeds (needs KUMO_TEST_K8S_IMAGE, qemu, KVM)
 	$(GO) test -tags kubeimage ./internal/service/k8scloudinit/ -run TestSeedsBootAClusterOnTheImage -count=1 -v -timeout 40m
 
+.PHONY: test-k8s-journey
+test-k8s-journey: ## Create, use, scale and delete a real cluster on libvirt (needs KUMO_TEST_K8S_IMAGE, about 15 min)
+	$(GO) test -tags libvirt ./internal/service/kubernetes/ -run TestClusterJourney -count=1 -v -timeout 60m
+
 .PHONY: test-rustfs
 test-rustfs: ## Run the opt-in object storage tests against a real RustFS (or any S3 server)
 	$(GO) test -tags rustfs ./internal/objectstore/... -count=1 -timeout 5m
@@ -107,6 +111,15 @@ test-rustfs: ## Run the opt-in object storage tests against a real RustFS (or an
 #
 #   KUMO_TEST_ENGINE_IMAGE=$PWD/packaging/images/postgres-18/out/*.qcow2 \
 #   KUMO_TEST_DATA_DIR=/var/tmp/kumo-it make test-libvirt
+#
+# TestClusterJourney is the Kubernetes end-to-end run (08-kubernetes.md M8.8):
+# point KUMO_TEST_K8S_IMAGE at the image packaging/images/kubernetes-1.37
+# builds, .qcow2 or the published .qcow2.gz. Its VPC is 10.178.0.0/24 unless
+# KUMO_TEST_VPC_CIDR says otherwise; on an SELinux host it labels its own
+# console directory virt_log_t, as scripts/security-config.sh does for a node.
+#
+#   KUMO_TEST_K8S_IMAGE=/path/to/kumo-kubernetes-1.37-<date>.qcow2.gz \
+#   KUMO_TEST_DATA_DIR=/var/tmp make test-k8s-journey
 
 .PHONY: lint
 lint: ## Run golangci-lint, oxlint, prettier --check and tsc

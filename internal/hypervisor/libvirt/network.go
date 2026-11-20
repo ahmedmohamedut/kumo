@@ -161,7 +161,24 @@ func (c *Client) DeleteDHCPHost(ctx context.Context, name, mac string) error {
 	if err != nil {
 		return err
 	}
-	return c.updateDHCPHost(ctx, name, mac, golibvirt.NetworkUpdateCommandDelete, string(fragment))
+	err = c.updateDHCPHost(ctx, name, mac, golibvirt.NetworkUpdateCommandDelete, string(fragment))
+	if isMissingDHCPHost(err) {
+		// The contract of the interface, and the fake's behavior: an entry that
+		// is already gone is ErrNotFound, which every teardown tolerates. A
+		// domain that never started has had its entry removed by the launch's
+		// rollback, and a delete of its cluster must not stop there.
+		return fmt.Errorf("the dhcp host %s of the network %q: %w", mac, name, hypervisor.ErrNotFound)
+	}
+	return err
+}
+
+// isMissingDHCPHost is libvirt's answer to deleting a dhcp host the network
+// does not have: VIR_ERR_OPERATION_INVALID, "couldn't locate a matching dhcp
+// host entry". The code alone is too broad, so the message is checked too.
+func isMissingDHCPHost(err error) bool {
+	var libErr golibvirt.Error
+	return errors.As(err, &libErr) && libErr.Code == uint32(golibvirt.ErrOperationInvalid) &&
+		strings.Contains(libErr.Message, "couldn't locate a matching dhcp host")
 }
 
 // updateDHCPHost runs one virNetworkUpdate against the dhcp host section of a

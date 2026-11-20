@@ -51,7 +51,7 @@ func dial(t *testing.T) *golibvirt.Libvirt {
 	if err := conn.ConnectToURI(golibvirt.ConnectURI(libvirtURI())); err != nil {
 		t.Skipf("no libvirt daemon on %s: %v", socketPath(), err)
 	}
-	t.Cleanup(func() { conn.Disconnect() })
+	t.Cleanup(func() { _ = conn.Disconnect() })
 
 	return conn
 }
@@ -617,7 +617,7 @@ func waitForState(
 func download(t *testing.T, url string) string {
 	t.Helper()
 
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, http.NoBody)
 	if err != nil {
 		t.Fatalf("build the request for %s: %v", url, err)
 	}
@@ -728,5 +728,47 @@ func TestDNSHostResolvesOnTheNetwork(t *testing.T) {
 	time.Sleep(time.Second)
 	if addrs, err := resolver.LookupHost(ctx, record); err == nil && len(addrs) > 0 {
 		t.Errorf("LookupHost(%s) after the delete = %v, want no answer", record, addrs)
+	}
+}
+
+// A dhcp host that is already gone is ErrNotFound, as the interface says and
+// the fake does: the teardown of a node whose domain never started finds its
+// entry removed by the launch's rollback, and must carry on (M8.8 found it
+// stopping a cluster's delete there).
+func TestDeleteDHCPHostThatIsGone(t *testing.T) {
+	conn := dial(t)
+	client, err := kumolibvirt.New(slog.New(slog.DiscardHandler), "unix://"+socketPath())
+	if err != nil {
+		t.Fatalf("libvirt.New(): %v", err)
+	}
+	defer client.Close()
+	ctx := t.Context()
+
+	const name = "kumo-it-dhcp"
+	t.Cleanup(func() {
+		if n, err := conn.NetworkLookupByName(name); err == nil {
+			_ = conn.NetworkDestroy(n)
+			_ = conn.NetworkUndefine(n)
+		}
+	})
+	if err := client.DefineNetwork(ctx, hypervisor.NetworkSpec{
+		Name: name, Bridge: "kmbitdhcp0", CIDR: "10.181.0.0/24", Gateway: "10.181.0.1",
+		Mode: hypervisor.NetworkModeIsolated, Domain: "itdhcp",
+	}); err != nil {
+		t.Fatalf("DefineNetwork(): %v", err)
+	}
+	if err := client.StartNetwork(ctx, name); err != nil {
+		t.Fatalf("StartNetwork(): %v", err)
+	}
+
+	const mac = "52:54:00:81:00:10"
+	if err := client.AddDHCPHost(ctx, name, hypervisor.DHCPHost{MAC: mac, IP: "10.181.0.10", Name: "i-0"}); err != nil {
+		t.Fatalf("AddDHCPHost(): %v", err)
+	}
+	if err := client.DeleteDHCPHost(ctx, name, mac); err != nil {
+		t.Fatalf("DeleteDHCPHost(): %v", err)
+	}
+	if err := client.DeleteDHCPHost(ctx, name, mac); !errors.Is(err, hypervisor.ErrNotFound) {
+		t.Errorf("a second DeleteDHCPHost() = %v, want ErrNotFound", err)
 	}
 }
