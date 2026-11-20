@@ -452,6 +452,7 @@ The module of `08-kubernetes.md`. Every `/eks` route answers `503 unavailable` w
 | GET | `/eks/clusters/{id}` | Detail: the endpoint, the CA certificate, the node group and every node with its Kubernetes `ready` |
 | DELETE | `/eks/clusters/{id}` | (admin) → `202`, state `deleting`. Allowed from every state except `deleting` |
 | GET | `/eks/clusters/{id}/node-groups` | The node groups: one, `default`, in this version |
+| PATCH | `/eks/clusters/{id}/node-groups/{ng}` | (admin) `{desired_size}` 1–10 → `202` with the cluster `updating` and a `k8s.scale` task; `200` unchanged when the size already is that one. `409` unless `active` or `degraded`; `429` when a scale up does not fit, with nothing changed |
 | POST | `/eks/clusters/{id}/kubeconfig` | A kubeconfig for the caller, by role: `kumo:admins` or `kumo:viewers`, 30 days, returned once with `Cache-Control: no-store`. `409` until the cluster is active |
 
 ```json
@@ -475,6 +476,7 @@ Create body: `{ "name": "orders", "kubernetes_version": "1.37", "subnet_id": "su
 - **`409 no_engine_image`**, as for databases, means no `kubernetes` engine image is available.
 - **States.** `active` once every node is Ready; `degraded` when the control plane answers but a node is not Ready, or after three failed health checks in a row (`state_reason` says which); `failed` when the API server never answered during the create, with the VMs kept for their console logs. Delete is the way out of both.
 - **The endpoint** is `https://api.<name>.<vpc>:6443`, served by the VPC's dnsmasq as a DNS record kumod adds (K6): a kubeconfig works from an instance in the cluster's VPC, and nowhere else (K7).
+- **Scaling.** Up reserves the new workers at request time, all or nothing. Down drains the newest workers first, through the Eviction API, so PodDisruptionBudgets hold: a drain a budget blocks for 5 minutes stops the scale with the node kept and the cluster `degraded` naming the pods. A scale never deletes past a budget.
 - **No key in any response** but the kubeconfig's own client key, which is minted per call and never stored. `ca_certificate` is the public CA.
 
 ## Tasks
@@ -495,4 +497,4 @@ Create body: `{ "name": "orders", "kubernetes_version": "1.37", "subnet_id": "su
 | `admin` | ✅ | ✅ |
 | `viewer` | ✅ (no `user_data`) | ❌ (`403`) |
 
-Object storage follows the same matrix: both roles list and read buckets; every write is admin only. So does the databases module: both roles list and read DB instances, and creating, stopping, starting, rebooting and deleting one is admin only, because a DB instance claims the vCPUs, memory and disk of the node exactly as a launch does. And the Kubernetes module: both roles read clusters, creating and deleting one is admin only, and both roles may mint a kubeconfig -- a viewer's is in `kumo:viewers`, bound to `view`.
+Object storage follows the same matrix: both roles list and read buckets; every write is admin only. So does the databases module: both roles list and read DB instances, and creating, stopping, starting, rebooting and deleting one is admin only, because a DB instance claims the vCPUs, memory and disk of the node exactly as a launch does. And the Kubernetes module: both roles read clusters, creating, scaling and deleting one is admin only, and both roles may mint a kubeconfig -- a viewer's is in `kumo:viewers`, bound to `view`.

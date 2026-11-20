@@ -320,6 +320,7 @@ func (h *Handler) Router() *gin.Engine {
 		write := eks.Group("", middleware.RequireRole(auth.RoleAdmin))
 		write.POST("/clusters", h.createCluster)
 		write.DELETE("/clusters/:id", h.deleteCluster)
+		write.PATCH("/clusters/:id/node-groups/:ng", h.scaleNodeGroup)
 	}
 
 	// Host capacity. A launch form shows it next to the instance type, so both

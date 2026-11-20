@@ -237,6 +237,31 @@ func (q *Queries) GetK8sClusterByInstance(ctx context.Context, arg GetK8sCluster
 	return i, err
 }
 
+const getK8sNodeGroup = `-- name: GetK8sNodeGroup :one
+SELECT id, cluster_id, name, instance_type, root_disk_gb, desired_size, created_at, updated_at FROM k8s_node_groups WHERE id = ?1 AND cluster_id = ?2
+`
+
+type GetK8sNodeGroupParams struct {
+	ID        string `json:"id"`
+	ClusterID string `json:"cluster_id"`
+}
+
+func (q *Queries) GetK8sNodeGroup(ctx context.Context, arg GetK8sNodeGroupParams) (K8sNodeGroup, error) {
+	row := q.db.QueryRowContext(ctx, getK8sNodeGroup, arg.ID, arg.ClusterID)
+	var i K8sNodeGroup
+	err := row.Scan(
+		&i.ID,
+		&i.ClusterID,
+		&i.Name,
+		&i.InstanceType,
+		&i.RootDiskGb,
+		&i.DesiredSize,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const listK8sClusters = `-- name: ListK8sClusters :many
 SELECT id, name, kubernetes_version, image_id, vpc_id, subnet_id, pod_cidr, service_cidr, control_plane_count, control_plane_type, state, state_reason, endpoint, ca_cert_pem, created_by, created_at, updated_at FROM k8s_clusters
 WHERE instr(lower(name), lower(?1)) > 0
@@ -536,6 +561,38 @@ func (q *Queries) SetK8sClusterState(ctx context.Context, arg SetK8sClusterState
 		&i.Endpoint,
 		&i.CaCertPem,
 		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const setK8sNodeGroupSize = `-- name: SetK8sNodeGroupSize :one
+UPDATE k8s_node_groups
+SET desired_size = ?2,
+    updated_at = ?3
+WHERE id = ?1
+RETURNING id, cluster_id, name, instance_type, root_disk_gb, desired_size, created_at, updated_at
+`
+
+type SetK8sNodeGroupSizeParams struct {
+	ID          string `json:"id"`
+	DesiredSize int64  `json:"desired_size"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
+// A scale's new size. The node rows the scale adds or removes change in the
+// same transaction.
+func (q *Queries) SetK8sNodeGroupSize(ctx context.Context, arg SetK8sNodeGroupSizeParams) (K8sNodeGroup, error) {
+	row := q.db.QueryRowContext(ctx, setK8sNodeGroupSize, arg.ID, arg.DesiredSize, arg.UpdatedAt)
+	var i K8sNodeGroup
+	err := row.Scan(
+		&i.ID,
+		&i.ClusterID,
+		&i.Name,
+		&i.InstanceType,
+		&i.RootDiskGb,
+		&i.DesiredSize,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
