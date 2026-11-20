@@ -482,6 +482,16 @@ The recipe lives in `packaging/images/postgres-18/` as a script plus a
 cloud-config, runnable on any machine with libvirt or qemu — **not** on the Kumo
 host as part of a release, and nothing in `kumod` builds or depends on it.
 
+The project publishes it from `.github/workflows/engine-images.yml`, on a
+schedule of its own (monthly, for the security updates) rather than with Kumo
+releases: build on a hosted runner with KVM, `verify.sh`, then a GitHub release
+tagged `postgres-18-<version>` that is never marked latest. Kumo's own version
+lookups (`git describe` in the Makefile, the GoReleaser job) match `v*` only, so
+image tags never stamp a binary. The release asset limit (under 2 GiB) is a real
+ceiling for an uncompressed image; the workflow fails before uploading anything
+larger, and outgrowing it means another host or a compressed transport the
+import would have to learn.
+
 Base: the Ubuntu 24.04 LTS cloud image, plus the PGDG apt repository for
 `postgresql-18`.
 

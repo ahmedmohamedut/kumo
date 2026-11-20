@@ -143,13 +143,23 @@ test.describe.serial('the databases console against a real kumod', () => {
     await expect(page.getByText('Save this password somewhere safe')).toBeVisible()
     await expect(page.getByText('Connections are not encrypted').first()).toBeVisible()
 
+    const created = page.waitForResponse(
+      (r) => r.request().method() === 'POST' && r.url().endsWith('/api/v1/rds/db-instances'),
+    )
     await page.getByTestId('submit-create-db-instance').click()
 
     // The create is a task: the handler answers 202 with the database
     // `creating`, and the worker makes the data disk, builds the guest and
-    // waits for the engine.
+    // waits for the engine. Asserted on the response, not on the page: on the
+    // fake hypervisor the probe answers at once, so the database can be
+    // `available` before the detail page first renders, and a check for the
+    // "being created" alert there races the worker (it failed CI on PR #8).
+    const response = await created
+    expect(response.status()).toBe(202)
+    const body: unknown = await response.json()
+    expect(body).toMatchObject({ state: 'creating', task_id: expect.any(String) })
+
     await expect(page.getByRole('heading', { level: 1, name: IDENTIFIER })).toBeVisible()
-    await expect(page.getByText('This database is being created')).toBeVisible()
     await expect(page.getByText('Available').first()).toBeVisible({ timeout: 60_000 })
   })
 

@@ -103,8 +103,28 @@ thing is `internal/service/dbcred` (M7.4), with a random salt per DB instance.
 
 ## Publish
 
-Host the `.qcow2` and its `.sha256` wherever Kumo nodes can reach them over
-HTTPS, then import:
+The project's own images are built, verified and published by
+`.github/workflows/engine-images.yml`, on the 2nd of every month and on demand
+(**Actions → Engine images → Run workflow**, optionally with a version). Each
+build that passes `verify.sh` becomes a GitHub release tagged
+`postgres-18-<version>`, carrying the `.qcow2`, the `.sha256` and the
+`.manifest`, with the exact import body in its notes. A pull request that
+touches this directory runs the same build and verify and publishes nothing.
+
+Three things the workflow holds to:
+
+- **Never marked latest.** `scripts/install.sh` resolves `/releases/latest` to
+  find Kumo itself, so an image release must not become it. For the same reason
+  the Makefile and the Kumo release job read versions with `--match 'v*'`.
+- **Under 2 GiB.** GitHub refuses a release asset of 2 GiB or more, and the
+  image is uncompressed on purpose. The build was 1939 MiB at M7.1; the workflow
+  warns from 95% of the limit and fails above it, before anything is uploaded.
+- **The guest never sees a write token.** The job that boots qemu runs with
+  read access only and hands the image to a separate publish job, which checks
+  it against its `.sha256` before creating the release.
+
+To host an image somewhere else, put the `.qcow2` and its `.sha256` wherever
+Kumo nodes can reach them over HTTPS, then import:
 
 ```sh
 curl -sS -X POST https://kumo.example/api/v1/images/import \

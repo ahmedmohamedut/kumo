@@ -260,6 +260,16 @@ jobs:
       - name: Install dependencies
         run: make deps
 
+      # Engine image releases (engine-images.yml) tag this repository too, as
+      # postgres-18-<date>. GoReleaser finds the previous release with a plain
+      # `git describe --tags`, which would pick one of those and cut the
+      # changelog short, so both ends are named here with --match 'v*'.
+      - name: Name the release's tags
+        run: |
+          echo "GORELEASER_CURRENT_TAG=$GITHUB_REF_NAME" >>"$GITHUB_ENV"
+          prev=$(git describe --tags --abbrev=0 --match 'v*' "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          [ -z "$prev" ] || echo "GORELEASER_PREVIOUS_TAG=$prev" >>"$GITHUB_ENV"
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: '~> v2'
