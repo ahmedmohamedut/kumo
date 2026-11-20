@@ -85,6 +85,10 @@ test-libvirt: ## Run the opt-in integration tests against a real libvirtd
 test-k8s-image: ## Boot the Kubernetes engine image with kumod's seeds (needs KUMO_TEST_K8S_IMAGE, qemu, KVM)
 	$(GO) test -tags kubeimage ./internal/service/k8scloudinit/ -run TestSeedsBootAClusterOnTheImage -count=1 -v -timeout 40m
 
+.PHONY: test-spark-image
+test-spark-image: ## Boot the Spark engine image with kumod's seeds (needs KUMO_TEST_SPARK_IMAGE, qemu, KVM)
+	$(GO) test -tags sparkimage ./internal/service/sparkcloudinit/ -run TestSeedsBootASparkClusterOnTheImage -count=1 -v -timeout 40m
+
 .PHONY: test-k8s-journey
 test-k8s-journey: ## Create, use, scale and delete a real cluster on libvirt (needs KUMO_TEST_K8S_IMAGE, about 15 min)
 	$(GO) test -tags libvirt ./internal/service/kubernetes/ -run TestClusterJourney -count=1 -v -timeout 60m
