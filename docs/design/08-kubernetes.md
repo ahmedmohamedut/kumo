@@ -10,7 +10,7 @@ console mimics.
 
 It is built the way the databases module is (`07-databases.md`): **a golden
 image with everything installed, configured on first boot by a cloud-init seed
-kumod renders, with no SSH and no agent.** The image carries containerd, kubeadm,
+kumod renders, with no SSH and no agent.** The image carries CRI-O, kubeadm,
 kubelet and the control-plane container images; the seed carries a cluster CA and
 a join token kumod generated before any VM booted, so `kubeadm init` on the
 control plane and `kubeadm join` on every worker need nothing from anybody at
@@ -299,31 +299,64 @@ Built by `.github/workflows/engine-images.yml`, as the Postgres image is
 (`07-databases.md` §7): recipe `packaging/images/kubernetes-1.37/`, imported with
 `kind=engine`, `engine=kubernetes`, `engine_version=1.37`. Contents:
 
-- Ubuntu 24.04, containerd, `kubeadm`, `kubelet`, `kubectl` from `pkgs.k8s.io`
-  for 1.37, held at the patch release the image is named after
-- The control-plane, CoreDNS, Cilium (agent and operator) and local-path images
-  **pre-pulled** into containerd, so no boot reaches a registry (the same rule
-  as §7 of 07)
-- **Cilium as a manifest, not a chart.** The recipe runs `helm template` once,
-  at build time, with VXLAN tunnelling, `ipam.mode=kubernetes` (pod ranges come
-  from the node's `podCIDR`, which kubeadm carves out of the cluster's pod
-  range), kube-proxy kept and Hubble off, and ships the rendered YAML. The only
-  per-cluster values are the API endpoint and the pod range, which the seed
-  substitutes. Neither Helm nor the `cilium` CLI is in the image or on the host
-- Ubuntu 24.04's 6.8 kernel is well above Cilium's minimum, and the BPF
-  filesystem mount it wants is a unit in the image
+- **Ubuntu 26.04 LTS** (kernel 7.0, supported to 2031), where the Postgres image
+  stays on 24.04: the base is a per-recipe setting (`recipe.env`)
+- **CRI-O 1.37** from its own repository (`isv:cri-o` on the openSUSE Build
+  Service, which it moved to from `pkgs.k8s.io`), and `kubeadm`, `kubelet`,
+  `kubectl` 1.37 from `pkgs.k8s.io`, all held at the versions the image is named
+  after. CRI-O's version follows Kubernetes' minor for minor and it bundles its
+  own OCI runtime and conmon, so the image installs one runtime package rather
+  than pinned containerd and runc tarballs (Ubuntu's own containerd, 1.6 on
+  24.04 and 1.7 on 26.04, is too old for 1.37, which needs 2.3 or later). Both
+  repositories' signing keys are pinned in the recipe, and `preflight.sh`
+  refuses an expired one before the build starts
+- **One behaviour users will notice:** CRI-O's default capability set leaves
+  out `NET_RAW`, which containerd grants, so `ping` and other raw sockets fail
+  inside a pod unless its `securityContext` adds `NET_RAW`. That is CRI-O's
+  default and arguably the safer one; it is kept, and the console's Connect
+  tab should say so (M8.7). `verify.sh` tests pod-to-pod over TCP for this
+  reason
+- The control-plane, CoreDNS, Cilium (agent, operator, Envoy) and local-path
+  images **pre-pulled**, so no boot reaches a registry (the same rule as §7 of
+  07). The add-on images are pinned by digest (`files/images.txt`); CRI-O's
+  pause image is set to the one kubeadm names, so it is the pulled one. CRI-O
+  keeps each image once, unpacked
+- **Cilium as a committed manifest, not a chart.** `render-cilium.sh` runs
+  `helm template` against the chart archive checked by its published digest,
+  with `cilium-values.yaml` (VXLAN tunnelling, `ipam.mode=kubernetes`, kube-proxy
+  kept, Hubble off), and the output is committed as `files/cilium.yaml`. A Cilium
+  bump is a reviewable diff, and the build needs no Helm. The manifest has **no
+  per-cluster values**: pod ranges come from each node's `podCIDR`, which kubeadm
+  carves out of the cluster's pod range, and the agent reaches the API server
+  through the `kubernetes` Service, which kube-proxy programs. Neither Helm nor
+  the `cilium` CLI is in the image or on the host
+- local-path-provisioner as a committed manifest with its images pinned by
+  digest: upstream's helper pod uses a bare `busybox`, which is `:latest` and
+  would be pulled on every volume, so the copy here pins it, and marks the
+  StorageClass as the default
 - Kernel modules and sysctls kubeadm's preflight wants (`br_netfilter`,
-  `overlay`, `net.ipv4.ip_forward`), swap off, `kubelet` enabled but inert
-  until kubeadm writes its config
+  `overlay`, `net.ipv4.ip_forward`), no swap, `kubelet` enabled but inert until
+  kubeadm writes its config; snapd removed
 - No PKI, no kubeconfig, no token, no cluster: all of it arrives in the seed
-- One kernel, no headers, a size report in the serial log (the Postgres recipe's
-  fix from M7.8 applies unchanged)
+- One kernel, no headers, a size report in the serial log
+  (`packaging/images/lib/guest-finish.sh`, shared with Postgres)
 
-The same image serves both roles; the seed decides which. Expected size is
-under the 2 GiB release-asset ceiling (an estimate until M8.1 measures it:
-the pre-pulled images are roughly 600 to 800 MiB, Cilium's being the largest),
-and the workflow's size gate will say so before anything is published. A `verify.sh` boots it twice, as a control plane and as a worker
-joined to it, and checks `kubectl get nodes` shows both `Ready`.
+The same image serves both roles; the seed decides which. **Size**, measured
+at M8.1 (Kubernetes 1.37.2, CRI-O 1.37.4, Cilium 1.20.5): 3634 MiB as a qcow2,
+1337 MiB gzipped. Of the 3.6 GiB, the unpacked container images are most of
+`/var` (1.6 GiB) and `/usr` holds the OS, the 7.0 kernel's modules and the
+Kubernetes binaries (1.6 GiB). For comparison, the same recipe on containerd
+and 24.04 was 3802 MiB, because containerd also keeps every image's
+compressed layers.
+That is past GitHub's 2 GiB release-asset limit uncompressed, which is why
+engine images are published gzipped and decompressed on import (`07-databases.md`
+§7); the workflow measures the `.gz` against the limit.
+
+`verify.sh` boots it twice, as a control plane and as a worker joined to it, on
+a private link with no route anywhere else, so any image pull would fail. It
+checks that both nodes are `Ready`, the add-ons roll out from the image's own
+manifests, a PersistentVolumeClaim binds on the default StorageClass, a pod
+reaches a pod on the other node through the tunnel, and no pull event happened.
 
 ## 8. API (`/api/v1/eks`)
 
@@ -405,8 +438,11 @@ kubeadm configuration the seed renders.
 | 5 | ID prefixes `eks-` (clusters) and `ng-` (node groups) | **Yes**; `internal/id` gains both in M8.3 |
 | 6 | API path `/api/v1/eks` | **Yes** (§8) |
 
-Still to settle inside the tasks, without needing the owner: the exact 1.37 patch
-release and Cilium release the first image pins (M8.1), and the RBAC verbs of
+Settled since, with the owner: **CRI-O rather than containerd, and Ubuntu 26.04
+for this image** (§7), and **gzip transport** for engine images, because the
+Kubernetes image does not fit the release-asset limit uncompressed. M8.1 pins
+Kubernetes 1.37.2, CRI-O 1.37.4 and Cilium 1.20.5. Still to settle inside the
+tasks, without needing the owner: the RBAC verbs of
 kumod's own `kumo:system` role (M8.2), which §6 bounds.
 
 ## 12. Milestone (M8)
@@ -414,7 +450,9 @@ kumod's own `kumo:system` role (M8.2), which §6 bounds.
 One task per PR, in order (acceptance criteria in `05-roadmap.md`):
 
 - **M8.1 Golden image recipe and verify** — `packaging/images/kubernetes-1.37/`
-  with the Cilium manifest rendered at build time, added to the engine-images
+  on Ubuntu 26.04 with CRI-O, the Cilium manifest rendered and committed, the
+  build shared with Postgres (`packaging/images/lib/`), gzip transport in the
+  image import, added to the engine-images
   workflow; `verify.sh` boots a control plane and a worker and sees both
   `Ready` with Cilium's agent healthy on each.
 - **M8.2 PKI and seeds** — `internal/service/k8spki` (CAs, keys, kubeconfig

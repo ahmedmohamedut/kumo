@@ -1,0 +1,168 @@
+#cloud-config
+# Build-time provisioning for the Kumo Kubernetes 1.37 golden image.
+#
+# Read by ./build.sh (../lib/build-image.sh) only, inside a throwaway VM that
+# powers itself off when it is done. This is NOT the seed a node boots with:
+# that one is rendered at create time by kumod (docs/design/08-kubernetes.md
+# §4, M8.2), and ./verify-*.cloud-config.yaml are hand-written stand-ins for it.
+#
+# The image is the same for a control plane and a worker; the seed decides
+# which. It carries everything a node needs and nothing that makes it one
+# cluster's: Ubuntu 26.04, CRI-O and kubeadm/kubelet/kubectl held at 1.37,
+# every container image a cluster starts with already pulled, and the Cilium
+# and local-path manifests. No PKI, no kubeconfig, no token, no cluster.
+
+ssh_pwauth: false
+disable_root: true
+
+package_update: true
+# Security updates in, as for every engine image. The Kubernetes packages are
+# installed and held by the provision script below, at exact versions.
+package_upgrade: true
+
+write_files:
+  # Kernel modules and sysctls kubeadm's preflight checks for, and the ones the
+  # container runtime and Cilium need on every boot.
+  - path: /etc/modules-load.d/kubernetes.conf
+    permissions: '0644'
+    content: |
+      overlay
+      br_netfilter
+  - path: /etc/sysctl.d/90-kubernetes.conf
+    permissions: '0644'
+    content: |
+      net.ipv4.ip_forward = 1
+      net.bridge.bridge-nf-call-iptables = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+
+  # No /etc/crictl.yaml here: the cri-o package ships one pointing crictl at
+  # its socket, and writing ours first stops dpkg at a conffile prompt.
+
+  # CRI-O's only Kumo-specific setting, the pause image, is written by the
+  # provision script below: it is whichever one kubeadm 1.37 names, which only
+  # kubeadm knows. Everything else is CRI-O's default, the systemd cgroup
+  # manager included, which is what kubelet uses.
+
+  # A node is not a machine anyone has a shell on; see the Postgres recipe.
+  - path: /etc/ssh/sshd_config.d/60-kumo.conf
+    permissions: '0644'
+    content: |
+      PasswordAuthentication no
+      PermitRootLogin no
+      KbdInteractiveAuthentication no
+
+  # What this image is, for whoever inspects one later. The exact versions are
+  # appended by the provision script, the only place that knows them.
+  - path: /etc/kumo-image
+    permissions: '0644'
+    content: |
+      engine=kubernetes
+      engine_version=1.37
+      base=ubuntu-26.04
+      manifests=/usr/share/kumo/kubernetes
+      built_by=packaging/images/kubernetes-1.37/build.sh
+
+  # Written to /run and run with `bash <path>` because /run is noexec, as in
+  # the Postgres recipe.
+  - path: /run/kumo-image-provision
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      # Install CRI-O and Kubernetes, pull every image, then hand over to
+      # the shared teardown. One trap and one FAILED marker, so a broken step
+      # powers the VM off and build-image.sh says so instead of timing out.
+      set -euo pipefail
+      export LC_ALL=C
+      export DEBIAN_FRONTEND=noninteractive
+
+      trap 'printf "\nKUMO-IMAGE-FAILED\n" >/dev/console; sync; systemctl --no-block poweroff' ERR
+
+      # Every version the image is made of. A bump is an edit here and, for
+      # Cilium, ../render-cilium.sh. CRI-O's version follows Kubernetes' minor
+      # for minor, so the two move together.
+      K8S_VERSION=1.37.2
+      K8S_PACKAGE=1.37.2-1.1
+      CRIO_PACKAGE=1.37.4-1.1
+      CRIO_SOCKET=unix:///var/run/crio/crio.sock
+
+      mkdir -p /run/kumo-files
+      mount -o ro /dev/disk/by-label/KUMOFILES /run/kumo-files
+      FILES=/run/kumo-files/recipe
+
+      # Both repositories are signed by keys pinned in this repository
+      # (../preflight.sh refuses an expired one before the build starts).
+      install -D -m 0644 "$FILES/kubernetes-apt-keyring.asc" /etc/apt/keyrings/kubernetes.asc
+      install -D -m 0644 "$FILES/cri-o-apt-keyring.asc" /etc/apt/keyrings/cri-o.asc
+      echo 'deb [signed-by=/etc/apt/keyrings/kubernetes.asc] https://pkgs.k8s.io/core:/stable:/v1.37/deb/ /' \
+      	>/etc/apt/sources.list.d/kubernetes.list
+      echo 'deb [signed-by=/etc/apt/keyrings/cri-o.asc] https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.37/deb/ /' \
+      	>/etc/apt/sources.list.d/cri-o.list
+      apt-get update -q
+      apt-get install -y -q --no-install-recommends \
+      	"cri-o=$CRIO_PACKAGE" \
+      	"kubeadm=$K8S_PACKAGE" "kubelet=$K8S_PACKAGE" "kubectl=$K8S_PACKAGE" \
+      	cri-tools kubernetes-cni
+      apt-mark hold cri-o kubeadm kubelet kubectl >/dev/null
+
+      modprobe overlay
+      modprobe br_netfilter
+      sysctl --system >/dev/null
+
+      # CRI-O's pause image: the one kubeadm itself names, so the one pulled
+      # below is the one every pod starts with and none is ever fetched. Read
+      # back from CRI-O's own view of its configuration rather than trusted to
+      # the file. CRI-O keeps each image once, unpacked, so there is no second
+      # compressed copy to discard as there would be with containerd.
+      pause=$(kubeadm config images list --kubernetes-version "v$K8S_VERSION" | grep '/pause:')
+      install -d -m 0755 /etc/crio/crio.conf.d
+      printf '[crio.image]\npause_image = "%s"\n' "$pause" >/etc/crio/crio.conf.d/10-kumo.conf
+      # A node's pod network is Cilium's; a bridge config shipped by the
+      # package would be one more CNI for CRI-O to consider before it appears.
+      rm -f /etc/cni/net.d/*crio*
+      systemctl daemon-reload
+      systemctl enable --now crio
+      crio status config | grep -q "pause_image = \"$pause\""
+
+      # Every image a cluster starts with: kubeadm's own (API server, controller
+      # manager, scheduler, proxy, etcd, CoreDNS, pause) and the add-ons', each
+      # add-on image pinned by digest in images.txt. No node boot ever reaches
+      # a registry, which verify.sh proves by giving its nodes no route to one.
+      kubeadm config images pull --kubernetes-version "v$K8S_VERSION" --cri-socket "$CRIO_SOCKET"
+      while read -r ref; do
+      	[ -n "$ref" ] && crictl pull "$ref" >/dev/null
+      done <"$FILES/images.txt"
+      crictl images >/dev/console
+
+      # The manifests a control plane applies after `kubeadm init`.
+      install -d -m 0755 /usr/share/kumo/kubernetes
+      install -m 0644 "$FILES/cilium.yaml" "$FILES/local-path-storage.yaml" "$FILES/images.txt" \
+      	/usr/share/kumo/kubernetes/
+
+      # kubelet is enabled by its package and restarts every few seconds until
+      # kubeadm writes its configuration on a node's first boot. That is the
+      # state kubeadm expects; nothing to do here but stop it for the teardown.
+      systemctl stop kubelet
+
+      engine_release=$(kubeadm version -o short | sed 's/^v//')
+      engine_package=$(dpkg-query -W -f='${Version}' kubeadm)
+      {
+      	printf 'engine_release=%s\nengine_package=%s\n' "$engine_release" "$engine_package"
+      	printf 'cri-o=%s\npause=%s\n' "$(dpkg-query -W -f='${Version}' cri-o)" "$pause"
+      } >>/etc/kumo-image
+
+      # A node never installs a snap, and snapd with its seeded snaps is a few
+      # hundred MiB of the image and a daemon on every node.
+      systemctl disable --now snapd.socket snapd.service snapd.seeded.service >/dev/null 2>&1 || true
+      apt-get purge -y -q snapd >/dev/null
+      rm -rf /snap /var/snap /var/lib/snapd /var/cache/snapd
+
+      # CRI-O keeps running state under /run, which is gone at poweroff; what it
+      # pulled is under /var/lib/containers, which is what ships.
+      systemctl stop crio
+
+      printf '\nKUMO-IMAGE-ENGINE=%s\n' "$engine_release" >/dev/console
+      printf 'KUMO-IMAGE-PKG=%s\n' "$engine_package" >/dev/console
+      exec bash /run/kumo-files/lib/guest-finish.sh
+
+runcmd:
+  - [bash, /run/kumo-image-provision]

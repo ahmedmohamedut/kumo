@@ -487,13 +487,23 @@ schedule of its own (monthly, for the security updates) rather than with Kumo
 releases: build on a hosted runner with KVM, `verify.sh`, then a GitHub release
 tagged `postgres-18-<version>` that is never marked latest. Kumo's own version
 lookups (`git describe` in the Makefile, the GoReleaser job) match `v*` only, so
-image tags never stamp a binary. The release asset limit (under 2 GiB) is a real
-ceiling for an uncompressed image; the workflow fails before uploading anything
-larger, and outgrowing it means another host or a compressed transport the
-import would have to learn.
+image tags never stamp a binary.
+
+**Stored uncompressed, transported gzipped.** The workflow publishes
+`<image>.qcow2.gz` with the SHA256 of the `.gz`, and `POST /images/import`
+decompresses a gzipped download after checking that checksum and before
+inspecting the result (`internal/service/image/gzip.go`). Detection is by the
+gzip magic bytes, not the URL; the decompressed size is bounded by
+`KUMO_IMAGE_MAX_BYTES` like a download; Go's standard library does it, so no
+dependency was added. GitHub refuses a release asset of 2 GiB or more, and the
+Kubernetes image (`08-kubernetes.md` §7) is well past that uncompressed; the
+workflow measures the `.gz` against the limit and fails before uploading
+anything larger. Outgrowing it even gzipped would mean another host.
 
 Base: the Ubuntu 24.04 LTS cloud image, plus the PGDG apt repository for
-`postgresql-18`.
+`postgresql-18`. The build itself is `packaging/images/lib/`, shared with the
+Kubernetes recipe: `build-image.sh` on the host, and `guest-finish.sh`, the
+teardown below, inside the guest.
 
 What the recipe must do, beyond installing the engine:
 
@@ -514,10 +524,11 @@ What the recipe must do, beyond installing the engine:
   `shared_buffers` at 25% and `effective_cache_size` at 60% of the instance type's
   memory, which cloud-init knows and the image cannot.
 - **`fstrim` the free space and flatten** with `qemu-img convert -O qcow2`, and
-  record the SHA256 of exactly the published file. **Uncompressed**: the file is
-  the read-only backing store of every DB instance's root overlay, so `-c` would
-  trade a smaller download for decompressing every cold read a database makes
-  for as long as the instance lives.
+  record the SHA256 of exactly the published file. **Uncompressed in the pool**:
+  the volume is the read-only backing store of every DB instance's root overlay,
+  so a compressed qcow2 (`-c`) would trade a smaller download for decompressing
+  every cold read a database makes for as long as the instance lives. The gzip
+  the release carries is transport only; the import undoes it.
 
 The published image is immutable. A patched Postgres 18 is a **new image** with a
 new version string in its name, imported alongside the old one; existing DB

@@ -1,38 +1,48 @@
-# Builds, verifies and publishes the engine images the databases module boots
-# from (docs/design/07-databases.md section 7, packaging/images/postgres-18).
+# Builds, verifies and publishes Kumo's engine images: the golden images the
+# databases module (docs/design/07-databases.md section 7) and the Kubernetes
+# module (docs/design/08-kubernetes.md section 7) boot from. One recipe per
+# directory under packaging/images/, all built by packaging/images/lib.
 #
 # Separate from ci.yml on purpose. An engine image is immutable and versioned on
-# its own: a patched Postgres is a new image, imported beside the old one, and
-# it has no reason to wait for a Kumo release or to be rebuilt by one. The
-# monthly schedule is what picks up the security updates the recipe installs
+# its own: a patched engine is a new image, imported beside the old one, and it
+# has no reason to wait for a Kumo release or to be rebuilt by one. The monthly
+# schedule is what picks up the security updates every recipe installs
 # (package_upgrade: true); a Kumo release ships no image at all.
 #
-#   pull_request       the recipe changed: build and verify, publish nothing
-#   workflow_dispatch  build, verify and publish now (optionally as a given version)
-#   schedule           the monthly refresh: build, verify and publish
+#   pull_request       a recipe changed: build and verify every recipe, publish nothing
+#   workflow_dispatch  build, verify and publish now (one recipe or all, optionally as a given version)
+#   schedule           the monthly refresh: build, verify and publish every recipe
 #
-# Each image is a GitHub release tagged postgres-18-<version>, never marked
-# latest: scripts/install.sh resolves /releases/latest to find Kumo itself, and
-# an image release there would send every new install to a tag with no kumod.
+# Each image is a GitHub release tagged <recipe>-<version> (postgres-18-20261120,
+# kubernetes-1.37-20261120), never marked latest: scripts/install.sh resolves
+# /releases/latest to find Kumo itself, and an image release there would send
+# every new install to a tag with no kumod. Kumo's own version lookups match
+# v* only, so these tags never stamp a binary.
 name: Engine images
 
 on:
   pull_request:
     paths:
-      - packaging/images/postgres-18/**
+      - packaging/images/**
       - .github/workflows/engine-images.yml
   workflow_dispatch:
     inputs:
+      recipe:
+        description: "Which recipe to build (a directory under packaging/images, or all)"
+        required: false
+        default: all
+        type: choice
+        options: [all, postgres-18, kubernetes-1.37]
       version:
         description: "Version string for the image name (default: today's UTC date, YYYYMMDD)"
         required: false
         type: string
   schedule:
-    # 04:00 UTC on the 2nd of each month: after Ubuntu's and PGDG's
-    # end-of-month point releases have had a day to reach the mirrors.
+    # 04:00 UTC on the 2nd of each month: after the distributions' end-of-month
+    # point releases have had a day to reach the mirrors.
     - cron: "0 4 2 * *"
 
-# One build at a time per ref. A publishing run is never cancelled halfway: a
+# One run at a time per ref. A publishing run is never cancelled halfway: a
 # release with the image but not its checksum is worse than a late one.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -42,63 +52,109 @@ permissions:
   contents: read
 
 env:
-  # Where build.sh and verify.sh keep the base image, scratch disks and serial
-  # logs. Named here so the failure upload below finds the logs.
-  KUMO_IMAGE_WORK_DIR: /var/tmp/kumo-image-build
-  # GitHub refuses a release asset of 2 GiB or more. The image is uncompressed
-  # by design (07-databases.md section 7) and was 1939 MiB at M7.1, so this is
-  # a real ceiling, and the build fails here rather than at the upload.
+  # GitHub refuses a release asset of 2 GiB or more. Images are published
+  # gzipped -- Kumo's import decompresses them, and the pool still holds them
+  # uncompressed (07-databases.md section 7) -- and the limit applies to the
+  # .gz. The Kubernetes image is well over it uncompressed, so this is a real
+  # ceiling, and the build fails here rather than at the upload.
   ASSET_LIMIT_BYTES: "2147483647"
   # Warn from 95% of the limit, so the warning arrives a few months before the
   # failure does.
   ASSET_WARN_BYTES: "2040109465"
 
 jobs:
-  postgres-18:
-    name: Postgres 18 image
-    # Pinned rather than ubuntu-latest: the qemu the image is built and
-    # verified with should change when somebody chooses to change it.
+  plan:
+    name: Plan
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
     outputs:
-      version: ${{ steps.version.outputs.version }}
-      tag: ${{ steps.version.outputs.tag }}
-      publish: ${{ steps.version.outputs.publish }}
+      recipes: ${{ steps.plan.outputs.recipes }}
+      version: ${{ steps.plan.outputs.version }}
+      publish: ${{ steps.plan.outputs.publish }}
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Choose the version
-        id: version
+      - name: Choose the recipes and the version
+        id: plan
         env:
+          INPUT_RECIPE: ${{ inputs.recipe }}
           INPUT_VERSION: ${{ inputs.version }}
           EVENT: ${{ github.event_name }}
-          GH_TOKEN: ${{ github.token }}
         run: |
+          case "${INPUT_RECIPE:-all}" in
+            all) recipes='["postgres-18","kubernetes-1.37"]' ;;
+            postgres-18 | kubernetes-1.37) recipes="[\"$INPUT_RECIPE\"]" ;;
+            *) echo "::error::unknown recipe '$INPUT_RECIPE'"; exit 1 ;;
+          esac
           v=${INPUT_VERSION:-$(date -u +%Y%m%d)}
           # It becomes part of a file name, a tag and a URL.
           if ! [[ $v =~ ^[0-9A-Za-z][0-9A-Za-z.]*$ ]]; then
             echo "::error::version '$v' must be letters, digits and dots"
             exit 1
           fi
-          tag=postgres-18-$v
           publish=true
           [ "$EVENT" = pull_request ] && publish=false
-          # Checked now rather than after the build: a version that is already
-          # published is immutable, and finding that out costs nothing here
-          # and fifteen minutes later.
-          if [ "$publish" = true ] && gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          {
+            echo "recipes=$recipes"
+            echo "version=$v"
+            echo "publish=$publish"
+          } >>"$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.recipe }} image
+    needs: plan
+    strategy:
+      # One recipe failing says nothing about the other; let both finish.
+      fail-fast: false
+      matrix:
+        recipe: ${{ fromJSON(needs.plan.outputs.recipes) }}
+    # Pinned rather than ubuntu-latest: the qemu the images are built and
+    # verified with should change when somebody chooses to change it.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      RECIPE: ${{ matrix.recipe }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      PUBLISH: ${{ needs.plan.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read the recipe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # recipe.env is reviewed shell, the same file build-image.sh reads.
+          # shellcheck source=/dev/null
+          . "packaging/images/$RECIPE/recipe.env"
+          tag=$RECIPE-$VERSION
+          # Checked now rather than after the build: a published image never
+          # changes, and finding that out costs nothing here and half an hour
+          # later.
+          if [ "$PUBLISH" = true ] && gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::error::$tag is already published, and a published image never changes; run again with another version"
             exit 1
           fi
           {
-            echo "version=$v"
-            echo "tag=$tag"
-            echo "publish=$publish"
-          } >>"$GITHUB_OUTPUT"
+            echo "TAG=$tag"
+            echo "IMAGE=$IMAGE_NAME-$VERSION.qcow2"
+            echo "TITLE=$TITLE"
+            echo "ENGINE=$ENGINE"
+            echo "ENGINE_VERSION=$ENGINE_VERSION"
+          } >>"$GITHUB_ENV"
 
-      # Hosted runners have /dev/kvm but leave it root-only. Without this
-      # build.sh refuses to start rather than falling back to software
-      # emulation, which would take about an hour.
+      # The builds and the verify overlays need more room than the runner's root
+      # filesystem reliably has: the Kubernetes image alone is a build disk, a
+      # 2 GiB result and two booted nodes. /mnt is the runner's larger disk.
+      - name: Choose the work directory
+        run: |
+          dir=/var/tmp/kumo-image-build
+          if [ -d /mnt ] && sudo mkdir -p /mnt/kumo-image-build && sudo chown "$(id -u):$(id -g)" /mnt/kumo-image-build; then
+            dir=/mnt/kumo-image-build
+          fi
+          echo "KUMO_IMAGE_WORK_DIR=$dir" >>"$GITHUB_ENV"
+          echo "OUT_DIR=$dir/out" >>"$GITHUB_ENV"
+          df -h "$dir" | tail -1
+
+      # Hosted runners have /dev/kvm but leave it root-only. Without this the
+      # build refuses to start rather than falling back to software emulation,
+      # which would take hours.
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
@@ -112,9 +168,10 @@ jobs:
             exit 1
           fi
 
-      # What build.sh's need_tools checks for, plus gpg for the signature over
-      # the base image's checksums. verify.sh needs nothing more: its SCRAM
-      # login runs inside the guest and its probe is bash's /dev/tcp.
+      # What build-image.sh's need_tools checks for, plus gpg for the signature
+      # over the base image's checksums and for the Kubernetes recipe's key
+      # check. The verify scripts need nothing more: their checks run inside the
+      # guests and report on the serial console.
       - name: Install the build tools
         run: |
           sudo apt-get update -q
@@ -122,35 +179,43 @@ jobs:
             qemu-system-x86 qemu-utils xorriso gpg gpgv curl
 
       - name: Build
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          packaging/images/postgres-18/build.sh \
+          "packaging/images/$RECIPE/build.sh" \
             --version "$VERSION" \
-            --out "$RUNNER_TEMP/out/kumo-postgres-18-$VERSION.qcow2"
+            --out "$OUT_DIR/$IMAGE"
+
+      - name: Verify
+        run: |
+          "packaging/images/$RECIPE/verify.sh" --keep --image "$OUT_DIR/$IMAGE"
+
+      # Compressed after it was verified, so the bytes that passed are the bytes
+      # that ship. -n leaves the name and time out of the header, so the .gz
+      # depends on the image alone. The manifest records both checksums: the
+      # .gz's is what an import checks, the image's is what the pool holds.
+      - name: Compress
+        run: |
+          gzip -6 -n -c "$OUT_DIR/$IMAGE" >"$OUT_DIR/$IMAGE.gz"
+          sha256sum "$OUT_DIR/$IMAGE.gz" | sed "s|  .*/|  |" >"$OUT_DIR/$IMAGE.gz.sha256"
+          {
+            echo "compressed=$IMAGE.gz"
+            echo "compressed_sha256=$(cut -d' ' -f1 "$OUT_DIR/$IMAGE.gz.sha256")"
+            echo "compressed_size_bytes=$(stat -c %s "$OUT_DIR/$IMAGE.gz")"
+          } >>"$OUT_DIR/$IMAGE.manifest"
+          cat "$OUT_DIR/$IMAGE.gz.sha256"
 
       - name: Check the size against the release asset limit
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          f=$RUNNER_TEMP/out/kumo-postgres-18-$VERSION.qcow2
-          size=$(stat -c %s "$f")
+          raw=$(stat -c %s "$OUT_DIR/$IMAGE")
+          size=$(stat -c %s "$OUT_DIR/$IMAGE.gz")
           mib=$((size / 1024 / 1024))
-          echo "image is $mib MiB"
+          echo "image is $((raw / 1024 / 1024)) MiB, $mib MiB gzipped"
           if [ "$size" -gt "$ASSET_LIMIT_BYTES" ]; then
-            echo "::error::the image is $mib MiB, over GitHub's 2 GiB release asset limit; it needs another host or a compressed transport (07-databases.md section 7)"
+            echo "::error::the $RECIPE image is $mib MiB gzipped, over GitHub's 2 GiB release asset limit; it needs another host (07-databases.md section 7)"
             exit 1
           fi
           if [ "$size" -gt "$ASSET_WARN_BYTES" ]; then
-            echo "::warning::the image is $mib MiB, within 5% of GitHub's 2 GiB release asset limit"
+            echo "::warning::the $RECIPE image is $mib MiB gzipped, within 5% of GitHub's 2 GiB release asset limit"
           fi
-
-      - name: Verify
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          packaging/images/postgres-18/verify.sh --keep \
-            --image "$RUNNER_TEMP/out/kumo-postgres-18-$VERSION.qcow2"
 
       # The serial consoles are the only record of what a guest did, and the
       # runner is gone once the job ends.
@@ -158,85 +223,109 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: postgres-18-serial-logs
+          name: ${{ matrix.recipe }}-serial-logs
           path: ${{ env.KUMO_IMAGE_WORK_DIR }}/**/*.log
           if-no-files-found: ignore
           retention-days: 14
+
+      # Everything the publish job needs to know travels with the image, so that
+      # job needs no matrix of its own.
+      - name: Describe the release
+        if: env.PUBLISH == 'true'
+        run: |
+          # Quoted with %q because the publish job sources this file, and a
+          # title has spaces ("Kubernetes 1.37" unquoted would run "1.37").
+          for v in TAG IMAGE TITLE ENGINE ENGINE_VERSION RECIPE VERSION; do
+            printf '%s=%q\n' "$v" "${!v}"
+          done >"$OUT_DIR/release.env"
 
       # Handed to the publish job rather than published from here, so that the
       # job running a guest, apt and a dozen downloads never holds a token that
       # can write to the repository. A pull request's image is not kept: it is
       # two gigabytes nobody will import.
       - name: Hand the image to the publish job
-        if: steps.version.outputs.publish == 'true'
+        if: env.PUBLISH == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: postgres-18-image
-          path: ${{ runner.temp }}/out/
+          name: image-${{ matrix.recipe }}
+          path: |
+            ${{ env.OUT_DIR }}/${{ env.IMAGE }}.gz
+            ${{ env.OUT_DIR }}/${{ env.IMAGE }}.gz.sha256
+            ${{ env.OUT_DIR }}/${{ env.IMAGE }}.manifest
+            ${{ env.OUT_DIR }}/release.env
           if-no-files-found: error
           retention-days: 1
-          compression-level: 1
+          # Already gzipped.
+          compression-level: 0
 
   publish:
     name: Publish
-    needs: postgres-18
-    if: needs.postgres-18.outputs.publish == 'true'
+    needs: [plan, build]
+    # Publishes whatever the build legs handed over: with one recipe failing,
+    # the other's image is still released.
+    if: ${{ !cancelled() && needs.plan.outputs.publish == 'true' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v7
         with:
-          name: postgres-18-image
+          pattern: image-*
           path: out
 
-      # The artifact store is one more hop between the build and the release,
-      # so the file is checked against the checksum the build wrote before it
-      # becomes something operators import.
-      - name: Check the image against its checksum
-        working-directory: out
-        run: sha256sum -c ./*.sha256
-
-      - name: Create the release
+      - name: Create the releases
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.postgres-18.outputs.tag }}
-          VERSION: ${{ needs.postgres-18.outputs.version }}
         run: |
-          image=kumo-postgres-18-$VERSION.qcow2
-          sha=$(cut -d' ' -f1 "out/$image.sha256")
-          mindisk=$(sed -n 's/^min_disk_gb=//p' "out/$image.manifest")
-          url=https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$image
-          {
-            echo "Postgres 18 engine image for the Kumo databases module, built by"
-            echo "[\`packaging/images/postgres-18\`](https://github.com/$GITHUB_REPOSITORY/tree/$GITHUB_SHA/packaging/images/postgres-18)"
-            echo "at $GITHUB_SHA and checked by its \`verify.sh\`."
-            echo
-            echo "Import it on a node as an admin (see docs/install.md, \"Databases\"):"
-            echo
-            echo '```json'
-            echo "{"
-            echo "  \"name\": \"postgres-18-$VERSION\","
-            echo "  \"source_url\": \"$url\","
-            echo "  \"checksum\": {\"algorithm\": \"sha256\", \"value\": \"$sha\"},"
-            echo "  \"os_family\": \"linux\", \"architecture\": \"x86_64\", \"default_user\": \"ubuntu\","
-            echo "  \"min_disk_gb\": $mindisk,"
-            echo "  \"kind\": \"engine\", \"engine\": \"postgres\", \"engine_version\": \"18\""
-            echo "}"
-            echo '```'
-            echo
-            echo "x86_64 only. Manifest:"
-            echo
-            echo '```'
-            cat "out/$image.manifest"
-            echo '```'
-          } >notes.md
-          # --latest=false keeps /releases/latest pointing at Kumo itself,
-          # which is what scripts/install.sh resolves.
-          gh release create "$TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "Postgres 18 engine image $VERSION" \
-            --notes-file notes.md \
-            --latest=false \
-            "out/$image" "out/$image.sha256" "out/$image.manifest"
+          shopt -s nullglob
+          dirs=(out/image-*/)
+          [ ${#dirs[@]} -gt 0 ] || { echo "::error::no build handed over an image"; exit 1; }
+          for dir in "${dirs[@]}"; do
+            (
+              # shellcheck source=/dev/null
+              . "$dir/release.env"
+              cd "$dir"
+              # The artifact store is one more hop between the build and the
+              # release, so the file is checked against the checksum the build
+              # wrote before it becomes something operators import.
+              sha256sum -c "$IMAGE.gz.sha256"
+              sha=$(cut -d' ' -f1 "$IMAGE.gz.sha256")
+              mindisk=$(sed -n 's/^min_disk_gb=//p' "$IMAGE.manifest")
+              url=https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$IMAGE.gz
+              {
+                echo "$TITLE engine image for Kumo, built by"
+                echo "[\`packaging/images/$RECIPE\`](https://github.com/$GITHUB_REPOSITORY/tree/$GITHUB_SHA/packaging/images/$RECIPE)"
+                echo "at $GITHUB_SHA and checked by its \`verify.sh\`."
+                echo
+                echo "Import it on a node as an admin, with \`POST /api/v1/images/import\` (see docs/install.md)."
+                echo "The image is gzipped for download; Kumo decompresses it on import, and the"
+                echo "checksum below is of the .gz, which is what the import checks:"
+                echo
+                echo '```json'
+                echo "{"
+                echo "  \"name\": \"$TAG\","
+                echo "  \"source_url\": \"$url\","
+                echo "  \"checksum\": {\"algorithm\": \"sha256\", \"value\": \"$sha\"},"
+                echo "  \"os_family\": \"linux\", \"architecture\": \"x86_64\", \"default_user\": \"ubuntu\","
+                echo "  \"min_disk_gb\": $mindisk,"
+                echo "  \"kind\": \"engine\", \"engine\": \"$ENGINE\", \"engine_version\": \"$ENGINE_VERSION\""
+                echo "}"
+                echo '```'
+                echo
+                echo "x86_64 only. Manifest:"
+                echo
+                echo '```'
+                cat "$IMAGE.manifest"
+                echo '```'
+              } >notes.md
+              # --latest=false keeps /releases/latest pointing at Kumo itself,
+              # which is what scripts/install.sh resolves.
+              gh release create "$TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --target "$GITHUB_SHA" \
+                --title "$TITLE engine image $VERSION" \
+                --notes-file notes.md \
+                --latest=false \
+                "$IMAGE.gz" "$IMAGE.gz.sha256" "$IMAGE.manifest"
+            )
+          done

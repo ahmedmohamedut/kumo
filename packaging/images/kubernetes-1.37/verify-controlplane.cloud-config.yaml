@@ -1,0 +1,194 @@
+#cloud-config
+# Hand-written stand-in for the control-plane seed kumod will render
+# (docs/design/08-kubernetes.md §4 and §5, M8.2). Read by ./verify.sh only; it
+# never ships and kumod never reads it.
+#
+# It lets kubeadm generate the cluster's PKI itself and uses a fixed bootstrap
+# token, where the real seed carries the PKI kumod generated: this file proves
+# the IMAGE, and M8.2 proves the PKI and the seed against it.
+#
+#   node        cp1, 10.250.0.10 on the verify network (no route anywhere else)
+#   endpoint    api.verify.kumo:6443, in /etc/hosts as dnsmasq would serve it
+#   pods        100.64.0.0/16     services  100.96.0.0/16   (K9)
+#   token       kumovf.0123456789abcdef (the worker seed joins with it)
+#
+# Results go to the serial console as KUMO-K8S-* markers, which verify.sh reads.
+
+ssh_pwauth: false
+manage_etc_hosts: false
+
+write_files:
+  - path: /etc/hosts
+    append: true
+    content: |
+      10.250.0.10 api.verify.kumo
+
+  # The kubeadm API version is filled in from `kubeadm config print
+  # init-defaults` below, so this file does not go stale with kubeadm.
+  - path: /run/kumo-verify/kubeadm.yaml
+    permissions: '0600'
+    content: |
+      apiVersion: @KUBEADM_API@
+      kind: InitConfiguration
+      bootstrapTokens:
+        - token: kumovf.0123456789abcdef
+          ttl: 1h0m0s
+      localAPIEndpoint:
+        advertiseAddress: 10.250.0.10
+        bindPort: 6443
+      nodeRegistration:
+        name: cp1
+        criSocket: unix:///var/run/crio/crio.sock
+      ---
+      apiVersion: @KUBEADM_API@
+      kind: ClusterConfiguration
+      kubernetesVersion: v1.37.2
+      controlPlaneEndpoint: api.verify.kumo:6443
+      apiServer:
+        certSANs:
+          - api.verify.kumo
+      networking:
+        podSubnet: 100.64.0.0/16
+        serviceSubnet: 100.96.0.0/16
+
+  # Two pods, one per node, and a claim on the default StorageClass. The busybox
+  # reference is the one the image pre-pulled, so nothing here can be fetched.
+  - path: /run/kumo-verify/workload.yaml
+    permissions: '0644'
+    content: |
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: verify-data
+        namespace: default
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 64Mi
+      ---
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: verify-worker
+        namespace: default
+      spec:
+        # A selector, not nodeName: nodeName bypasses the scheduler, and
+        # local-path binds WaitForFirstConsumer, which waits for the scheduler
+        # to pick the node. With nodeName the claim never binds.
+        nodeSelector:
+          kubernetes.io/hostname: w1
+        containers:
+          - name: busybox
+            image: docker.io/library/busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
+            imagePullPolicy: IfNotPresent
+            # Serves the volume, so the other node can fetch what was written.
+            command: [sh, -c, 'echo kumo > /data/check && exec httpd -f -p 8080 -h /data']
+            volumeMounts:
+              - name: data
+                mountPath: /data
+        volumes:
+          - name: data
+            persistentVolumeClaim:
+              claimName: verify-data
+      ---
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: verify-cp
+        namespace: default
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: cp1
+        tolerations:
+          - key: node-role.kubernetes.io/control-plane
+            operator: Exists
+            effect: NoSchedule
+        containers:
+          - name: busybox
+            image: docker.io/library/busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
+            imagePullPolicy: IfNotPresent
+            command: [sh, -c, 'sleep 3600']
+
+  - path: /run/kumo-verify/run.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      export LC_ALL=C
+      export KUBECONFIG=/etc/kubernetes/admin.conf
+      LOG=/var/log/kumo-verify.log
+      say() { printf '%s\n' "$*" >/dev/console; }
+
+      diag() {
+      	{
+      		echo "--- kumo-verify diagnostics"
+      		tail -40 "$LOG" || true
+      		kubectl get nodes -o wide || true
+      		kubectl get pods -A -o wide || true
+      		kubectl get events -A --sort-by=.lastTimestamp | tail -30 || true
+      		journalctl -u kubelet --no-pager | tail -30 || true
+      	} >/dev/console 2>&1
+      }
+      trap 'diag; say ""; say "KUMO-K8S-FAILED"' ERR
+
+      # wait_for SECONDS COMMAND...: retry until the command succeeds.
+      wait_for() {
+      	local deadline=$((SECONDS + $1))
+      	shift
+      	until "$@" >>"$LOG" 2>&1; do
+      		[ "$SECONDS" -lt "$deadline" ] || { say "timed out: $*"; return 1; }
+      		sleep 5
+      	done
+      }
+
+      api=$(kubeadm config print init-defaults 2>/dev/null | awk '/^apiVersion: kubeadm/ {print $2; exit}')
+      sed -i "s|@KUBEADM_API@|$api|" /run/kumo-verify/kubeadm.yaml
+      say "KUMO-K8S-KUBEADM-API=$api"
+
+      kubeadm init --config /run/kumo-verify/kubeadm.yaml >>"$LOG" 2>&1
+      say "KUMO-K8S-INIT=ok"
+
+      # What a real control-plane seed does after init (§4 step 3): the add-ons
+      # the image carries, applied from the image.
+      kubectl apply -f /usr/share/kumo/kubernetes/cilium.yaml >>"$LOG" 2>&1
+      kubectl apply -f /usr/share/kumo/kubernetes/local-path-storage.yaml >>"$LOG" 2>&1
+
+      two_ready() { [ "$(kubectl get nodes --no-headers | awk '$2 == "Ready"' | wc -l)" -eq 2 ]; }
+      wait_for 900 two_ready
+      say "KUMO-K8S-NODES=$(kubectl get nodes --no-headers | awk '{printf "%s:%s ", $1, $2}')"
+
+      kubectl -n kube-system rollout status ds/cilium --timeout=300s >>"$LOG" 2>&1
+      kubectl -n kube-system rollout status deploy/cilium-operator --timeout=300s >>"$LOG" 2>&1
+      kubectl -n kube-system rollout status deploy/coredns --timeout=300s >>"$LOG" 2>&1
+      kubectl -n local-path-storage rollout status deploy/local-path-provisioner --timeout=300s >>"$LOG" 2>&1
+      say "KUMO-K8S-ADDONS=ok"
+
+      kubectl apply -f /run/kumo-verify/workload.yaml >>"$LOG" 2>&1
+      kubectl wait --for=condition=Ready pod/verify-worker pod/verify-cp --timeout=300s >>"$LOG" 2>&1
+      # The claim is bound through local-path's helper pod, and the worker pod
+      # wrote to it.
+      [ "$(kubectl get pvc verify-data -o jsonpath='{.status.phase}')" = Bound ]
+      [ "$(kubectl exec verify-worker -- cat /data/check)" = kumo ]
+      say "KUMO-K8S-PVC=ok"
+
+      # Pod to pod across the two nodes: cp1 fetches the file w1's pod wrote,
+      # over TCP through Cilium's VXLAN tunnel. Not ping: CRI-O's default
+      # capabilities leave out NET_RAW, so ICMP from a pod is refused.
+      peer=$(kubectl get pod verify-worker -o jsonpath='{.status.podIP}')
+      fetch_peer() { [ "$(kubectl exec verify-cp -- wget -q -O - -T 3 "http://$peer:8080/check")" = kumo ]; }
+      wait_for 120 fetch_peer
+      say "KUMO-K8S-OVERLAY=ok ($peer)"
+
+      # Nothing was pulled: every image a cluster starts with, and the workload's,
+      # came from the image. (The nodes also have no route to a registry.)
+      pulls=$(kubectl get events -A --field-selector reason=Pulling --no-headers 2>/dev/null | wc -l)
+      say "KUMO-K8S-PULLS=$pulls"
+      [ "$pulls" -eq 0 ]
+
+      say "KUMO-K8S-VERSION=$(kubectl version -o json | sed -n 's/.*"gitVersion": *"\([^"]*\)".*/\1/p' | tail -1)"
+      say ""
+      say "KUMO-K8S-READY"
+
+runcmd:
+  - [bash, /run/kumo-verify/run.sh]
