@@ -26,7 +26,7 @@ If code and design docs disagree, **stop and flag it**. Do not silently diverge.
 - Backend: Go, Gin, `github.com/digitalocean/go-libvirt`, SQLite (`modernc.org/sqlite`, pure Go, no CGO), JWT, `github.com/aws/aws-sdk-go-v2/service/s3` (object storage only, inside `internal/objectstore/rustfs`).
 - Frontend: React + Redux Toolkit (RTK Query) + Vite + TypeScript + Cloudscape Design System.
 - Production artifact: a single binary `bin/kumod` with the built frontend embedded via `go:embed`.
-- Scope of the current phase: **Instances, Images, Key Pairs, Auth**, plus **object storage (S3 via RustFS, M6)**. Managed Postgres is **built** (M7, `docs/design/07-databases.md`), including the real-node end-to-end run. Kubernetes clusters are **designed and approved as M8** (`docs/design/08-kubernetes.md`): build them one M8 task at a time, in order. Do not implement Redis, queues or secrets yet.
+- Scope of the current phase: **Instances, Images, Key Pairs, Auth**, plus **object storage (S3 via RustFS, M6)**. Managed Postgres is **built** (M7, `docs/design/07-databases.md`), including the real-node end-to-end run. Kubernetes clusters are **built** (M8, `docs/design/08-kubernetes.md`), including the real-node end-to-end run (`make test-k8s-journey`). Do not implement Redis, queues or secrets yet.
 
 ## Commands
 
