@@ -386,7 +386,12 @@ func setBuckets(ctx context.Context, tx *store.Tx, accessKey string, buckets []s
 
 // generate makes a key id (KUMO + 16 base32 characters, 80 random bits, the
 // shape of an AWS key id) and a 40-character secret (240 random bits).
-func generate() (accessKey, secret string, err error) {
+func generate() (accessKey, secret string, err error) { return NewCredentials() }
+
+// NewCredentials is generate for the modules that make access keys of their
+// own, a Spark cluster's (docs/design/09-spark.md S9), so every key Kumo issues
+// has the same shape.
+func NewCredentials() (accessKey, secret string, err error) {
 	idBytes := make([]byte, 10)
 	secretBytes := make([]byte, 30)
 	if _, err := rand.Read(idBytes); err != nil {

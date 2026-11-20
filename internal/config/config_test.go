@@ -24,36 +24,40 @@ func TestLoadDefaults(t *testing.T) {
 	}
 
 	want := config.Config{
-		Listen:           ":8080",
-		AllowedOrigins:   nil,
-		DataDir:          "/var/lib/kumo",
-		DBPath:           "/var/lib/kumo/kumo.db",
-		ImageMaxBytes:    20 << 30,
-		ImageTempDir:     "/var/lib/kumo/staging",
-		Hypervisor:       config.HypervisorLibvirt,
-		LibvirtURI:       "unix:///var/run/libvirt/libvirt-sock",
-		PoolImages:       "kumo-images",
-		PoolInstances:    "kumo-instances",
-		Network:          "kumo-default",
-		DefaultVPCCIDR:   config.DefaultVPCCIDR,
-		JWTSecretFile:    "/var/lib/kumo/jwt.key",
-		AccessTTL:        15 * time.Minute,
-		RefreshTTL:       168 * time.Hour,
-		CookieSecure:     true,
-		Workers:          4,
-		LogLevel:         slog.LevelInfo,
-		StopTimeout:      config.DefaultStopTimeout,
-		MemoryReserveMiB: config.DefaultMemoryReserveMiB,
-		VCPUOvercommit:   config.DefaultVCPUOvercommit,
-		Databases:        config.DefaultDatabases,
-		DBProbeInterval:  config.DefaultDBProbeInterval,
-		DBReadyTimeout:   config.DefaultDBReadyTimeout,
-		Kubernetes:       config.DefaultKubernetes,
-		K8sReadyTimeout:  config.DefaultK8sReadyTimeout,
-		K8sProbeInterval: config.DefaultK8sProbeInterval,
-		ObjectStore:      config.ObjectStoreNone,
-		S3Region:         "us-east-1",
-		S3PresignTTL:     15 * time.Minute,
+		Listen:             ":8080",
+		AllowedOrigins:     nil,
+		DataDir:            "/var/lib/kumo",
+		DBPath:             "/var/lib/kumo/kumo.db",
+		ImageMaxBytes:      20 << 30,
+		ImageTempDir:       "/var/lib/kumo/staging",
+		Hypervisor:         config.HypervisorLibvirt,
+		LibvirtURI:         "unix:///var/run/libvirt/libvirt-sock",
+		PoolImages:         "kumo-images",
+		PoolInstances:      "kumo-instances",
+		Network:            "kumo-default",
+		DefaultVPCCIDR:     config.DefaultVPCCIDR,
+		JWTSecretFile:      "/var/lib/kumo/jwt.key",
+		AccessTTL:          15 * time.Minute,
+		RefreshTTL:         168 * time.Hour,
+		CookieSecure:       true,
+		Workers:            4,
+		LogLevel:           slog.LevelInfo,
+		StopTimeout:        config.DefaultStopTimeout,
+		MemoryReserveMiB:   config.DefaultMemoryReserveMiB,
+		VCPUOvercommit:     config.DefaultVCPUOvercommit,
+		Databases:          config.DefaultDatabases,
+		DBProbeInterval:    config.DefaultDBProbeInterval,
+		DBReadyTimeout:     config.DefaultDBReadyTimeout,
+		Kubernetes:         config.DefaultKubernetes,
+		K8sReadyTimeout:    config.DefaultK8sReadyTimeout,
+		K8sProbeInterval:   config.DefaultK8sProbeInterval,
+		Spark:              config.DefaultSpark,
+		SparkReadyTimeout:  config.DefaultSparkReadyTimeout,
+		SparkProbeInterval: config.DefaultSparkProbeInterval,
+		SparkDrainTimeout:  config.DefaultSparkDrainTimeout,
+		ObjectStore:        config.ObjectStoreNone,
+		S3Region:           "us-east-1",
+		S3PresignTTL:       15 * time.Minute,
 	}
 
 	if !reflect.DeepEqual(*cfg, want) {
@@ -453,6 +457,10 @@ func TestLoadObjectStore(t *testing.T) {
 		if cfg.S3Endpoint != "http://127.0.0.1:9000" || cfg.S3PublicURL != cfg.S3Endpoint {
 			t.Errorf("endpoint %q, public URL %q: want the trimmed endpoint for both", cfg.S3Endpoint, cfg.S3PublicURL)
 		}
+		// The guests' endpoint follows the public URL unless set.
+		if cfg.SparkS3Endpoint != cfg.S3PublicURL {
+			t.Errorf("SparkS3Endpoint = %q, want the public URL %q", cfg.SparkS3Endpoint, cfg.S3PublicURL)
+		}
 		if cfg.S3CredentialsFile != "/srv/kumo/s3.credentials" {
 			t.Errorf("S3CredentialsFile = %q, want derived from KUMO_DATA_DIR", cfg.S3CredentialsFile)
 		}
@@ -667,5 +675,28 @@ func TestDatabasesAreOnByDefault(t *testing.T) {
 	}
 	if !cfg.Databases {
 		t.Error("Databases = false, want true by default")
+	}
+}
+
+func TestLoadSpark(t *testing.T) {
+	clearKumoEnv(t)
+	t.Setenv("KUMO_SPARK", "off")
+	t.Setenv("KUMO_SPARK_DRAIN_TIMEOUT", "2m")
+	t.Setenv("KUMO_OBJECTSTORE", "rustfs")
+	t.Setenv("KUMO_S3_ENDPOINT", "http://127.0.0.1:9000")
+	t.Setenv("KUMO_SPARK_S3_ENDPOINT", "http://192.168.1.10:9000/")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Spark || cfg.SparkDrainTimeout != 2*time.Minute || cfg.SparkS3Endpoint != "http://192.168.1.10:9000" {
+		t.Errorf("spark = %v, drain %s, endpoint %q", cfg.Spark, cfg.SparkDrainTimeout, cfg.SparkS3Endpoint)
+	}
+	for name, value := range map[string]string{"KUMO_SPARK": "maybe", "KUMO_SPARK_READY_TIMEOUT": "-1s"} {
+		clearKumoEnv(t)
+		t.Setenv(name, value)
+		if _, err := config.Load(); err == nil {
+			t.Errorf("%s=%s was accepted", name, value)
+		}
 	}
 }

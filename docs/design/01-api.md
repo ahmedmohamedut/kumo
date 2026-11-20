@@ -480,6 +480,42 @@ Create body: `{ "name": "orders", "kubernetes_version": "1.37", "subnet_id": "su
 - **Scaling.** Up reserves the new workers at request time, all or nothing. Down drains the newest workers first, through the Eviction API, so PodDisruptionBudgets hold: a drain a budget blocks for 5 minutes stops the scale with the node kept and the cluster `degraded` naming the pods. A scale never deletes past a budget.
 - **No key in any response** but the kubeconfig's own client key, which is minted per call and never stored. `ca_certificate` is the public CA.
 
+## Spark clusters
+
+The module of `09-spark.md`. Every `/spark` route answers `503 unavailable` when `KUMO_SPARK` is `off`, after authentication. A cluster's VMs are Kumo's: they are absent from `GET /instances` and their own lifecycle endpoints answer `409` naming the cluster (`09-spark.md` S4).
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/spark/clusters` | List, newest first, keyset-paged; `?q=` matches the name, `?state=` one state |
+| POST | `/spark/clusters` | (admin) Create → `202` with the cluster `creating` and `Location: /api/v1/tasks/<id>` |
+| GET | `/spark/clusters/{id}` | Detail: the master URL, the web UIs, the buckets, the node group and every node with what the master last said of it (`alive`) |
+| DELETE | `/spark/clusters/{id}` | (admin) → `202`, state `deleting`. Allowed from every state except `deleting`. The buckets and their event logs are kept |
+| POST | `/spark/clusters/{id}/client-config` | (admin) The client `spark-defaults.conf`: the master URL, the cluster's secret, encryption, and with object storage the cluster's S3 key and event-log location (`09-spark.md` §5). Returned with `Cache-Control: no-store`. `409` until the cluster is active |
+
+```json
+{ "id": "spk-0a1b2c3d4e5f60718", "name": "etl", "spark_version": "4.3",
+  "state": "active", "state_reason": null,
+  "endpoint": "spark://etl.default:7077",
+  "master_ui_url": "http://etl.default:8080", "history_url": "http://etl.default:18080",
+  "vpc_id": "vpc-…", "subnet_id": "subnet-…", "master_type": "kumo.medium",
+  "object_storage": true, "buckets": ["data", "logs"], "event_log_bucket": "logs",
+  "node_groups": [{ "id": "ng-…", "name": "default", "instance_type": "kumo.large",
+                    "root_disk_gb": 8, "desired_size": 2 }],
+  "nodes": [{ "name": "etl-master", "instance_id": "i-…", "role": "master",
+              "node_group_id": null, "state": "running", "private_ip": "192.168.100.10", "alive": true }],
+  "created_at": "…", "updated_at": "…" }
+```
+
+Create body: `{ "name": "etl", "spark_version": "4.3", "subnet_id": "subnet-…", "master_type": "kumo.medium", "worker_type": "kumo.large", "worker_count": 2, "object_storage": true, "buckets": ["data", "logs"], "event_log_bucket": "logs" }`; only `name` is required.
+
+- **Validation:** `name` is a DNS label of 1–40 characters; the nodes are `<name>-master` and `<name>-default-<n>`. `worker_count` is 1–10 (default 2). `master_type` needs at least 2 vCPU and 4096 MiB (default `kumo.medium`), `worker_type` at least 2048 MiB (default `kumo.large`); a worker offers executors its vCPUs and its memory less 1 GiB.
+- **Object storage.** With `object_storage`, `buckets` names 1–10 existing buckets, which the cluster's own access key may read and write; `event_log_bucket`, one of them, turns on event logs and the history server. Without it, both are refused. Refused too when object storage is off on the node, when `KUMO_SPARK_S3_ENDPOINT` is a loopback address, or when the cluster's VPC is isolated: the guests could not reach the server (`409`/`400`).
+- **All or nothing.** The master and every worker are reserved in one transaction, after the access key and the secrets are made; a refused create removes both. `429 quota_exceeded` when the node cannot hold the cluster.
+- **`409 no_engine_image`** means no `spark` engine image is available.
+- **States.** `active` once every worker is registered; `degraded` when the master answers but a worker is not registered, or after three failed health checks in a row; `failed` when the master never answered during the create, VMs kept. Delete is the way out of both.
+- **Reachable from the VPC only** (S6): `spark-submit` runs on an instance in the cluster's VPC, with the client configuration and `--conf spark.driver.host=<the instance's address>`. The web UIs have no authentication of their own.
+- **No secret in any response** but the client configuration's.
+
 ## Tasks
 
 | Method | Path | Description |

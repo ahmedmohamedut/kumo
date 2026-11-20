@@ -44,6 +44,12 @@ tags:
       node group, built with kubeadm on Kumo's engine image. The nodes belong
       to Kumo and are not on the Instances pages. Every route answers 503 when
       the module is off.
+  - name: Spark
+    description: >-
+      Spark clusters (09-spark.md): a standalone master and one worker node
+      group on Kumo's engine image, with object storage through a per-cluster
+      access key. The nodes belong to Kumo and are not on the Instances pages.
+      Every route answers 503 when KUMO_SPARK is off.
 security:
   - bearerAuth: []
 paths:
@@ -1685,6 +1691,187 @@ paths:
           $ref: '#/components/responses/Conflict'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /spark/clusters:
+    get:
+      tags: [Spark]
+      operationId: listSparkClusters
+      summary: List Spark clusters
+      description: Newest first, keyset-paged like every collection.
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+        - $ref: '#/components/parameters/Query'
+        - name: state
+          in: query
+          description: Restrict the page to one cluster state.
+          schema:
+            $ref: '#/components/schemas/ClusterState'
+      responses:
+        '200':
+          description: A page of clusters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SparkClusterList'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      tags: [Spark]
+      operationId: createSparkCluster
+      summary: Create a Spark cluster
+      description: |
+        Runs as a task and answers `202` with the cluster `creating`: kumod
+        makes the cluster's secret and, with object storage, its own access
+        key, reserves the master and every worker in one transaction (a
+        cluster the node cannot hold is refused whole, `429`, and the key and
+        secrets go with it), then builds them. The cluster ends `active` once
+        every worker is registered, `degraded` if the master works but a
+        worker never registered, or `failed` if the master never answered
+        (09-spark.md section 4).
+
+        Validation: `name` is a DNS label of 1-40 characters; the nodes are
+        `<name>-master` and `<name>-default-<n>`. `worker_count` is 1-10
+        (default 2). `master_type` needs 2 vCPU and 4096 MiB (default
+        `kumo.medium`), `worker_type` 2048 MiB (default `kumo.large`). With
+        `object_storage`, `buckets` names 1-10 existing buckets the cluster's
+        key may read and write, and `event_log_bucket`, one of them, turns on
+        event logs and the history server; without it both are refused.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSparkClusterRequest'
+      responses:
+        '202':
+          description: The create was accepted.
+          headers:
+            Location:
+              description: The task that tracks the create.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SparkCluster'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '409':
+          description: >-
+            A cluster of that name exists (`already_exists`), no Spark engine
+            image is available (`no_engine_image`), or the guests could not
+            reach object storage (`conflict`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /spark/clusters/{id}:
+    parameters:
+      - $ref: '#/components/parameters/SparkClusterID'
+    get:
+      tags: [Spark]
+      operationId: getSparkCluster
+      summary: Spark cluster detail
+      description: >-
+        The cluster with its node group and its nodes. A node's `alive` is
+        what the master last said of it, null before the first look. No secret
+        is ever returned here.
+      responses:
+        '200':
+          description: The cluster.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SparkCluster'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      tags: [Spark]
+      operationId: deleteSparkCluster
+      summary: Delete a Spark cluster
+      description: >-
+        Runs as a task and answers `202` with the cluster `deleting`. Allowed
+        from every state but `deleting`. Every node's VM, the endpoint's DNS
+        record, the cluster's access key, the rows and its secrets are
+        removed. The buckets and their event logs are the user's and stay.
+      responses:
+        '202':
+          description: The delete was accepted.
+          headers:
+            Location:
+              description: The task that tracks the delete.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SparkCluster'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /spark/clusters/{id}/client-config:
+    parameters:
+      - $ref: '#/components/parameters/SparkClusterID'
+    post:
+      tags: [Spark]
+      operationId: sparkClientConfig
+      summary: The cluster's client configuration
+      description: |
+        The client `spark-defaults.conf` an admin submits jobs with from an
+        instance in the cluster's VPC: the master URL, the cluster's secret,
+        encryption, and with object storage the guests' S3 endpoint, the
+        cluster's access key and the event-log location (09-spark.md section
+        5). A POST, admin-only, and `Cache-Control: no-store`, because it
+        carries the cluster's secrets. `409` until the cluster is active (or
+        degraded).
+
+        Use it as `spark-submit --properties-file <file> --conf
+        spark.driver.host=<the instance's address> ...`.
+      responses:
+        '200':
+          description: The client configuration.
+          headers:
+            Cache-Control:
+              description: Always `no-store`.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SparkClientConfig'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /tasks:
     get:
       tags: [Tasks]
@@ -2283,6 +2470,14 @@ components:
       schema:
         type: string
         pattern: '^eks-[0-9a-f]{17}$'
+    SparkClusterID:
+      name: id
+      in: path
+      description: Spark cluster id.
+      required: true
+      schema:
+        type: string
+        pattern: '^spk-[0-9a-f]{17}$'
     TaskID:
       name: id
       in: path
@@ -2486,7 +2681,7 @@ components:
           type: integer
     SystemInfo:
       type: object
-      required: [version, needs_setup, hypervisor, object_storage, databases, kubernetes]
+      required: [version, needs_setup, hypervisor, object_storage, databases, kubernetes, spark]
       properties:
         version:
           type: string
@@ -2569,6 +2764,24 @@ components:
               items:
                 type: string
                 example: '1.37'
+        spark:
+          type: object
+          description: >-
+            The Spark module (09-spark.md section 2). `enabled` is KUMO_SPARK;
+            `versions` is every Spark minor with an available engine image,
+            newest first, empty until one is imported; `object_storage` is
+            whether a cluster can be given object storage on this node.
+          required: [enabled, versions, object_storage]
+          properties:
+            enabled:
+              type: boolean
+            versions:
+              type: array
+              items:
+                type: string
+                example: '4.3'
+            object_storage:
+              type: boolean
     SystemCapacity:
       type: object
       description: >-
@@ -3495,6 +3708,149 @@ components:
         node_root_disk_gb:
           type: integer
           maximum: 500
+    SparkNode:
+      type: object
+      required: [name, instance_id, role, node_group_id, state, private_ip, alive]
+      properties:
+        name:
+          type: string
+          example: etl-master
+        instance_id:
+          type: string
+        role:
+          type: string
+          enum: [master, worker]
+        node_group_id:
+          type: string
+          nullable: true
+        state:
+          type: string
+          description: The VM's state, as on an instance.
+        private_ip:
+          type: string
+        alive:
+          type: boolean
+          nullable: true
+          description: >-
+            What the master last said: its own state for the master, registered
+            ALIVE for a worker. Null before the first look.
+    SparkCluster:
+      type: object
+      required: [id, name, spark_version, state, state_reason, endpoint, master_ui_url, history_url,
+        vpc_id, subnet_id, master_type, object_storage, buckets, event_log_bucket, node_groups, nodes,
+        created_at, updated_at]
+      properties:
+        id:
+          type: string
+          example: spk-0a1b2c3d4e5f60718
+        name:
+          type: string
+          example: etl
+        spark_version:
+          type: string
+          example: '4.3'
+        state:
+          $ref: '#/components/schemas/ClusterState'
+        state_reason:
+          type: string
+          nullable: true
+        endpoint:
+          type: string
+          nullable: true
+          example: spark://etl.default:7077
+          description: The master URL, set once active; reachable from the VPC only.
+        master_ui_url:
+          type: string
+          nullable: true
+          example: http://etl.default:8080
+        history_url:
+          type: string
+          nullable: true
+          example: http://etl.default:18080
+          description: Null without an event-log bucket.
+        vpc_id:
+          type: string
+        subnet_id:
+          type: string
+        master_type:
+          type: string
+        object_storage:
+          type: boolean
+        buckets:
+          type: array
+          items:
+            type: string
+        event_log_bucket:
+          type: string
+          nullable: true
+        node_groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/NodeGroup'
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/SparkNode'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        task_id:
+          type: string
+          description: The task a create or a delete queued.
+    SparkClusterList:
+      type: object
+      required: [items, next_page_token]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SparkCluster'
+        next_page_token:
+          type: string
+          nullable: true
+    CreateSparkClusterRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          example: etl
+        spark_version:
+          type: string
+          example: '4.3'
+        subnet_id:
+          type: string
+        master_type:
+          type: string
+          example: kumo.medium
+        worker_type:
+          type: string
+          example: kumo.large
+        worker_count:
+          type: integer
+          minimum: 1
+          maximum: 10
+        object_storage:
+          type: boolean
+        buckets:
+          type: array
+          items:
+            type: string
+        event_log_bucket:
+          type: string
+    SparkClientConfig:
+      type: object
+      required: [client_config, filename]
+      properties:
+        client_config:
+          type: string
+          description: The spark-defaults.conf, carrying the cluster's secrets.
+        filename:
+          type: string
+          example: kumo-spk-0a1b2c3d4e5f60718.conf
     Kubeconfig:
       type: object
       required: [kubeconfig, group, expires_at]

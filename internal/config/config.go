@@ -36,6 +36,8 @@ var (
 	ErrInvalidDatabases = errors.New("invalid databases setting")
 	// ErrInvalidKubernetes means KUMO_KUBERNETES is neither on nor off.
 	ErrInvalidKubernetes = errors.New("invalid kubernetes setting")
+	// ErrInvalidSpark means KUMO_SPARK is neither on nor off.
+	ErrInvalidSpark = errors.New("invalid spark setting")
 )
 
 // Hypervisor backends.
@@ -106,6 +108,19 @@ type Config struct {
 	// often the health pass asks an active cluster.
 	K8sReadyTimeout  time.Duration
 	K8sProbeInterval time.Duration
+	// Spark is the Spark clusters module (docs/design/09-spark.md section 2),
+	// on unless turned off, like Kubernetes.
+	Spark bool
+	// SparkReadyTimeout bounds a spark.create's waits, SparkProbeInterval
+	// spaces the health pass's reads of a cluster, and SparkDrainTimeout
+	// bounds a worker's decommission in a scale-down.
+	SparkReadyTimeout  time.Duration
+	SparkProbeInterval time.Duration
+	SparkDrainTimeout  time.Duration
+	// SparkS3Endpoint is where the guests reach the S3 server; the public
+	// URL when unset, since a browser and a guest both reach it from outside
+	// the host.
+	SparkS3Endpoint string
 
 	// Object storage. See docs/design/06-object-storage.md §2.
 	ObjectStore string
@@ -191,6 +206,14 @@ const (
 	DefaultK8sReadyTimeout = 20 * time.Minute
 	// DefaultK8sProbeInterval is how often the health pass asks a cluster.
 	DefaultK8sProbeInterval = 30 * time.Second
+	// DefaultSpark leaves the Spark module on.
+	DefaultSpark = true
+	// DefaultSparkReadyTimeout bounds each wait of a Spark create.
+	DefaultSparkReadyTimeout = 10 * time.Minute
+	// DefaultSparkProbeInterval is how often the health pass reads a master.
+	DefaultSparkProbeInterval = 30 * time.Second
+	// DefaultSparkDrainTimeout bounds a worker's decommission (S13).
+	DefaultSparkDrainTimeout = 10 * time.Minute
 	// DefaultS3Region is signed into every S3 request. RustFS accepts any
 	// region; us-east-1 is what clients assume when none is given.
 	DefaultS3Region = "us-east-1"
@@ -208,33 +231,37 @@ const (
 // documented defaults and validates the result.
 func Load() (*Config, error) {
 	cfg := &Config{
-		Listen:           DefaultListen,
-		DataDir:          DefaultDataDir,
-		Hypervisor:       DefaultHypervisor,
-		LibvirtURI:       DefaultLibvirtURI,
-		PoolImages:       DefaultPoolImages,
-		PoolInstances:    DefaultPoolInstances,
-		Network:          DefaultNetwork,
-		DefaultVPCCIDR:   DefaultVPCCIDR,
-		AccessTTL:        DefaultAccessTTL,
-		RefreshTTL:       DefaultRefreshTTL,
-		StopTimeout:      DefaultStopTimeout,
-		CookieSecure:     DefaultCookieSecure,
-		Workers:          DefaultWorkers,
-		ImageMaxBytes:    DefaultImageMaxBytes,
-		MemoryReserveMiB: DefaultMemoryReserveMiB,
-		VCPUOvercommit:   DefaultVCPUOvercommit,
-		LogLevel:         DefaultLogLevel,
-		AllowedOrigins:   nil,
-		Databases:        DefaultDatabases,
-		DBProbeInterval:  DefaultDBProbeInterval,
-		DBReadyTimeout:   DefaultDBReadyTimeout,
-		Kubernetes:       DefaultKubernetes,
-		K8sReadyTimeout:  DefaultK8sReadyTimeout,
-		K8sProbeInterval: DefaultK8sProbeInterval,
-		ObjectStore:      DefaultObjectStore,
-		S3Region:         DefaultS3Region,
-		S3PresignTTL:     DefaultS3PresignTTL,
+		Listen:             DefaultListen,
+		DataDir:            DefaultDataDir,
+		Hypervisor:         DefaultHypervisor,
+		LibvirtURI:         DefaultLibvirtURI,
+		PoolImages:         DefaultPoolImages,
+		PoolInstances:      DefaultPoolInstances,
+		Network:            DefaultNetwork,
+		DefaultVPCCIDR:     DefaultVPCCIDR,
+		AccessTTL:          DefaultAccessTTL,
+		RefreshTTL:         DefaultRefreshTTL,
+		StopTimeout:        DefaultStopTimeout,
+		CookieSecure:       DefaultCookieSecure,
+		Workers:            DefaultWorkers,
+		ImageMaxBytes:      DefaultImageMaxBytes,
+		MemoryReserveMiB:   DefaultMemoryReserveMiB,
+		VCPUOvercommit:     DefaultVCPUOvercommit,
+		LogLevel:           DefaultLogLevel,
+		AllowedOrigins:     nil,
+		Databases:          DefaultDatabases,
+		DBProbeInterval:    DefaultDBProbeInterval,
+		DBReadyTimeout:     DefaultDBReadyTimeout,
+		Kubernetes:         DefaultKubernetes,
+		K8sReadyTimeout:    DefaultK8sReadyTimeout,
+		K8sProbeInterval:   DefaultK8sProbeInterval,
+		Spark:              DefaultSpark,
+		SparkReadyTimeout:  DefaultSparkReadyTimeout,
+		SparkProbeInterval: DefaultSparkProbeInterval,
+		SparkDrainTimeout:  DefaultSparkDrainTimeout,
+		ObjectStore:        DefaultObjectStore,
+		S3Region:           DefaultS3Region,
+		S3PresignTTL:       DefaultS3PresignTTL,
 	}
 
 	if v, ok := os.LookupEnv("KUMO_LISTEN"); ok {
@@ -326,6 +353,12 @@ func Load() (*Config, error) {
 	if err := loadOnOff("KUMO_KUBERNETES", &cfg.Kubernetes, ErrInvalidKubernetes); err != nil {
 		return nil, err
 	}
+	if err := loadOnOff("KUMO_SPARK", &cfg.Spark, ErrInvalidSpark); err != nil {
+		return nil, err
+	}
+	if v, ok := os.LookupEnv("KUMO_SPARK_S3_ENDPOINT"); ok {
+		cfg.SparkS3Endpoint = strings.TrimRight(strings.TrimSpace(v), "/")
+	}
 	if err := cfg.loadDatabases(); err != nil {
 		return nil, err
 	}
@@ -345,6 +378,9 @@ func Load() (*Config, error) {
 		}
 		if cfg.S3PublicURL == "" {
 			cfg.S3PublicURL = cfg.S3Endpoint
+		}
+		if cfg.SparkS3Endpoint == "" {
+			cfg.SparkS3Endpoint = cfg.S3PublicURL
 		}
 	}
 	if err := cfg.Validate(); err != nil {
@@ -390,8 +426,11 @@ func (c *Config) loadDurations() error {
 		c.DBReadyTimeout = d
 	}
 	for name, target := range map[string]*time.Duration{
-		"KUMO_K8S_READY_TIMEOUT":  &c.K8sReadyTimeout,
-		"KUMO_K8S_PROBE_INTERVAL": &c.K8sProbeInterval,
+		"KUMO_K8S_READY_TIMEOUT":    &c.K8sReadyTimeout,
+		"KUMO_K8S_PROBE_INTERVAL":   &c.K8sProbeInterval,
+		"KUMO_SPARK_READY_TIMEOUT":  &c.SparkReadyTimeout,
+		"KUMO_SPARK_PROBE_INTERVAL": &c.SparkProbeInterval,
+		"KUMO_SPARK_DRAIN_TIMEOUT":  &c.SparkDrainTimeout,
 	} {
 		if v, ok := os.LookupEnv(name); ok {
 			d, err := time.ParseDuration(v)

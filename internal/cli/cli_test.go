@@ -625,3 +625,43 @@ func TestDoctorRejectsABadConfiguration(t *testing.T) {
 
 // errUnauthorized is what the service answers a wrong password with.
 var errUnauthorized = service.ErrUnauthorized
+
+func TestDoctorReportsTheSparkModule(t *testing.T) {
+	dir := testDir(t)
+
+	_, stdout, _ := runCLI(t, "", "doctor")
+	if !strings.Contains(stdout, "warn  spark") || !strings.Contains(stdout, "no Spark image") {
+		t.Errorf("stdout = %q, want the spark line to warn", stdout)
+	}
+
+	db := openDB(t, dir)
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := db.CreateImage(t.Context(), sqlc.CreateImageParams{
+		ID: "img-0123456789abcdef2", Name: "spark-4.3", Architecture: "x86_64",
+		Format: "qcow2", State: "available", Progress: 100, MinDiskGb: 8,
+		CreatedAt: now, UpdatedAt: now, Kind: "engine",
+		Engine:        sql.NullString{String: "spark", Valid: true},
+		EngineVersion: sql.NullString{String: "4.3", Valid: true},
+	}); err != nil {
+		t.Fatalf("CreateImage(): %v", err)
+	}
+	_, stdout, _ = runCLI(t, "", "doctor")
+	if !strings.Contains(stdout, "ok    spark") || !strings.Contains(stdout, "Spark 4.3") {
+		t.Errorf("stdout = %q, want the spark line to name 4.3", stdout)
+	}
+
+	// With object storage on, a loopback guest endpoint is a warning: every
+	// cluster asking for object storage would be refused.
+	t.Setenv("KUMO_OBJECTSTORE", "fake")
+	t.Setenv("KUMO_SPARK_S3_ENDPOINT", "http://127.0.0.1:9000")
+	_, stdout, _ = runCLI(t, "", "doctor")
+	if !strings.Contains(stdout, "warn  spark") || !strings.Contains(stdout, "KUMO_SPARK_S3_ENDPOINT") {
+		t.Errorf("stdout = %q, want the spark line to warn about the endpoint", stdout)
+	}
+
+	t.Setenv("KUMO_SPARK", "off")
+	_, stdout, _ = runCLI(t, "", "doctor")
+	if !strings.Contains(stdout, "ok    spark") || !strings.Contains(stdout, "off") {
+		t.Errorf("stdout = %q, want the spark line to report it off", stdout)
+	}
+}
