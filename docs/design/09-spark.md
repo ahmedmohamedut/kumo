@@ -103,17 +103,23 @@ and the guests' S3 endpoint is a loopback address.
 
 Migration `0009_spark.sql`, following `0008_kubernetes.sql`:
 
-- `spk_clusters`: `id` (`spk-`), `name` (unique, a DNS label of 1-40),
-  `spark_version`, `state`, `state_reason`, `vpc_id`, `subnet_id`,
-  `master_type`, `endpoint`, `object_storage` (bool), `access_key_id` (the
-  RustFS user, nullable), `event_log_bucket` (nullable), `created_by`,
-  timestamps.
-- `spk_cluster_buckets`: `cluster_id`, `bucket` — the buckets the access key
-  is granted, read-write.
-- `spk_node_groups`: `id` (`ng-`), `cluster_id`, `name`, `instance_type`,
+- `spark_clusters`: `id` (`spk-`), `name` (unique, a DNS label of 1-40),
+  `spark_version`, `image_id`, `state`, `state_reason`, `vpc_id`, `subnet_id`,
+  `master_type`, `endpoint`, `object_storage` (0/1), `access_key_id` (the
+  RustFS user; set exactly with object storage, by CHECK),
+  `event_log_bucket` (nullable; only with object storage, by CHECK),
+  `created_by`, timestamps.
+- `spark_cluster_buckets`: `cluster_id`, `bucket` -- the buckets the access
+  key is granted, read-write.
+- `spark_node_groups`: `id` (`ng-`), `cluster_id`, `name`, `instance_type`,
   `root_disk_gb`, `desired_size`.
-- `spk_nodes`: `cluster_id`, `instance_id`, `name`, `role` (`master` |
-  `worker`), `node_group_id`.
+- `spark_nodes`: `instance_id` (the key), `cluster_id`, `node_group_id`,
+  `role` (`master` | `worker`); the master belongs to no node group.
+- `instances.managed_by` accepts `spk`; the image import accepts engine
+  `spark`, versioned by its minor (`4.3`).
+
+The tables are `spark_*` rather than `spk_*`: sqlc names its Go types after
+them (`02-data-model.md`).
 - `instances.managed_by` accepts `spk`.
 
 States: `creating`, `active`, `updating`, `degraded`, `deleting`, `failed`,

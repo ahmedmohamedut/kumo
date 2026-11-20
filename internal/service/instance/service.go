@@ -43,6 +43,8 @@ const (
 	// ManagedByKubernetes is a node of a Kubernetes cluster
 	// (docs/design/08-kubernetes.md K8).
 	ManagedByKubernetes ManagedBy = "eks"
+	// ManagedBySpark is a node of a Spark cluster (docs/design/09-spark.md S4).
+	ManagedBySpark ManagedBy = "spk"
 )
 
 // State is the lifecycle of an instance. The values mirror the CHECK constraint

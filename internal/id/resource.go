@@ -24,6 +24,7 @@ const (
 	PrefixDBInstance       = "db"
 	PrefixK8sCluster       = "eks"
 	PrefixNodeGroup        = "ng"
+	PrefixSparkCluster     = "spk"
 )
 
 // Resource returns "<prefix>-<17 random hex chars>". It panics only if the
@@ -59,8 +60,14 @@ func DBInstance() string { return Resource(PrefixDBInstance) }
 // (docs/design/08-kubernetes.md section 5).
 func K8sCluster() string { return Resource(PrefixK8sCluster) }
 
-// NodeGroup returns a node group ID (ng-...).
+// NodeGroup returns a node group ID (ng-...), a Kubernetes or a Spark
+// cluster's.
 func NodeGroup() string { return Resource(PrefixNodeGroup) }
+
+// SparkCluster returns a Spark cluster ID (spk-...). It names the cluster's
+// secrets directory, $KUMO_DATA_DIR/spark/<id>/ (docs/design/09-spark.md
+// section 5).
+func SparkCluster() string { return Resource(PrefixSparkCluster) }
 
 // HasResourceShape reports whether value looks like a resource ID with the
 // given prefix. It is a cheap guard for path parameters, not a check that the

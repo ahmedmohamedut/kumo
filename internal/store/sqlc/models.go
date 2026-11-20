@@ -182,6 +182,48 @@ type Setting struct {
 	Value string `json:"value"`
 }
 
+type SparkCluster struct {
+	ID             string         `json:"id"`
+	Name           string         `json:"name"`
+	SparkVersion   string         `json:"spark_version"`
+	ImageID        string         `json:"image_id"`
+	VpcID          string         `json:"vpc_id"`
+	SubnetID       string         `json:"subnet_id"`
+	MasterType     string         `json:"master_type"`
+	State          string         `json:"state"`
+	StateReason    sql.NullString `json:"state_reason"`
+	Endpoint       sql.NullString `json:"endpoint"`
+	ObjectStorage  int64          `json:"object_storage"`
+	AccessKeyID    sql.NullString `json:"access_key_id"`
+	EventLogBucket sql.NullString `json:"event_log_bucket"`
+	CreatedBy      sql.NullString `json:"created_by"`
+	CreatedAt      string         `json:"created_at"`
+	UpdatedAt      string         `json:"updated_at"`
+}
+
+type SparkClusterBucket struct {
+	ClusterID string `json:"cluster_id"`
+	Bucket    string `json:"bucket"`
+}
+
+type SparkNode struct {
+	InstanceID  string         `json:"instance_id"`
+	ClusterID   string         `json:"cluster_id"`
+	NodeGroupID sql.NullString `json:"node_group_id"`
+	Role        string         `json:"role"`
+}
+
+type SparkNodeGroup struct {
+	ID           string `json:"id"`
+	ClusterID    string `json:"cluster_id"`
+	Name         string `json:"name"`
+	InstanceType string `json:"instance_type"`
+	RootDiskGb   int64  `json:"root_disk_gb"`
+	DesiredSize  int64  `json:"desired_size"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+}
+
 type Subnet struct {
 	ID        string         `json:"id"`
 	VpcID     string         `json:"vpc_id"`

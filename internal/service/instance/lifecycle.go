@@ -171,6 +171,9 @@ type ownerReader interface {
 	GetK8sClusterByInstance(
 		ctx context.Context, arg sqlc.GetK8sClusterByInstanceParams,
 	) (sqlc.GetK8sClusterByInstanceRow, error)
+	GetSparkClusterByInstance(
+		ctx context.Context, arg sqlc.GetSparkClusterByInstanceParams,
+	) (sqlc.GetSparkClusterByInstanceRow, error)
 }
 
 // errManaged refuses an action on an instance another module owns, naming the
@@ -213,6 +216,19 @@ func (s *Service) errManaged(ctx context.Context, q ownerReader, row sqlc.Instan
 		}
 		return fmt.Errorf("%w: instance %q is a node of the Kubernetes cluster %s (%q); "+
 			"act on it through /api/v1/eks/clusters/%s",
+			service.ErrConflict, row.ID, cluster.ID, cluster.Name, cluster.ID)
+	case ManagedBySpark:
+		// A node of a Spark cluster: a worker leaves through a scale-down,
+		// which decommissions it first (docs/design/09-spark.md S13).
+		cluster, err := q.GetSparkClusterByInstance(ctx, sqlc.GetSparkClusterByInstanceParams{
+			InstanceID: row.ID,
+		})
+		if err != nil {
+			return fmt.Errorf("%w: instance %q is a Spark node and is managed through "+
+				"/api/v1/spark/clusters", service.ErrConflict, row.ID)
+		}
+		return fmt.Errorf("%w: instance %q is a node of the Spark cluster %s (%q); "+
+			"act on it through /api/v1/spark/clusters/%s",
 			service.ErrConflict, row.ID, cluster.ID, cluster.Name, cluster.ID)
 	default:
 		return fmt.Errorf("%w: instance %q is managed by %q and cannot be changed directly",

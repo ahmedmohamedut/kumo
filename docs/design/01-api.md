@@ -122,9 +122,10 @@ does not matter. The decompressed image is bounded by `KUMO_IMAGE_MAX_BYTES` lik
 a stream that is not valid gzip fails the import. The volume is always stored uncompressed.
 
 and `engine`/`engine_version` are required with `kind: "engine"` and refused without it. `engine` is
-`postgres` (a database engine, versioned by its major, `18`) or `kubernetes` (the Kubernetes
-module's node image, versioned by its minor, `1.37`; `08-kubernetes.md` §7). A Kubernetes image is
-never offered as a database: `/system/info`'s `databases.engines` lists database engines only. An engine
+`postgres` (a database engine, versioned by its major, `18`), `kubernetes` (the Kubernetes
+module's node image, versioned by its minor, `1.37`; `08-kubernetes.md` §7) or `spark` (the Spark
+module's node image, versioned by its minor, `4.3`; `09-spark.md` §7). A Kubernetes or Spark image
+is never offered as a database: `/system/info`'s `databases.engines` lists database engines only. An engine
 image is reachable at `GET /images/{id}` but never appears in `GET /images`, so the Images pages
 cannot offer a machine nobody should launch directly; `GET /system/info` reports which engines a
 node can create a DB instance from (`07-databases.md`).
