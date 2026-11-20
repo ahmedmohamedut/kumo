@@ -81,6 +81,10 @@ e2e: build ## Run the Playwright end-to-end suite against bin/kumod
 test-libvirt: ## Run the opt-in integration tests against a real libvirtd
 	$(GO) test -tags libvirt $(PKGS) -count=1 -timeout 30m
 
+.PHONY: test-k8s-image
+test-k8s-image: ## Boot the Kubernetes engine image with kumod's seeds (needs KUMO_TEST_K8S_IMAGE, qemu, KVM)
+	$(GO) test -tags kubeimage ./internal/service/k8scloudinit/ -run TestSeedsBootAClusterOnTheImage -count=1 -v -timeout 40m
+
 .PHONY: test-rustfs
 test-rustfs: ## Run the opt-in object storage tests against a real RustFS (or any S3 server)
 	$(GO) test -tags rustfs ./internal/objectstore/... -count=1 -timeout 5m
