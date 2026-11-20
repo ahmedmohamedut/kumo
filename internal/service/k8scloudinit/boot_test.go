@@ -19,6 +19,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -33,6 +34,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/ahmedmohamedut/kumo/internal/k8sapi"
 	"github.com/ahmedmohamedut/kumo/internal/service/k8scloudinit"
 	"github.com/ahmedmohamedut/kumo/internal/service/k8spki"
 )
@@ -169,6 +171,88 @@ ethernets:
 		"a viewer kubeconfig reads")
 	expect(t, viewer, http.MethodPost, base+"/api/v1/namespaces/default/configmaps", configMap("by-viewer"),
 		http.StatusForbidden, "a viewer kubeconfig must not write")
+
+	// The calls of section 6 through kumod's own client, as kumo:system: the
+	// RBAC the seed applies must allow every one of them (M8.4).
+	api, err := k8sapi.New(k8sapi.Config{
+		Address: fmt.Sprintf("127.0.0.1:%d", apiPort), ServerName: bootEndpoint,
+		CA: pki.CA.CertPEM, ClientCert: pki.System.CertPEM, ClientKey: pki.System.KeyPEM,
+	})
+	if err != nil {
+		t.Fatalf("k8sapi.New(): %v", err)
+	}
+	defer api.Close()
+	if err := api.Ready(ctx); err != nil {
+		t.Errorf("k8sapi Ready(): %v", err)
+	}
+	nodes, err := api.Nodes(ctx)
+	if err != nil || len(nodes) != 2 {
+		t.Fatalf("k8sapi Nodes() = %+v, %v", nodes, err)
+	}
+	for _, n := range nodes {
+		if !n.Ready || (n.Name == "w1" && n.InternalIP != workerIP) {
+			t.Errorf("node %+v, want Ready and the worker at %s", n, workerIP)
+		}
+	}
+	scaleToken, _ := k8spki.NewBootstrapToken(nil)
+	if err := api.CreateBootstrapToken(ctx, scaleToken, time.Now().Add(time.Hour)); err != nil {
+		t.Errorf("k8sapi CreateBootstrapToken(): %v", err)
+	}
+	// A workload on the worker, guarded by a disruption budget, so the drain
+	// below has something real to evict and something real to be refused by.
+	// The admin kubeconfig creates them, as a user would.
+	expect(t, admin, http.MethodPost, base+"/api/v1/namespaces/default/pods", `{"apiVersion":"v1","kind":"Pod",
+		"metadata":{"name":"guarded","labels":{"app":"guarded"}},
+		"spec":{"nodeSelector":{"kubernetes.io/hostname":"w1"},"containers":[{"name":"c",
+		"image":"docker.io/library/busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4",
+		"imagePullPolicy":"IfNotPresent","command":["sleep","3600"]}]}}`, http.StatusCreated, "an admin creates a pod")
+	expect(t, admin, http.MethodPost, base+"/apis/policy/v1/namespaces/default/poddisruptionbudgets", `{"apiVersion":"policy/v1",
+		"kind":"PodDisruptionBudget","metadata":{"name":"guarded"},
+		"spec":{"minAvailable":1,"selector":{"matchLabels":{"app":"guarded"}}}}`, http.StatusCreated, "an admin creates a PDB")
+	waitFor(ctx, t, "the guarded pod to run", []*node{cp, worker}, func() bool {
+		status, body := call(admin, http.MethodGet, base+"/api/v1/namespaces/default/pods/guarded", "")
+		return status == http.StatusOK && strings.Contains(body, `"phase":"Running"`)
+	})
+	// The PDB controller has to observe the pod before it guards it.
+	waitFor(ctx, t, "the PDB to count the pod", []*node{cp, worker}, func() bool {
+		status, body := call(admin, http.MethodGet, base+"/apis/policy/v1/namespaces/default/poddisruptionbudgets/guarded", "")
+		return status == http.StatusOK && strings.Contains(body, `"currentHealthy":1`)
+	})
+
+	// A drain of the worker, the way a scale-down does it.
+	if err := api.Cordon(ctx, "w1"); err != nil {
+		t.Errorf("k8sapi Cordon(): %v", err)
+	}
+	pods, err := api.PodsOnNode(ctx, "w1")
+	if err != nil {
+		t.Errorf("k8sapi PodsOnNode(): %v", err)
+	}
+	found := false
+	for _, p := range pods {
+		if p.Namespace == "default" && p.Name == "guarded" {
+			found = !p.DaemonSet && !p.Mirror
+		}
+	}
+	if !found {
+		t.Fatalf("PodsOnNode(w1) = %+v, want the guarded workload pod", pods)
+	}
+	// The budget holds: the drain is refused, with the API server's 429.
+	if err := api.Evict(ctx, "default", "guarded"); !errors.Is(err, k8sapi.ErrEvictionBlocked) {
+		t.Errorf("Evict() of a pod its PDB protects = %v, want ErrEvictionBlocked", err)
+	}
+	// Without the budget, kumo:system may evict it.
+	expect(t, admin, http.MethodDelete, base+"/apis/policy/v1/namespaces/default/poddisruptionbudgets/guarded", "",
+		http.StatusOK, "an admin deletes the PDB")
+	if err := api.Evict(ctx, "default", "guarded"); err != nil {
+		t.Errorf("Evict() with no PDB: %v", err)
+	}
+	t.Logf("drained w1: %d pods on it; the guarded one refused under its PDB, evicted without it", len(pods))
+	if err := api.DeleteNode(ctx, "w1"); err != nil {
+		t.Errorf("k8sapi DeleteNode(): %v", err)
+	}
+	if nodes, err := api.Nodes(ctx); err != nil || len(nodes) != 1 || nodes[0].Name != "cp1" {
+		t.Errorf("after the delete, Nodes() = %+v, %v, want cp1 alone", nodes, err)
+	}
 
 	// No key and no token secret on either console.
 	for _, n := range []*node{cp, worker} {
