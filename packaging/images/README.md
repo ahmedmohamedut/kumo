@@ -6,6 +6,7 @@ The golden images Kumo's managed modules boot from, one recipe per directory:
 |---|---|---|---|
 | [`postgres-18/`](postgres-18/) | Databases | Ubuntu 24.04 | [`07-databases.md`](../../docs/design/07-databases.md) §7 |
 | [`kubernetes-1.37/`](kubernetes-1.37/) | Kubernetes clusters | Ubuntu 26.04 | [`08-kubernetes.md`](../../docs/design/08-kubernetes.md) §7 |
+| [`spark-4.3/`](spark-4.3/) | Spark clusters | Ubuntu 26.04 | [`09-spark.md`](../../docs/design/09-spark.md) §7 |
 
 Each is built **once, outside Kumo**, published with its SHA256, and imported
 into a node like any other image with `kind=engine`. Nothing in `kumod` or the
