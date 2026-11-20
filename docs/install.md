@@ -171,8 +171,14 @@ design is in [`07-databases.md`](design/07-databases.md).
 
 What it does need is a **golden image**: a qcow2 with Postgres already
 installed, so a database starts in about a minute instead of installing one on
-first boot. It is built once, on any machine with qemu and KVM — not
-necessarily this one — and the recipe is in the repository:
+first boot.
+
+The project publishes one as a GitHub release tagged `postgres-18-<date>` on
+the [releases page](https://github.com/ahmedmohamedut/kumo/releases), with the
+exact import body in the release notes; if one is listed, skip to the import
+below and use its URL and checksum. To build your own instead, on any machine
+with qemu and KVM — not necessarily this one — the recipe is in the
+repository:
 
 ```bash
 git clone https://github.com/ahmedmohamedut/kumo && cd kumo/packaging/images/postgres-18

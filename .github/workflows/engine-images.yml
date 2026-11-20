@@ -1,0 +1,237 @@
+# Builds, verifies and publishes the engine images the databases module boots
+# from (docs/design/07-databases.md section 7, packaging/images/postgres-18).
+#
+# Separate from ci.yml on purpose. An engine image is immutable and versioned on
+# its own: a patched Postgres is a new image, imported beside the old one, and
+# it has no reason to wait for a Kumo release or to be rebuilt by one. The
+# monthly schedule is what picks up the security updates the recipe installs
+# (package_upgrade: true); a Kumo release ships no image at all.
+#
+#   pull_request       the recipe changed: build and verify, publish nothing
+#   workflow_dispatch  build, verify and publish now (optionally as a given version)
+#   schedule           the monthly refresh: build, verify and publish
+#
+# Each image is a GitHub release tagged postgres-18-<version>, never marked
+# latest: scripts/install.sh resolves /releases/latest to find Kumo itself, and
+# an image release there would send every new install to a tag with no kumod.
+name: Engine images
+
+on:
+  pull_request:
+    paths:
+      - packaging/images/postgres-18/**
+      - .github/workflows/engine-images.yml
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version string for the image name (default: today's UTC date, YYYYMMDD)"
+        required: false
+        type: string
+  schedule:
+    # 04:00 UTC on the 2nd of each month: after Ubuntu's and PGDG's
+    # end-of-month point releases have had a day to reach the mirrors.
+    - cron: "0 4 2 * *"
+
+# One build at a time per ref. A publishing run is never cancelled halfway: a
+# release with the image but not its checksum is worse than a late one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # Where build.sh and verify.sh keep the base image, scratch disks and serial
+  # logs. Named here so the failure upload below finds the logs.
+  KUMO_IMAGE_WORK_DIR: /var/tmp/kumo-image-build
+  # GitHub refuses a release asset of 2 GiB or more. The image is uncompressed
+  # by design (07-databases.md section 7) and was 1939 MiB at M7.1, so this is
+  # a real ceiling, and the build fails here rather than at the upload.
+  ASSET_LIMIT_BYTES: "2147483647"
+  # Warn from 95% of the limit, so the warning arrives a few months before the
+  # failure does.
+  ASSET_WARN_BYTES: "2040109465"
+
+jobs:
+  postgres-18:
+    name: Postgres 18 image
+    # Pinned rather than ubuntu-latest: the qemu the image is built and
+    # verified with should change when somebody chooses to change it.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Choose the version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          EVENT: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=${INPUT_VERSION:-$(date -u +%Y%m%d)}
+          # It becomes part of a file name, a tag and a URL.
+          if ! [[ $v =~ ^[0-9A-Za-z][0-9A-Za-z.]*$ ]]; then
+            echo "::error::version '$v' must be letters, digits and dots"
+            exit 1
+          fi
+          tag=postgres-18-$v
+          publish=true
+          [ "$EVENT" = pull_request ] && publish=false
+          # Checked now rather than after the build: a version that is already
+          # published is immutable, and finding that out costs nothing here
+          # and fifteen minutes later.
+          if [ "$publish" = true ] && gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::$tag is already published, and a published image never changes; run again with another version"
+            exit 1
+          fi
+          {
+            echo "version=$v"
+            echo "tag=$tag"
+            echo "publish=$publish"
+          } >>"$GITHUB_OUTPUT"
+
+      # Hosted runners have /dev/kvm but leave it root-only. Without this
+      # build.sh refuses to start rather than falling back to software
+      # emulation, which would take about an hour.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -w /dev/kvm
+
+      # What build.sh's need_tools checks for, plus gpg for the signature over
+      # the base image's checksums. verify.sh needs nothing more: its SCRAM
+      # login runs inside the guest and its probe is bash's /dev/tcp.
+      - name: Install the build tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            qemu-system-x86 qemu-utils xorriso gpg gpgv curl
+
+      - name: Build
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          packaging/images/postgres-18/build.sh \
+            --version "$VERSION" \
+            --out "$RUNNER_TEMP/out/kumo-postgres-18-$VERSION.qcow2"
+
+      - name: Check the size against the release asset limit
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          f=$RUNNER_TEMP/out/kumo-postgres-18-$VERSION.qcow2
+          size=$(stat -c %s "$f")
+          mib=$((size / 1024 / 1024))
+          echo "image is $mib MiB"
+          if [ "$size" -gt "$ASSET_LIMIT_BYTES" ]; then
+            echo "::error::the image is $mib MiB, over GitHub's 2 GiB release asset limit; it needs another host or a compressed transport (07-databases.md section 7)"
+            exit 1
+          fi
+          if [ "$size" -gt "$ASSET_WARN_BYTES" ]; then
+            echo "::warning::the image is $mib MiB, within 5% of GitHub's 2 GiB release asset limit"
+          fi
+
+      - name: Verify
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          packaging/images/postgres-18/verify.sh --keep \
+            --image "$RUNNER_TEMP/out/kumo-postgres-18-$VERSION.qcow2"
+
+      # The serial consoles are the only record of what a guest did, and the
+      # runner is gone once the job ends.
+      - name: Keep the serial logs of a failed build
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: postgres-18-serial-logs
+          path: ${{ env.KUMO_IMAGE_WORK_DIR }}/**/*.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # Handed to the publish job rather than published from here, so that the
+      # job running a guest, apt and a dozen downloads never holds a token that
+      # can write to the repository. A pull request's image is not kept: it is
+      # two gigabytes nobody will import.
+      - name: Hand the image to the publish job
+        if: steps.version.outputs.publish == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: postgres-18-image
+          path: ${{ runner.temp }}/out/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 1
+
+  publish:
+    name: Publish
+    needs: postgres-18
+    if: needs.postgres-18.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: postgres-18-image
+          path: out
+
+      # The artifact store is one more hop between the build and the release,
+      # so the file is checked against the checksum the build wrote before it
+      # becomes something operators import.
+      - name: Check the image against its checksum
+        working-directory: out
+        run: sha256sum -c ./*.sha256
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.postgres-18.outputs.tag }}
+          VERSION: ${{ needs.postgres-18.outputs.version }}
+        run: |
+          image=kumo-postgres-18-$VERSION.qcow2
+          sha=$(cut -d' ' -f1 "out/$image.sha256")
+          mindisk=$(sed -n 's/^min_disk_gb=//p' "out/$image.manifest")
+          url=https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$image
+          {
+            echo "Postgres 18 engine image for the Kumo databases module, built by"
+            echo "[\`packaging/images/postgres-18\`](https://github.com/$GITHUB_REPOSITORY/tree/$GITHUB_SHA/packaging/images/postgres-18)"
+            echo "at $GITHUB_SHA and checked by its \`verify.sh\`."
+            echo
+            echo "Import it on a node as an admin (see docs/install.md, \"Databases\"):"
+            echo
+            echo '```json'
+            echo "{"
+            echo "  \"name\": \"postgres-18-$VERSION\","
+            echo "  \"source_url\": \"$url\","
+            echo "  \"checksum\": {\"algorithm\": \"sha256\", \"value\": \"$sha\"},"
+            echo "  \"os_family\": \"linux\", \"architecture\": \"x86_64\", \"default_user\": \"ubuntu\","
+            echo "  \"min_disk_gb\": $mindisk,"
+            echo "  \"kind\": \"engine\", \"engine\": \"postgres\", \"engine_version\": \"18\""
+            echo "}"
+            echo '```'
+            echo
+            echo "x86_64 only. Manifest:"
+            echo
+            echo '```'
+            cat "out/$image.manifest"
+            echo '```'
+          } >notes.md
+          # --latest=false keeps /releases/latest pointing at Kumo itself,
+          # which is what scripts/install.sh resolves.
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Postgres 18 engine image $VERSION" \
+            --notes-file notes.md \
+            --latest=false \
+            "out/$image" "out/$image.sha256" "out/$image.manifest"
