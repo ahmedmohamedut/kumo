@@ -19,6 +19,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/service/instance"
 	"github.com/ahmedmohamedut/kumo/internal/service/instancetype"
 	"github.com/ahmedmohamedut/kumo/internal/service/keypair"
+	"github.com/ahmedmohamedut/kumo/internal/service/kubernetes"
 	"github.com/ahmedmohamedut/kumo/internal/service/subnet"
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
 	"github.com/ahmedmohamedut/kumo/internal/service/task"
@@ -63,6 +64,9 @@ type Options struct {
 	// DBInstances answers the /api/v1/rds/db-instances endpoints. Nil means
 	// the databases module is off, and every /rds route answers 503.
 	DBInstances *dbinstance.Service
+	// Clusters answers the /api/v1/eks endpoints. Nil means the Kubernetes
+	// module is off, and every /eks route answers 503.
+	Clusters *kubernetes.Service
 	// Tasks answers the /api/v1/tasks endpoints, which is where the Location
 	// header of an asynchronous image operation points.
 	Tasks *task.Service
@@ -97,6 +101,7 @@ type Handler struct {
 	buckets        *bucket.Service
 	accessKeys     *accesskey.Service
 	dbInstances    *dbinstance.Service
+	clusters       *kubernetes.Service
 	tasks          *task.Service
 	signer         *auth.Signer
 	refreshTTL     time.Duration
@@ -122,6 +127,7 @@ func NewHandler(opts Options) *Handler {
 		buckets:        opts.Buckets,
 		accessKeys:     opts.AccessKeys,
 		dbInstances:    opts.DBInstances,
+		clusters:       opts.Clusters,
 		tasks:          opts.Tasks,
 		signer:         opts.Signer,
 		refreshTTL:     opts.RefreshTTL,
@@ -297,6 +303,23 @@ func (h *Handler) Router() *gin.Engine {
 		write.POST("/db-instances/:id/stop", h.stopDBInstance)
 		write.POST("/db-instances/:id/start", h.startDBInstance)
 		write.POST("/db-instances/:id/reboot", h.rebootDBInstance)
+	}
+
+	// Kubernetes clusters (docs/design/08-kubernetes.md section 8). Present on
+	// every node like /rds, so a node with the module off says so. Reads and
+	// the kubeconfig are open to both roles -- a viewer's kubeconfig is a
+	// viewer's (K10) -- and every write is admin only.
+	eks := secured.Group("/eks")
+	if h.clusters == nil {
+		eks.Any("/*path", h.kubernetesOff)
+	} else {
+		eks.GET("/clusters", h.listClusters)
+		eks.GET("/clusters/:id", h.getCluster)
+		eks.GET("/clusters/:id/node-groups", h.listNodeGroups)
+		eks.POST("/clusters/:id/kubeconfig", h.mintKubeconfig)
+		write := eks.Group("", middleware.RequireRole(auth.RoleAdmin))
+		write.POST("/clusters", h.createCluster)
+		write.DELETE("/clusters/:id", h.deleteCluster)
 	}
 
 	// Host capacity. A launch form shows it next to the instance type, so both

@@ -11,6 +11,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/api/middleware"
 	"github.com/ahmedmohamedut/kumo/internal/service"
 	"github.com/ahmedmohamedut/kumo/internal/service/dbinstance"
+	"github.com/ahmedmohamedut/kumo/internal/service/kubernetes"
 )
 
 // Error codes of the API error envelope (docs/design/01-api.md §Conventions).
@@ -138,7 +139,7 @@ func describeError(err error) (int, errorBody) {
 		return http.StatusNotFound, errorBody{Code: CodeNotFound, Message: err.Error()}
 	case errors.Is(err, service.ErrAlreadyExists):
 		return http.StatusConflict, errorBody{Code: CodeAlreadyExists, Message: err.Error()}
-	case errors.Is(err, dbinstance.ErrNoEngineImage):
+	case errors.Is(err, dbinstance.ErrNoEngineImage), errors.Is(err, kubernetes.ErrNoEngineImage):
 		// Checked before the generic conflict it wraps, because the code is
 		// what tells the Databases pages which of the two this is.
 		return http.StatusConflict, errorBody{Code: CodeNoEngineImage, Message: err.Error()}

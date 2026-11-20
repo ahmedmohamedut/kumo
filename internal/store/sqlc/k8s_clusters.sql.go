@@ -145,6 +145,34 @@ func (q *Queries) CreateK8sNodeGroup(ctx context.Context, arg CreateK8sNodeGroup
 	return i, err
 }
 
+const deleteK8sCluster = `-- name: DeleteK8sCluster :exec
+DELETE FROM k8s_clusters WHERE id = ?1
+`
+
+type DeleteK8sClusterParams struct {
+	ID string `json:"id"`
+}
+
+// The node groups and the node rows cascade; the instances rows are the
+// instance service's to delete, before this, in the same transaction.
+func (q *Queries) DeleteK8sCluster(ctx context.Context, arg DeleteK8sClusterParams) error {
+	_, err := q.db.ExecContext(ctx, deleteK8sCluster, arg.ID)
+	return err
+}
+
+const deleteK8sNode = `-- name: DeleteK8sNode :exec
+DELETE FROM k8s_nodes WHERE instance_id = ?1
+`
+
+type DeleteK8sNodeParams struct {
+	InstanceID string `json:"instance_id"`
+}
+
+func (q *Queries) DeleteK8sNode(ctx context.Context, arg DeleteK8sNodeParams) error {
+	_, err := q.db.ExecContext(ctx, deleteK8sNode, arg.InstanceID)
+	return err
+}
+
 const getK8sCluster = `-- name: GetK8sCluster :one
 SELECT id, name, kubernetes_version, image_id, vpc_id, subnet_id, pod_cidr, service_cidr, control_plane_count, control_plane_type, state, state_reason, endpoint, ca_cert_pem, created_by, created_at, updated_at FROM k8s_clusters WHERE id = ?1
 `
@@ -207,6 +235,125 @@ func (q *Queries) GetK8sClusterByInstance(ctx context.Context, arg GetK8sCluster
 	var i GetK8sClusterByInstanceRow
 	err := row.Scan(&i.ID, &i.Name)
 	return i, err
+}
+
+const listK8sClusters = `-- name: ListK8sClusters :many
+SELECT id, name, kubernetes_version, image_id, vpc_id, subnet_id, pod_cidr, service_cidr, control_plane_count, control_plane_type, state, state_reason, endpoint, ca_cert_pem, created_by, created_at, updated_at FROM k8s_clusters
+WHERE instr(lower(name), lower(?1)) > 0
+  AND (CAST(?2 AS TEXT) = '' OR state = CAST(?2 AS TEXT))
+  AND (CAST(?3 AS TEXT) = ''
+       OR created_at < CAST(?3 AS TEXT)
+       OR (created_at = CAST(?3 AS TEXT) AND id < ?4))
+ORDER BY created_at DESC, id DESC
+LIMIT ?5
+`
+
+type ListK8sClustersParams struct {
+	Query         string `json:"query"`
+	StateFilter   string `json:"state_filter"`
+	CursorCreated string `json:"cursor_created"`
+	CursorID      string `json:"cursor_id"`
+	PageLimit     int64  `json:"page_limit"`
+}
+
+// GET /eks/clusters: newest first, keyset-paged on (created_at, id) like
+// every collection. instr(haystack, ”) is 1, so an empty query matches every
+// row, and an empty state_filter matches every state.
+func (q *Queries) ListK8sClusters(ctx context.Context, arg ListK8sClustersParams) ([]K8sCluster, error) {
+	rows, err := q.db.QueryContext(ctx, listK8sClusters,
+		arg.Query,
+		arg.StateFilter,
+		arg.CursorCreated,
+		arg.CursorID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []K8sCluster{}
+	for rows.Next() {
+		var i K8sCluster
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.KubernetesVersion,
+			&i.ImageID,
+			&i.VpcID,
+			&i.SubnetID,
+			&i.PodCidr,
+			&i.ServiceCidr,
+			&i.ControlPlaneCount,
+			&i.ControlPlaneType,
+			&i.State,
+			&i.StateReason,
+			&i.Endpoint,
+			&i.CaCertPem,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listK8sClustersInState = `-- name: ListK8sClustersInState :many
+SELECT id, name, kubernetes_version, image_id, vpc_id, subnet_id, pod_cidr, service_cidr, control_plane_count, control_plane_type, state, state_reason, endpoint, ca_cert_pem, created_by, created_at, updated_at FROM k8s_clusters WHERE state = ?1 ORDER BY created_at
+`
+
+type ListK8sClustersInStateParams struct {
+	State string `json:"state"`
+}
+
+// The clusters the health pass watches (section 6).
+func (q *Queries) ListK8sClustersInState(ctx context.Context, arg ListK8sClustersInStateParams) ([]K8sCluster, error) {
+	rows, err := q.db.QueryContext(ctx, listK8sClustersInState, arg.State)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []K8sCluster{}
+	for rows.Next() {
+		var i K8sCluster
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.KubernetesVersion,
+			&i.ImageID,
+			&i.VpcID,
+			&i.SubnetID,
+			&i.PodCidr,
+			&i.ServiceCidr,
+			&i.ControlPlaneCount,
+			&i.ControlPlaneType,
+			&i.State,
+			&i.StateReason,
+			&i.Endpoint,
+			&i.CaCertPem,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listK8sNodeGroups = `-- name: ListK8sNodeGroups :many
@@ -302,4 +449,95 @@ func (q *Queries) ListK8sNodes(ctx context.Context, arg ListK8sNodesParams) ([]L
 		return nil, err
 	}
 	return items, nil
+}
+
+const markK8sClusterActive = `-- name: MarkK8sClusterActive :one
+UPDATE k8s_clusters
+SET state = 'active',
+    state_reason = NULL,
+    endpoint = ?2,
+    updated_at = ?3
+WHERE id = ?1
+RETURNING id, name, kubernetes_version, image_id, vpc_id, subnet_id, pod_cidr, service_cidr, control_plane_count, control_plane_type, state, state_reason, endpoint, ca_cert_pem, created_by, created_at, updated_at
+`
+
+type MarkK8sClusterActiveParams struct {
+	ID        string         `json:"id"`
+	Endpoint  sql.NullString `json:"endpoint"`
+	UpdatedAt string         `json:"updated_at"`
+}
+
+// The end of a successful create: the endpoint is published with the state
+// that makes it usable.
+func (q *Queries) MarkK8sClusterActive(ctx context.Context, arg MarkK8sClusterActiveParams) (K8sCluster, error) {
+	row := q.db.QueryRowContext(ctx, markK8sClusterActive, arg.ID, arg.Endpoint, arg.UpdatedAt)
+	var i K8sCluster
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.KubernetesVersion,
+		&i.ImageID,
+		&i.VpcID,
+		&i.SubnetID,
+		&i.PodCidr,
+		&i.ServiceCidr,
+		&i.ControlPlaneCount,
+		&i.ControlPlaneType,
+		&i.State,
+		&i.StateReason,
+		&i.Endpoint,
+		&i.CaCertPem,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const setK8sClusterState = `-- name: SetK8sClusterState :one
+UPDATE k8s_clusters
+SET state = ?2,
+    state_reason = ?3,
+    updated_at = ?4
+WHERE id = ?1
+RETURNING id, name, kubernetes_version, image_id, vpc_id, subnet_id, pod_cidr, service_cidr, control_plane_count, control_plane_type, state, state_reason, endpoint, ca_cert_pem, created_by, created_at, updated_at
+`
+
+type SetK8sClusterStateParams struct {
+	ID          string         `json:"id"`
+	State       string         `json:"state"`
+	StateReason sql.NullString `json:"state_reason"`
+	UpdatedAt   string         `json:"updated_at"`
+}
+
+// The state and the reason are written together, so a cluster cannot end up
+// failed or degraded with nothing to say about it.
+func (q *Queries) SetK8sClusterState(ctx context.Context, arg SetK8sClusterStateParams) (K8sCluster, error) {
+	row := q.db.QueryRowContext(ctx, setK8sClusterState,
+		arg.ID,
+		arg.State,
+		arg.StateReason,
+		arg.UpdatedAt,
+	)
+	var i K8sCluster
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.KubernetesVersion,
+		&i.ImageID,
+		&i.VpcID,
+		&i.SubnetID,
+		&i.PodCidr,
+		&i.ServiceCidr,
+		&i.ControlPlaneCount,
+		&i.ControlPlaneType,
+		&i.State,
+		&i.StateReason,
+		&i.Endpoint,
+		&i.CaCertPem,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

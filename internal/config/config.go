@@ -34,6 +34,8 @@ var (
 	ErrInvalidObjectStore = errors.New("invalid object store")
 	// ErrInvalidDatabases means KUMO_DATABASES is neither on nor off.
 	ErrInvalidDatabases = errors.New("invalid databases setting")
+	// ErrInvalidKubernetes means KUMO_KUBERNETES is neither on nor off.
+	ErrInvalidKubernetes = errors.New("invalid kubernetes setting")
 )
 
 // Hypervisor backends.
@@ -96,6 +98,14 @@ type Config struct {
 	// (docs/design/07-databases.md §2).
 	DBProbeInterval time.Duration
 	DBReadyTimeout  time.Duration
+	// Kubernetes is the Kubernetes clusters module (docs/design/08-kubernetes.md
+	// section 2). Like databases it needs nothing outside the binary but an
+	// engine image, so it is on unless turned off.
+	Kubernetes bool
+	// K8sReadyTimeout bounds a k8s.create's waits; K8sProbeInterval is how
+	// often the health pass asks an active cluster.
+	K8sReadyTimeout  time.Duration
+	K8sProbeInterval time.Duration
 
 	// Object storage. See docs/design/06-object-storage.md §2.
 	ObjectStore string
@@ -173,6 +183,14 @@ const (
 	// slack is for a node under load rather than for a database that is going
 	// to work eventually.
 	DefaultDBReadyTimeout = 10 * time.Minute
+	// DefaultKubernetes leaves the Kubernetes module on.
+	DefaultKubernetes = true
+	// DefaultK8sReadyTimeout bounds each wait of a cluster create: kubeadm
+	// init, the add-ons and the workers joining take a few minutes on a
+	// healthy node (the M8.2 boot test: under three).
+	DefaultK8sReadyTimeout = 20 * time.Minute
+	// DefaultK8sProbeInterval is how often the health pass asks a cluster.
+	DefaultK8sProbeInterval = 30 * time.Second
 	// DefaultS3Region is signed into every S3 request. RustFS accepts any
 	// region; us-east-1 is what clients assume when none is given.
 	DefaultS3Region = "us-east-1"
@@ -211,6 +229,9 @@ func Load() (*Config, error) {
 		Databases:        DefaultDatabases,
 		DBProbeInterval:  DefaultDBProbeInterval,
 		DBReadyTimeout:   DefaultDBReadyTimeout,
+		Kubernetes:       DefaultKubernetes,
+		K8sReadyTimeout:  DefaultK8sReadyTimeout,
+		K8sProbeInterval: DefaultK8sProbeInterval,
 		ObjectStore:      DefaultObjectStore,
 		S3Region:         DefaultS3Region,
 		S3PresignTTL:     DefaultS3PresignTTL,
@@ -302,6 +323,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.loadObjectStore()
+	if err := loadOnOff("KUMO_KUBERNETES", &cfg.Kubernetes, ErrInvalidKubernetes); err != nil {
+		return nil, err
+	}
 	if err := cfg.loadDatabases(); err != nil {
 		return nil, err
 	}
@@ -365,6 +389,18 @@ func (c *Config) loadDurations() error {
 		}
 		c.DBReadyTimeout = d
 	}
+	for name, target := range map[string]*time.Duration{
+		"KUMO_K8S_READY_TIMEOUT":  &c.K8sReadyTimeout,
+		"KUMO_K8S_PROBE_INTERVAL": &c.K8sProbeInterval,
+	} {
+		if v, ok := os.LookupEnv(name); ok {
+			d, err := time.ParseDuration(v)
+			if err != nil || d <= 0 {
+				return fmt.Errorf("%w: %s must be a positive duration, got %q", ErrInvalidDuration, name, v)
+			}
+			*target = d
+		}
+	}
 	if v, ok := os.LookupEnv("KUMO_S3_PRESIGN_TTL"); ok {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -380,22 +416,26 @@ func (c *Config) loadDurations() error {
 // operator who writes true in one Kumo variable should not have to remember
 // that this one is different.
 func (c *Config) loadDatabases() error {
-	v, ok := os.LookupEnv("KUMO_DATABASES")
+	return loadOnOff("KUMO_DATABASES", &c.Databases, ErrInvalidDatabases)
+}
+
+// loadOnOff reads a module switch: on, off, or a boolean strconv understands.
+func loadOnOff(name string, target *bool, sentinel error) error {
+	v, ok := os.LookupEnv(name)
 	if !ok {
 		return nil
 	}
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "on":
-		c.Databases = true
+		*target = true
 	case "off":
-		c.Databases = false
+		*target = false
 	default:
 		b, err := strconv.ParseBool(strings.TrimSpace(v))
 		if err != nil {
-			return fmt.Errorf("%w: KUMO_DATABASES must be on or off, got %q",
-				ErrInvalidDatabases, v)
+			return fmt.Errorf("%w: %s must be on or off, got %q", sentinel, name, v)
 		}
-		c.Databases = b
+		*target = b
 	}
 	return nil
 }

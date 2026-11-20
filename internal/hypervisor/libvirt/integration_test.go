@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -649,4 +650,83 @@ func download(t *testing.T, url string) string {
 	}
 
 	return path
+}
+
+// TestDNSHostResolvesOnTheNetwork pins what the Kubernetes endpoint relies on
+// (docs/design/08-kubernetes.md K6): a DNS record added to a VPC's network is
+// served by that network's own dnsmasq, under a fully qualified name with dots
+// that is no guest's hostname, and stops being served once removed. It defines
+// a network the way a VPC does and asks dnsmasq on the gateway directly.
+func TestDNSHostResolvesOnTheNetwork(t *testing.T) {
+	conn := dial(t)
+	client, err := kumolibvirt.New(slog.New(slog.DiscardHandler), "unix://"+socketPath())
+	if err != nil {
+		t.Fatalf("libvirt.New(): %v", err)
+	}
+	defer client.Close()
+	ctx := t.Context()
+
+	const (
+		name    = "kumo-it-dns"
+		gateway = "10.178.0.1"
+		record  = "api.orders.itvpc"
+		target  = "10.178.0.10"
+	)
+	t.Cleanup(func() {
+		if n, err := conn.NetworkLookupByName(name); err == nil {
+			_ = conn.NetworkDestroy(n)
+			_ = conn.NetworkUndefine(n)
+		}
+	})
+	if err := client.DefineNetwork(ctx, hypervisor.NetworkSpec{
+		Name: name, Bridge: "kmbitdns0", CIDR: "10.178.0.0/24", Gateway: gateway,
+		Mode: hypervisor.NetworkModeIsolated, Domain: "itvpc",
+	}); err != nil {
+		t.Fatalf("DefineNetwork(): %v", err)
+	}
+	if err := client.StartNetwork(ctx, name); err != nil {
+		t.Fatalf("StartNetwork(): %v", err)
+	}
+
+	host := hypervisor.DNSHost{IP: target, Hostnames: []string{record}}
+	if err := client.AddDNSHost(ctx, name, host); err != nil {
+		t.Fatalf("AddDNSHost(): %v", err)
+	}
+	if err := client.AddDNSHost(ctx, name, host); !errors.Is(err, hypervisor.ErrAlreadyExists) {
+		t.Errorf("a second AddDNSHost() = %v, want ErrAlreadyExists", err)
+	}
+
+	info, err := client.GetNetwork(ctx, name)
+	if err != nil {
+		t.Fatalf("GetNetwork(): %v", err)
+	}
+	if len(info.DNSHosts) != 1 || info.DNSHosts[0].IP != target || info.DNSHosts[0].Hostnames[0] != record {
+		t.Errorf("DNSHosts = %+v, want the record read back", info.DNSHosts)
+	}
+
+	// dnsmasq on the gateway, the resolver every guest of the VPC uses.
+	resolver := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, "udp", gateway+":53")
+	}}
+	var addrs []string
+	for i := 0; i < 20; i++ {
+		if addrs, err = resolver.LookupHost(ctx, record); err == nil {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if err != nil || len(addrs) != 1 || addrs[0] != target {
+		t.Fatalf("LookupHost(%s) via %s = %v, %v, want %s", record, gateway, addrs, err, target)
+	}
+
+	if err := client.DeleteDNSHost(ctx, name, host); err != nil {
+		t.Fatalf("DeleteDNSHost(): %v", err)
+	}
+	if err := client.DeleteDNSHost(ctx, name, host); !errors.Is(err, hypervisor.ErrNotFound) {
+		t.Errorf("a second DeleteDNSHost() = %v, want ErrNotFound", err)
+	}
+	time.Sleep(time.Second)
+	if addrs, err := resolver.LookupHost(ctx, record); err == nil && len(addrs) > 0 {
+		t.Errorf("LookupHost(%s) after the delete = %v, want no answer", record, addrs)
+	}
 }

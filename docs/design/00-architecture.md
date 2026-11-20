@@ -107,6 +107,9 @@
 | `KUMO_DATABASES` | `on` | managed Postgres module: `on` or `off`; with `off` every `/api/v1/rds/*` route answers `503` and the console hides the Databases pages |
 | `KUMO_DB_PROBE_INTERVAL` | `10s` | how often the readiness probe dials a creating or running DB instance |
 | `KUMO_DB_READY_TIMEOUT` | `10m` | how long a `db.create` task waits for the engine before the DB instance is `failed`; must be longer than the probe interval |
+| `KUMO_KUBERNETES` | `on` | Kubernetes clusters module: `on` or `off`; with `off` every `/api/v1/eks/*` route answers `503` and the console hides the Kubernetes pages (`08-kubernetes.md`) |
+| `KUMO_K8S_READY_TIMEOUT` | `20m` | how long each wait of a `k8s.create` lasts -- the API server, then every node Ready -- before the cluster is `failed` or `degraded` |
+| `KUMO_K8S_PROBE_INTERVAL` | `30s` | how often the health pass asks an active or degraded cluster's API server |
 
 The object storage variables are explained in `06-object-storage.md` §2, the
 database ones in `07-databases.md` §2. Unlike object storage, the databases

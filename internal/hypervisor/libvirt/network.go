@@ -181,6 +181,86 @@ func (c *Client) updateDHCPHost(ctx context.Context, name, mac string, command g
 	})
 }
 
+// AddDNSHost adds a DNS record to a network, live and persisted, so the running
+// dnsmasq serves it at once and a restarted one still does. A record for the
+// same address already present is ErrAlreadyExists, which a requeued task
+// adopts.
+func (c *Client) AddDNSHost(ctx context.Context, name string, host hypervisor.DNSHost) error {
+	if err := requireNetworkName(name); err != nil {
+		return err
+	}
+	fragment, err := networkxml.DNSHostXML(host)
+	if err != nil {
+		return err
+	}
+	return c.withConnection(ctx, func(conn *golibvirt.Libvirt) error {
+		net, err := lookupNetwork(conn, name)
+		if err != nil {
+			return err
+		}
+		if present, err := dnsHostPresent(conn, net, host.IP); err != nil {
+			return err
+		} else if present {
+			return fmt.Errorf("the dns host %s on the network %q: %w", host.IP, name, hypervisor.ErrAlreadyExists)
+		}
+		flags := golibvirt.NetworkUpdateAffectLive | golibvirt.NetworkUpdateAffectConfig
+		if err := conn.NetworkUpdate(net, uint32(golibvirt.NetworkUpdateCommandAddLast),
+			uint32(golibvirt.NetworkSectionDNSHost), -1, string(fragment), flags); err != nil {
+			return fmt.Errorf("add the dns host %s to the network %q: %w", host.IP, name, err)
+		}
+		return nil
+	})
+}
+
+// DeleteDNSHost removes a DNS record. One that is already gone is
+// ErrNotFound, which a requeued delete tolerates.
+func (c *Client) DeleteDNSHost(ctx context.Context, name string, host hypervisor.DNSHost) error {
+	if err := requireNetworkName(name); err != nil {
+		return err
+	}
+	fragment, err := networkxml.DNSHostXML(host)
+	if err != nil {
+		return err
+	}
+	return c.withConnection(ctx, func(conn *golibvirt.Libvirt) error {
+		net, err := lookupNetwork(conn, name)
+		if err != nil {
+			return err
+		}
+		if present, err := dnsHostPresent(conn, net, host.IP); err != nil {
+			return err
+		} else if !present {
+			return fmt.Errorf("the dns host %s on the network %q: %w", host.IP, name, hypervisor.ErrNotFound)
+		}
+		flags := golibvirt.NetworkUpdateAffectLive | golibvirt.NetworkUpdateAffectConfig
+		if err := conn.NetworkUpdate(net, uint32(golibvirt.NetworkUpdateCommandDelete),
+			uint32(golibvirt.NetworkSectionDNSHost), -1, string(fragment), flags); err != nil {
+			return fmt.Errorf("delete the dns host %s from the network %q: %w", host.IP, name, err)
+		}
+		return nil
+	})
+}
+
+// dnsHostPresent reads the network back and reports whether it holds a DNS
+// record for ip: libvirt's own "already exists" is a generic error, and this
+// is the reading both backends agree on.
+func dnsHostPresent(conn *golibvirt.Libvirt, net golibvirt.Network, ip string) (bool, error) {
+	doc, err := conn.NetworkGetXMLDesc(net, 0)
+	if err != nil {
+		return false, fmt.Errorf("read the network %q: %w", net.Name, err)
+	}
+	info, err := networkxml.Parse([]byte(doc))
+	if err != nil {
+		return false, err
+	}
+	for _, h := range info.DNSHosts {
+		if h.IP == ip {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // lookupNetwork finds a network by name, mapping libvirt's "no such network"
 // onto hypervisor.ErrNotFound.
 func lookupNetwork(conn *golibvirt.Libvirt, name string) (golibvirt.Network, error) {

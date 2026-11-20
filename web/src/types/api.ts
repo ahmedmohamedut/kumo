@@ -825,6 +825,130 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/eks/clusters': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * List Kubernetes clusters
+     * @description Newest first, keyset-paged like every collection.
+     */
+    get: operations['listClusters']
+    put?: never
+    /**
+     * Create a Kubernetes cluster
+     * @description Runs as a task and answers `202` with the cluster `creating`: kumod
+     *     generates the cluster's PKI, reserves the control plane and every
+     *     worker in one transaction (a cluster the node cannot hold is refused
+     *     whole, `429`), then builds them. The cluster ends `active` once every
+     *     node is Ready, `degraded` if the control plane works but a node never
+     *     became Ready, or `failed` if the API server never answered; delete is
+     *     the way out of either (08-kubernetes.md section 4).
+     *
+     *     Validation: `name` is a DNS label of 1-40 characters; the nodes are
+     *     named `<name>-cp-1` and `<name>-default-<n>`, so the name must not
+     *     collide with a live instance's. `node_count` is 1-10 (default 2).
+     *     `control_plane_type` needs at least 2 vCPU and `node_type` at least
+     *     2048 MiB (both default `kumo.medium`). `node_root_disk_gb` is between
+     *     the image's `min_disk_gb` (the default) and 500.
+     *     `kubernetes_version` may be omitted, which takes the newest available
+     *     minor; `subnet_id` may be omitted, which uses the default subnet. Pod
+     *     and service ranges are fixed in this version: `100.64.0.0/16` and
+     *     `100.96.0.0/16`.
+     */
+    post: operations['createCluster']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/eks/clusters/{id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Kubernetes cluster id. */
+        id: components['parameters']['ClusterID']
+      }
+      cookie?: never
+    }
+    /**
+     * Cluster detail
+     * @description The cluster with its node group and its nodes. A node's `ready` is its Kubernetes Ready condition as kumod last saw it, null before the first look. `ca_certificate` is the cluster CA, which is public; no key is ever returned here.
+     */
+    get: operations['getCluster']
+    put?: never
+    post?: never
+    /**
+     * Delete a Kubernetes cluster
+     * @description Runs as a task and answers `202` with the cluster `deleting`. Allowed from every state but `deleting`. Every node's VM, the endpoint's DNS record, the rows and the cluster's PKI are removed; workloads and `local-path` volumes go with the nodes, with no drain.
+     */
+    delete: operations['deleteCluster']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/eks/clusters/{id}/node-groups': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Kubernetes cluster id. */
+        id: components['parameters']['ClusterID']
+      }
+      cookie?: never
+    }
+    /**
+     * A cluster's node groups
+     * @description One, `default`, in this version.
+     */
+    get: operations['listNodeGroups']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/eks/clusters/{id}/kubeconfig': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Kubernetes cluster id. */
+        id: components['parameters']['ClusterID']
+      }
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Mint a kubeconfig for the caller
+     * @description Signs a fresh client certificate with the cluster CA for the calling
+     *     user -- common name the Kumo username, group `kumo:admins` for an admin
+     *     and `kumo:viewers` for a viewer, bound to `cluster-admin` and `view`
+     *     -- valid 30 days, and returns the kubeconfig once. Nothing is stored:
+     *     revoking is replacing the group's binding (08-kubernetes.md section 5).
+     *     A POST, and `Cache-Control: no-store`, because every call signs a new
+     *     certificate and the body carries its private key. `409` until the
+     *     cluster is active (or degraded or updating).
+     *
+     *     The server is `https://api.<cluster>.<vpc>:6443`, which the VPC's DNS
+     *     serves: the kubeconfig works from an instance in the cluster's VPC.
+     */
+    post: operations['mintKubeconfig']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/tasks': {
     parameters: {
       query?: never
@@ -1203,6 +1327,11 @@ export interface components {
           /** @example 18 */
           version: string
         }[]
+      }
+      /** @description The Kubernetes module (08-kubernetes.md section 2). `enabled` is KUMO_KUBERNETES; `versions` is every Kubernetes minor with an available engine image, newest first, and is empty -- never null -- until one is imported. */
+      kubernetes: {
+        enabled: boolean
+        versions: string[]
       }
     }
     /** @description Host totals versus what is already allocated. `total` is measured by the hypervisor (node vCPUs multiplied by the configured overcommit ratio, node memory, and the size of the instances pool); `allocated` is summed from the instances table, counting every instance that is not `terminated`. A terminate deletes the row, so a terminated instance stops being counted as soon as it is gone, and rows left in `terminated` by an earlier release hold nothing. The capacity rules are documented in `00-architecture.md` §6. */
@@ -1636,6 +1765,85 @@ export interface components {
     DBInstanceList: components['schemas']['Page'] & {
       items: components['schemas']['DBInstance'][]
     }
+    /**
+     * @description `degraded` is a cluster whose control plane answers while something is wrong -- a node not Ready, or three health checks in a row failed -- with the reason in `state_reason`. `updating` is a scale in progress (M8.6).
+     * @enum {string}
+     */
+    ClusterState: 'creating' | 'active' | 'updating' | 'degraded' | 'deleting' | 'failed'
+    NodeGroup: {
+      /** @example ng-0a1b2c3d4e5f60718 */
+      id: string
+      /** @example default */
+      name: string
+      instance_type: string
+      root_disk_gb: number
+      desired_size: number
+    }
+    ClusterNode: {
+      /** @example orders-default-1 */
+      name: string
+      /** @description The hidden VM, for reading its console log. */
+      instance_id: string
+      /** @enum {string} */
+      role: 'control-plane' | 'worker'
+      node_group_id: string | null
+      state: components['schemas']['InstanceState']
+      private_ip: string
+      /** @description The Kubernetes Ready condition as last seen; null before the first look. */
+      ready: boolean | null
+    }
+    Cluster: {
+      /** @example eks-0a1b2c3d4e5f60718 */
+      id: string
+      name: string
+      /** @example 1.37 */
+      kubernetes_version: string
+      state: components['schemas']['ClusterState']
+      state_reason: string | null
+      /** @description https://api.<name>.<vpc>:6443, set once the cluster is active. */
+      endpoint: string | null
+      vpc_id: string
+      subnet_id: string
+      /** @example 100.64.0.0/16 */
+      pod_cidr: string
+      /** @example 100.96.0.0/16 */
+      service_cidr: string
+      control_plane_type: string
+      /** @description The cluster CA certificate, PEM. Public. */
+      ca_certificate: string
+      node_groups: components['schemas']['NodeGroup'][]
+      nodes: components['schemas']['ClusterNode'][]
+      /** Format: date-time */
+      created_at: string
+      /** Format: date-time */
+      updated_at: string
+      /** @description The task a create or a delete queued; absent otherwise. */
+      task_id?: string
+    }
+    ClusterList: components['schemas']['Page'] & {
+      items: components['schemas']['Cluster'][]
+    }
+    CreateClusterRequest: {
+      name: string
+      /** @example 1.37 */
+      kubernetes_version?: string
+      subnet_id?: string
+      /** @default kumo.medium */
+      control_plane_type: string
+      /** @default kumo.medium */
+      node_type: string
+      /** @default 2 */
+      node_count: number
+      node_root_disk_gb?: number
+    }
+    Kubeconfig: {
+      /** @description The kubeconfig file, YAML. It holds a private key; it is returned once. */
+      kubeconfig: string
+      /** @enum {string} */
+      group: 'kumo:admins' | 'kumo:viewers'
+      /** Format: date-time */
+      expires_at: string
+    }
     ConsoleOutput: {
       instance_id: string
       /** @description The tail of the serial console log. */
@@ -2035,6 +2243,8 @@ export interface components {
     InstanceID: string
     /** @description DB instance id. */
     DBInstanceID: string
+    /** @description Kubernetes cluster id. */
+    ClusterID: string
     /** @description Task id. */
     TaskID: string
     /** @description VPC id. */
@@ -3506,6 +3716,191 @@ export interface operations {
       202: components['responses']['DBInstanceAccepted']
       401: components['responses']['Unauthorized']
       403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+      503: components['responses']['Unavailable']
+    }
+  }
+  listClusters: {
+    parameters: {
+      query?: {
+        /** @description Items per page. */
+        page_size?: components['parameters']['PageSize']
+        /** @description Continuation token from a previous page; absent on the first page. */
+        page_token?: components['parameters']['PageToken']
+        /** @description Case-insensitive substring of the resource name. */
+        q?: components['parameters']['Query']
+        /** @description Restrict the page to one cluster state. */
+        state?: components['schemas']['ClusterState']
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description A page of clusters. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ClusterList']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      503: components['responses']['Unavailable']
+    }
+  }
+  createCluster: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CreateClusterRequest']
+      }
+    }
+    responses: {
+      /** @description The create was accepted. */
+      202: {
+        headers: {
+          /** @description The task that tracks the create. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Cluster']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      /** @description A cluster or instance of that name exists (`already_exists`), or no Kubernetes engine image is available (`no_engine_image`). */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ErrorResponse']
+        }
+      }
+      429: components['responses']['TooManyRequests']
+      503: components['responses']['Unavailable']
+    }
+  }
+  getCluster: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Kubernetes cluster id. */
+        id: components['parameters']['ClusterID']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The cluster. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Cluster']
+        }
+      }
+      401: components['responses']['Unauthorized']
+      404: components['responses']['NotFound']
+      503: components['responses']['Unavailable']
+    }
+  }
+  deleteCluster: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Kubernetes cluster id. */
+        id: components['parameters']['ClusterID']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The delete was accepted. */
+      202: {
+        headers: {
+          /** @description The task that tracks the delete. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Cluster']
+        }
+      }
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+      503: components['responses']['Unavailable']
+    }
+  }
+  listNodeGroups: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Kubernetes cluster id. */
+        id: components['parameters']['ClusterID']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The node groups. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': {
+            items: components['schemas']['NodeGroup'][]
+          }
+        }
+      }
+      401: components['responses']['Unauthorized']
+      404: components['responses']['NotFound']
+      503: components['responses']['Unavailable']
+    }
+  }
+  mintKubeconfig: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Kubernetes cluster id. */
+        id: components['parameters']['ClusterID']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The kubeconfig. */
+      200: {
+        headers: {
+          /** @description Always `no-store`. */
+          'Cache-Control'?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Kubeconfig']
+        }
+      }
+      401: components['responses']['Unauthorized']
       404: components['responses']['NotFound']
       409: components['responses']['Conflict']
       503: components['responses']['Unavailable']

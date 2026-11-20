@@ -1,6 +1,7 @@
 package networkxml_test
 
 import (
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
@@ -289,5 +290,51 @@ func assertGolden(t *testing.T, name string, got []byte) {
 	}
 	if string(got) != string(want) {
 		t.Errorf("Build() does not match %s\n--- got ---\n%s\n--- want ---\n%s", path, got, want)
+	}
+}
+
+func TestDNSHostXML(t *testing.T) {
+	t.Parallel()
+
+	out, err := networkxml.DNSHostXML(hypervisor.DNSHost{IP: "192.168.100.10", Hostnames: []string{"api.orders.default"}})
+	if err != nil {
+		t.Fatalf("DNSHostXML(): %v", err)
+	}
+	if want := `<host ip="192.168.100.10"><hostname>api.orders.default</hostname></host>`; string(out) != want {
+		t.Errorf("DNSHostXML() = %s, want %s", out, want)
+	}
+
+	for name, host := range map[string]hypervisor.DNSHost{
+		"no address":        {Hostnames: []string{"api.orders.default"}},
+		"an IPv6 address":   {IP: "fd00::1", Hostnames: []string{"api.orders.default"}},
+		"no hostname":       {IP: "192.168.100.10"},
+		"markup in a name":  {IP: "192.168.100.10", Hostnames: []string{"api.<x>.default"}},
+		"an uppercase name": {IP: "192.168.100.10", Hostnames: []string{"API.orders.default"}},
+		"an empty label":    {IP: "192.168.100.10", Hostnames: []string{"api..default"}},
+		"a leading hyphen":  {IP: "192.168.100.10", Hostnames: []string{"-api.orders.default"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := networkxml.DNSHostXML(host); !errors.Is(err, hypervisor.ErrInvalidSpec) {
+				t.Errorf("DNSHostXML() = %v, want ErrInvalidSpec", err)
+			}
+		})
+	}
+}
+
+// A network read back lists the DNS records it holds.
+func TestParseReadsDNSHosts(t *testing.T) {
+	t.Parallel()
+
+	info, err := networkxml.Parse([]byte(`<network><name>vpc-0a1b2c3d4e5f60718</name>
+	  <bridge name='kmb0a1b2c3d'/><domain name='default'/>
+	  <dns><host ip='192.168.100.10'><hostname>api.orders.default</hostname></host></dns>
+	  <ip address='192.168.100.1' netmask='255.255.255.0'><dhcp/></ip></network>`))
+	if err != nil {
+		t.Fatalf("Parse(): %v", err)
+	}
+	if len(info.DNSHosts) != 1 || info.DNSHosts[0].IP != "192.168.100.10" ||
+		len(info.DNSHosts[0].Hostnames) != 1 || info.DNSHosts[0].Hostnames[0] != "api.orders.default" {
+		t.Errorf("DNSHosts = %+v", info.DNSHosts)
 	}
 }

@@ -91,6 +91,13 @@ type Hypervisor interface {
 	// DeleteDHCPHost removes it again, matching on the MAC.
 	AddDHCPHost(ctx context.Context, network string, host DHCPHost) error
 	DeleteDHCPHost(ctx context.Context, network string, mac string) error
+	// AddDNSHost installs a DNS record dnsmasq serves on the network, for a
+	// name that is not a guest's own: a Kubernetes cluster's endpoint,
+	// api.<cluster>.<vpc> (docs/design/08-kubernetes.md K6). DeleteDNSHost
+	// removes it again. A record already present is ErrAlreadyExists, one
+	// already gone ErrNotFound.
+	AddDNSHost(ctx context.Context, network string, host DNSHost) error
+	DeleteDNSHost(ctx context.Context, network string, host DNSHost) error
 
 	// Events streams lifecycle changes until ctx is canceled.
 	Events(ctx context.Context) (<-chan DomainEvent, error)
@@ -242,6 +249,13 @@ type DHCPHost struct {
 	Name string
 }
 
+// DNSHost is one DNS record of a network: Hostnames resolve to IP. A hostname
+// is fully qualified (api.orders.default), so dnsmasq serves it as written.
+type DNSHost struct {
+	IP        string
+	Hostnames []string
+}
+
 // NetworkInfo is the state of a libvirt network, read back for adoption and for
 // the delete path.
 type NetworkInfo struct {
@@ -253,6 +267,7 @@ type NetworkInfo struct {
 	Domain    string
 	Active    bool
 	DHCPHosts []DHCPHost
+	DNSHosts  []DNSHost
 }
 
 // RootDiskName is the volume name of an instance's root disk. The service that
@@ -375,4 +390,6 @@ const (
 	OpGetNetwork      Op = "get_network"
 	OpAddDHCPHost     Op = "add_dhcp_host"
 	OpDeleteDHCPHost  Op = "delete_dhcp_host"
+	OpAddDNSHost      Op = "add_dns_host"
+	OpDeleteDNSHost   Op = "delete_dns_host"
 )

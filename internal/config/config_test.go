@@ -48,6 +48,9 @@ func TestLoadDefaults(t *testing.T) {
 		Databases:        config.DefaultDatabases,
 		DBProbeInterval:  config.DefaultDBProbeInterval,
 		DBReadyTimeout:   config.DefaultDBReadyTimeout,
+		Kubernetes:       config.DefaultKubernetes,
+		K8sReadyTimeout:  config.DefaultK8sReadyTimeout,
+		K8sProbeInterval: config.DefaultK8sProbeInterval,
 		ObjectStore:      config.ObjectStoreNone,
 		S3Region:         "us-east-1",
 		S3PresignTTL:     15 * time.Minute,
@@ -177,6 +180,32 @@ func TestLoadFromEnv(t *testing.T) {
 				}
 				if cfg.DBReadyTimeout != 4*time.Minute {
 					t.Errorf("DBReadyTimeout = %s, want 4m", cfg.DBReadyTimeout)
+				}
+			},
+		},
+		{
+			name: "kubernetes module defaults",
+			env:  map[string]string{},
+			check: func(t *testing.T, cfg *config.Config) {
+				t.Helper()
+				if !cfg.Kubernetes || cfg.K8sReadyTimeout != 20*time.Minute || cfg.K8sProbeInterval != 30*time.Second {
+					t.Errorf("Kubernetes = %v, %s, %s, want on, 20m, 30s",
+						cfg.Kubernetes, cfg.K8sReadyTimeout, cfg.K8sProbeInterval)
+				}
+			},
+		},
+		{
+			name: "kubernetes module settings",
+			env: map[string]string{
+				"KUMO_KUBERNETES":         "off",
+				"KUMO_K8S_READY_TIMEOUT":  "30m",
+				"KUMO_K8S_PROBE_INTERVAL": "1m",
+			},
+			check: func(t *testing.T, cfg *config.Config) {
+				t.Helper()
+				if cfg.Kubernetes || cfg.K8sReadyTimeout != 30*time.Minute || cfg.K8sProbeInterval != time.Minute {
+					t.Errorf("Kubernetes = %v, %s, %s, want off, 30m, 1m",
+						cfg.Kubernetes, cfg.K8sReadyTimeout, cfg.K8sProbeInterval)
 				}
 			},
 		},
@@ -391,6 +420,9 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		}},
 		{name: "databases neither on nor off", env: map[string]string{"KUMO_DATABASES": "maybe"}},
 		{name: "databases empty", env: map[string]string{"KUMO_DATABASES": ""}},
+		{name: "kubernetes neither on nor off", env: map[string]string{"KUMO_KUBERNETES": "maybe"}},
+		{name: "kubernetes ready timeout not a duration", env: map[string]string{"KUMO_K8S_READY_TIMEOUT": "soon"}},
+		{name: "kubernetes probe interval zero", env: map[string]string{"KUMO_K8S_PROBE_INTERVAL": "0s"}},
 	}
 
 	for _, tt := range tests {
