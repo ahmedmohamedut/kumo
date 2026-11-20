@@ -133,9 +133,11 @@ func TestClusterJourney(t *testing.T) {
 	base := *ready.Endpoint
 
 	t.Run("a viewer kubeconfig reads and is refused a write", func(t *testing.T) {
-		// `view` is Kubernetes' own role: namespaced reads, so pods yes and
-		// nodes (cluster-scoped) no.
+		// `view` covers namespaced reads; kumo:viewers-nodes adds the nodes.
 		expectStatus(t, viewer, http.MethodGet, base+"/api/v1/namespaces/default/pods", "", http.StatusOK)
+		expectStatus(t, viewer, http.MethodGet, base+"/api/v1/nodes", "", http.StatusOK)
+		expectStatus(t, viewer, http.MethodPatch, base+"/api/v1/nodes/it-shop-default-1",
+			`{"spec":{"unschedulable":true}}`, http.StatusForbidden)
 		expectStatus(t, viewer, http.MethodPost, base+"/api/v1/namespaces/default/configmaps",
 			`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"by-viewer"}}`, http.StatusForbidden)
 	})
