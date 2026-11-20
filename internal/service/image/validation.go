@@ -135,6 +135,9 @@ var engineVersions = map[Engine]struct {
 }{
 	EnginePostgres:   {regexp.MustCompile(`^\d{1,3}$`), "must be a major version, 1-3 digits, such as 18"},
 	EngineKubernetes: {regexp.MustCompile(`^1\.\d{1,3}$`), "must be a minor version, such as 1.37"},
+	// Spark by its minor too ("4.3", never "4.3.0"): one image per minor
+	// (docs/design/09-spark.md section 7).
+	EngineSpark: {regexp.MustCompile(`^\d{1,2}\.\d{1,3}$`), "must be a minor version, such as 4.3"},
 }
 
 // validateEngineFields checks kind against the engine pair.
@@ -177,7 +180,7 @@ func validateEngineFields(in ImportInput) []service.FieldError {
 	if !known {
 		return append(fields, service.FieldError{
 			Field:  "engine",
-			Reason: fmt.Sprintf("must be %q or %q", EnginePostgres, EngineKubernetes),
+			Reason: fmt.Sprintf("must be %q, %q or %q", EnginePostgres, EngineKubernetes, EngineSpark),
 		})
 	}
 	if !version.pattern.MatchString(in.EngineVersion) {

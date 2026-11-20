@@ -316,6 +316,66 @@ CREATE INDEX idx_k8s_nodes_cluster ON k8s_nodes(cluster_id);
 - **A cluster's VMs are reserved together.** `instance.WithManagedReservations` checks the capacity of all of them as one sum, takes one subnet lock, and writes every `instances` row in the same transaction as the cluster's own rows: a cluster is reserved whole or not at all.
 - `k8s_nodes.instance_id` is the key, so a VM is a node of at most one cluster, and `GetK8sClusterByInstance` finds it.
 
+## Spark clusters (0009_spark.sql)
+
+```sql
+CREATE TABLE spark_clusters (
+  id               TEXT PRIMARY KEY,              -- spk-<17 hex>
+  name             TEXT NOT NULL,                 -- DNS label; the endpoint is <name>.<vpc>
+  spark_version    TEXT NOT NULL,                 -- '4.3', matched against images.engine_version
+  image_id         TEXT NOT NULL REFERENCES images(id),
+  vpc_id           TEXT NOT NULL REFERENCES vpcs(id),
+  subnet_id        TEXT NOT NULL REFERENCES subnets(id),
+  master_type      TEXT NOT NULL REFERENCES instance_types(id),
+  state            TEXT NOT NULL CHECK (state IN
+                    ('creating','active','updating','degraded','deleting','failed')),
+  state_reason     TEXT,
+  endpoint         TEXT,                          -- spark://<name>.<vpc>:7077, set once active
+  object_storage   INTEGER NOT NULL DEFAULT 0 CHECK (object_storage IN (0, 1)),
+  access_key_id    TEXT,                          -- set exactly when object_storage is on
+  event_log_bucket TEXT,                          -- one of the cluster's buckets, or NULL
+  created_by       TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL,
+  CHECK ((object_storage = 1) = (access_key_id IS NOT NULL)),
+  CHECK (event_log_bucket IS NULL OR object_storage = 1)
+);
+CREATE UNIQUE INDEX idx_spark_clusters_name ON spark_clusters(name);
+
+CREATE TABLE spark_cluster_buckets (
+  cluster_id TEXT NOT NULL REFERENCES spark_clusters(id) ON DELETE CASCADE,
+  bucket     TEXT NOT NULL,
+  PRIMARY KEY (cluster_id, bucket)
+);
+
+CREATE TABLE spark_node_groups (
+  id            TEXT PRIMARY KEY,                 -- ng-<17 hex>
+  cluster_id    TEXT NOT NULL REFERENCES spark_clusters(id) ON DELETE CASCADE,
+  name          TEXT NOT NULL,                    -- 'default' in v1
+  instance_type TEXT NOT NULL REFERENCES instance_types(id),
+  root_disk_gb  INTEGER NOT NULL,
+  desired_size  INTEGER NOT NULL CHECK (desired_size BETWEEN 1 AND 10),
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL
+);
+CREATE UNIQUE INDEX idx_spark_node_groups_name ON spark_node_groups(cluster_id, name);
+
+CREATE TABLE spark_nodes (
+  instance_id   TEXT PRIMARY KEY REFERENCES instances(id),
+  cluster_id    TEXT NOT NULL REFERENCES spark_clusters(id) ON DELETE CASCADE,
+  node_group_id TEXT REFERENCES spark_node_groups(id) ON DELETE CASCADE,  -- NULL for the master
+  role          TEXT NOT NULL CHECK (role IN ('master', 'worker')),
+  CHECK ((role = 'master') = (node_group_id IS NULL))
+);
+CREATE INDEX idx_spark_nodes_cluster ON spark_nodes(cluster_id);
+```
+
+- **A node is a row in `instances` with `managed_by = 'spk'`**, hidden from the Instances pages and counted against capacity as every managed VM is (`09-spark.md` S4). Every write through `/instances/{id}` on a node answers `409`, naming the cluster and `/api/v1/spark/clusters/<id>`.
+- **No secret column.** The Spark secret and the access key's secret live in `$KUMO_DATA_DIR/spark/<id>/`, 0600 (`09-spark.md` section 5). `access_key_id` is the key's public id, the RustFS user the delete removes, and the table's CHECK holds it to exactly the clusters with object storage.
+- **An event-log bucket needs object storage**, by CHECK: drivers write the logs and never run on the master, so there is no local fallback (S10). The bucket is one of `spark_cluster_buckets`, the buckets the key is granted read-write.
+- **The master belongs to no node group and a worker always to one**, as for Kubernetes. Node groups reuse the `ng-` prefix, in their own table.
+- The tables are `spark_*` although the ids are `spk-`: sqlc names its Go types after the tables.
+
 ## Notes
 
 - A terminate **deletes** the `instances` row rather than keeping it as history (`01-api.md`): its `network_interfaces` rows follow through the cascade and its tags go in the same transaction, so a terminated instance leaves nothing behind but its tasks and its id, which stays allocated. Rows an earlier release left in `terminated` are the exception and stay until an operator `DELETE`s that id — the `state` CHECK still accepts the value and the partial unique index still releases the name, so such a row neither blocks a launch nor needs a migration of its own to disappear.

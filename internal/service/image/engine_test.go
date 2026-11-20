@@ -243,6 +243,25 @@ func TestEngineFieldValidation(t *testing.T) {
 			field: "engine_version",
 		},
 		{
+			// Spark by its minor too: 4.3, never 4.3.0 (09-spark.md section 7).
+			name: "a Spark version that is a patch release",
+			mutate: func(in *image.ImportInput) {
+				in.Kind = image.KindEngine
+				in.Engine = image.EngineSpark
+				in.EngineVersion = "4.3.0"
+			},
+			field: "engine_version",
+		},
+		{
+			name: "a Spark version that is only a major",
+			mutate: func(in *image.ImportInput) {
+				in.Kind = image.KindEngine
+				in.Engine = image.EngineSpark
+				in.EngineVersion = "4"
+			},
+			field: "engine_version",
+		},
+		{
 			name: "a Kubernetes version that is only a major",
 			mutate: func(in *image.ImportInput) {
 				in.Kind = image.KindEngine
@@ -452,5 +471,27 @@ func TestAvailableDatabaseEnginesLeavesOutKubernetes(t *testing.T) {
 	}
 	if len(databases) != 1 || databases[0].Engine != image.EnginePostgres {
 		t.Errorf("AvailableDatabaseEngines() = %+v, want postgres 18 alone", databases)
+	}
+}
+
+// The Spark node image is an engine image, versioned by its minor, and is no
+// database either (docs/design/09-spark.md section 7).
+func TestImportRecordsASparkEngineImage(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	got := h.importEngineOf(t, image.EngineSpark, "spark-4.3", "4.3")
+	if got.Engine == nil || *got.Engine != image.EngineSpark || got.EngineVersion == nil || *got.EngineVersion != "4.3" {
+		t.Errorf("engine = %v %v, want spark 4.3", got.Engine, got.EngineVersion)
+	}
+	databases, err := h.svc.AvailableDatabaseEngines(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(databases) != 0 {
+		t.Errorf("AvailableDatabaseEngines() = %+v, want none: spark is not a database", databases)
+	}
+	if image.EngineSpark.IsDatabase() {
+		t.Error("spark is a database engine")
 	}
 }

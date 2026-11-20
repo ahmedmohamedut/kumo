@@ -72,6 +72,8 @@ const (
 	// EngineKubernetes is the Kubernetes module's node image
 	// (08-kubernetes.md section 7).
 	EngineKubernetes Engine = "kubernetes"
+	// EngineSpark is the Spark module's node image (09-spark.md section 7).
+	EngineSpark Engine = "spark"
 )
 
 // IsDatabase reports whether a DB instance can be created from this engine,
