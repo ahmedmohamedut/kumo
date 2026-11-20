@@ -1,9 +1,10 @@
 # Postgres 18 golden image
 
 The recipe for the image a Kumo DB instance boots from. Built **once, outside
-Kumo**, published as a qcow2 with its SHA256, and imported into a node like any
-other image. See [`docs/design/07-databases.md`](../../../docs/design/07-databases.md)
-§7 for why it works this way.
+Kumo**, published as a gzipped qcow2 with its SHA256, and imported into a node
+like any other image. See [`docs/design/07-databases.md`](../../../docs/design/07-databases.md)
+§7 for why it works this way, and [`../README.md`](../README.md) for the build
+every recipe shares and how images are published.
 
 Nothing in `kumod` or the `Makefile` depends on this directory. A Kumo host
 needs no image-building tooling at all; this runs on whatever machine publishes
@@ -23,11 +24,12 @@ base image's checksums. About 1.2 GiB of downloads and 10 minutes with KVM;
 ./verify.sh --image out/kumo-postgres-18-<date>.qcow2
 ```
 
-`build.sh` fetches the Ubuntu 24.04 cloud image, verifies its SHA256 (and the
-signature over the checksum file against the pinned Ubuntu Cloud Image key
-`D2EB 4462 6FDD C30B 513D 5BB7 1A5D 6C4C 7DB8 7C81`), boots it under QEMU with
-`build.cloud-config.yaml` as its cloud-init seed, and waits for the guest to
-provision itself and power off. It then flattens the result and writes three
+`build.sh` wraps `../lib/build-image.sh`: it fetches the Ubuntu 24.04 cloud
+image, verifies its SHA256 (and the signature over the checksum file against the
+pinned Ubuntu Cloud Image key `D2EB 4462 6FDD C30B 513D 5BB7 1A5D 6C4C 7DB8
+7C81`), boots it under QEMU with `build.cloud-config.yaml` as its cloud-init seed,
+and waits for the guest to provision itself, run the shared teardown
+(`../lib/guest-finish.sh`) and power off. It then flattens the result and writes three
 files beside it:
 
 | File | Contents |
@@ -103,28 +105,13 @@ thing is `internal/service/dbcred` (M7.4), with a random salt per DB instance.
 
 ## Publish
 
-The project's own images are built, verified and published by
-`.github/workflows/engine-images.yml`, on the 2nd of every month and on demand
-(**Actions → Engine images → Run workflow**, optionally with a version). Each
-build that passes `verify.sh` becomes a GitHub release tagged
-`postgres-18-<version>`, carrying the `.qcow2`, the `.sha256` and the
-`.manifest`, with the exact import body in its notes. A pull request that
-touches this directory runs the same build and verify and publishes nothing.
+The project's own images are published by the engine-images workflow, gzipped,
+as releases tagged `postgres-18-<version>`; [`../README.md`](../README.md#publish)
+says what it holds to.
 
-Three things the workflow holds to:
-
-- **Never marked latest.** `scripts/install.sh` resolves `/releases/latest` to
-  find Kumo itself, so an image release must not become it. For the same reason
-  the Makefile and the Kumo release job read versions with `--match 'v*'`.
-- **Under 2 GiB.** GitHub refuses a release asset of 2 GiB or more, and the
-  image is uncompressed on purpose. The build was 1939 MiB at M7.1; the workflow
-  warns from 95% of the limit and fails above it, before anything is uploaded.
-- **The guest never sees a write token.** The job that boots qemu runs with
-  read access only and hands the image to a separate publish job, which checks
-  it against its `.sha256` before creating the release.
-
-To host an image somewhere else, put the `.qcow2` and its `.sha256` wherever
-Kumo nodes can reach them over HTTPS, then import:
+To host an image somewhere else, put the `.qcow2` (or a `.qcow2.gz`, which the
+import decompresses) and its `.sha256` wherever Kumo nodes can reach them over
+HTTPS, then import:
 
 ```sh
 curl -sS -X POST https://kumo.example/api/v1/images/import \

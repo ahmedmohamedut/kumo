@@ -285,6 +285,24 @@ type AvailableEngine struct {
 // the one a create request picks: a patched image is imported alongside the
 // one it replaces rather than over it, so both are available at once and
 // reporting both would offer the same engine twice.
+// AvailableDatabaseEngines is AvailableEngines without the engines no DB
+// instance can be created from, which is what the databases module lists: a
+// Kubernetes node image is an engine image, and must never be offered as a
+// database.
+func (s *Service) AvailableDatabaseEngines(ctx context.Context) ([]AvailableEngine, error) {
+	all, err := s.AvailableEngines(ctx)
+	if err != nil {
+		return nil, err
+	}
+	databases := make([]AvailableEngine, 0, len(all))
+	for _, engine := range all {
+		if engine.Engine.IsDatabase() {
+			databases = append(databases, engine)
+		}
+	}
+	return databases, nil
+}
+
 func (s *Service) AvailableEngines(ctx context.Context) ([]AvailableEngine, error) {
 	rows, err := s.store.ListAvailableEngineImages(ctx)
 	if err != nil {

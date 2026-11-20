@@ -122,10 +122,20 @@ func (s *Service) validateImport(in ImportInput) []service.FieldError {
 	return fields
 }
 
-// enginePattern is an engine major version: digits only, so it is safe in a
-// path and in a SQL comparison, and so "18" and "18.6" cannot both end up
-// naming the same engine (docs/design/07-databases.md section 3).
-var enginePattern = regexp.MustCompile(`^\d{1,3}$`)
+// engineVersions is every engine an image may carry, with the shape of the
+// version that identifies it. Digits and dots only, so a version is safe in a
+// path and in a SQL comparison, and one level of precision per engine, so two
+// spellings cannot name the same engine (docs/design/07-databases.md section
+// 3): Postgres by its major ("18", never "18.6"), Kubernetes by its minor
+// ("1.37", never "1.37.2"), which is the unit its images and clusters are
+// versioned in (docs/design/08-kubernetes.md section 7).
+var engineVersions = map[Engine]struct {
+	pattern *regexp.Regexp
+	reason  string
+}{
+	EnginePostgres:   {regexp.MustCompile(`^\d{1,3}$`), "must be a major version, 1-3 digits, such as 18"},
+	EngineKubernetes: {regexp.MustCompile(`^1\.\d{1,3}$`), "must be a minor version, such as 1.37"},
+}
 
 // validateEngineFields checks kind against the engine pair.
 //
@@ -163,16 +173,17 @@ func validateEngineFields(in ImportInput) []service.FieldError {
 		return fields
 	}
 
-	if in.Engine != EnginePostgres {
-		fields = append(fields, service.FieldError{
+	version, known := engineVersions[in.Engine]
+	if !known {
+		return append(fields, service.FieldError{
 			Field:  "engine",
-			Reason: fmt.Sprintf("must be %q", EnginePostgres),
+			Reason: fmt.Sprintf("must be %q or %q", EnginePostgres, EngineKubernetes),
 		})
 	}
-	if !enginePattern.MatchString(in.EngineVersion) {
+	if !version.pattern.MatchString(in.EngineVersion) {
 		fields = append(fields, service.FieldError{
 			Field:  "engine_version",
-			Reason: "must be a major version, 1-3 digits",
+			Reason: version.reason,
 		})
 	}
 

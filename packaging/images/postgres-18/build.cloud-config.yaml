@@ -161,9 +161,9 @@ write_files:
     permissions: '0755'
     content: |
       #!/usr/bin/env bash
-      # The provisioning apt cannot express, then the teardown, then poweroff.
+      # The provisioning apt cannot express, then the shared teardown.
       #
-      # It is one script with one trap and one marker so that build.sh can tell
+      # It is one script with one trap and one marker so that build-image.sh can tell
       # a finished image from an abandoned one by reading the serial log: the
       # READY marker is printed after everything that can fail and before the
       # `cloud-init clean` that removes the directory cloud-init is running out
@@ -198,81 +198,16 @@ write_files:
       # makes a DB instance come back after a reboot.
       systemctl enable postgresql
 
-      # One kernel, no headers. package_upgrade installs a newer kernel beside
-      # the one this VM booted, and autoremove never takes the running kernel,
-      # so without this the image ships two kernels, two module trees, two
-      # header trees and two initrds: about 256 MiB, enough to push it past
-      # GitHub's 2 GiB release asset limit. The headers go entirely, because a
-      # database image never builds a module. linux-image-virtual is marked
-      # manual first, so that dropping the linux-virtual metapackage (which is
-      # what pulls the headers) cannot let autoremove take the kernel with it.
-      export DEBIAN_FRONTEND=noninteractive
-      running=$(uname -r)
-      newest=$(find /boot -maxdepth 1 -name 'vmlinuz-*-*' -printf '%f\n' | sed 's/^vmlinuz-//' | sort -V | tail -1)
-      apt-mark manual linux-image-virtual "linux-image-$newest" "linux-modules-$newest" >/dev/null
-      stale=$(dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' 'linux-headers-*' 'linux-tools-[0-9]*' 2>/dev/null | awk '$1 == "ii" {print $2}')
-      if [ "$running" != "$newest" ]; then
-      	old=${running%-generic}
-      	# Removing the running kernel can ask "abort kernel removal?", whose
-      	# default under a noninteractive frontend is yes. Answered no under both
-      	# names the question has gone by; an unknown name is stored and ignored.
-      	printf '%s\n' \
-      		'linux-base linux-base/removing-running-kernel boolean false' \
-      		"linux-image-$running linux-image-$running/prerm/removing-running-kernel-$running boolean false" |
-      		debconf-set-selections
-      	stale="$stale $(dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' "linux-*-$old" "linux-*-$old-generic" 2>/dev/null | awk '$1 == "ii" {print $2}')"
-      fi
-      # shellcheck disable=SC2086 # one package name per word, on purpose
-      [ -z "${stale// /}" ] || apt-get -y purge linux-virtual $stale
-
-      apt-get -y autoremove --purge
-
-      kernels=$(find /boot -maxdepth 1 -name 'vmlinuz-*-*' -printf '%f\n')
-      if [ "$kernels" != "vmlinuz-$newest" ] || [ ! -e "/boot/initrd.img-$newest" ] ||
-      	dpkg-query -W -f='${db:Status-Abbrev}\n' 'linux-headers-*' 2>/dev/null | grep -q '^ii'; then
-      	printf 'kernel cleanup left: %s\n' "$kernels" >/dev/console
-      	false
-      fi
-      printf 'KUMO-IMAGE-KERNEL=%s\n' "$newest" >/dev/console
-      apt-get -y clean
-      rm -rf /var/lib/apt/lists/*
-
-      # Identity. A clone sharing a machine-id or an SSH host key is a bug that
-      # presents as magic, so each is removed rather than regenerated here:
-      # systemd and cloud-init recreate theirs on first boot. machine-id is
-      # emptied and not deleted, because systemd wants the file to exist.
-      : >/etc/machine-id
-      rm -f /var/lib/dbus/machine-id
-      rm -f /etc/ssh/ssh_host_*
-
-      rm -rf /var/log/journal/*
-      find /var/log -type f -exec truncate -s 0 {} +
-      rm -f /root/.bash_history /home/ubuntu/.bash_history
-
-      # Hand the freed blocks back to the qcow2 so the convert in build.sh can
-      # drop them. The build disk is attached with discard=unmap for this.
-      fstrim -av || true
-      sync
-
-      # Where the bytes are, in the serial log, for whoever next finds the
-      # image larger than it was.
-      {
-      	printf '\nKUMO-IMAGE-SIZE-REPORT\n'
-      	du -xsm /usr /var /boot /opt /snap /var/lib/snapd 2>/dev/null | sort -rn
-      	dpkg-query -W -f='${Installed-Size}\t${Package}\n' | sort -rn | head -15
-      	df -m / /boot
-      } >/dev/console 2>&1 || true
-
+      # The engine's markers, then the teardown every engine image shares: one
+      # kernel and no headers, no caches, no identity, the freed blocks handed
+      # back, KUMO-IMAGE-READY, and poweroff (../lib/guest-finish.sh). It comes
+      # from the read-only KUMOFILES ISO build-image.sh attaches.
       printf '\nKUMO-IMAGE-ENGINE=%s\n' "$engine_release" >/dev/console
       printf 'KUMO-IMAGE-PKG=%s\n' "$engine_package" >/dev/console
-      printf 'KUMO-IMAGE-READY\n' >/dev/console
 
-      # Last, because it deletes the state directory cloud-init is running out
-      # of: without it the next boot would recognise its own instance-id and
-      # skip the seed a DB instance is configured by.
-      cloud-init clean --logs --seed
-      sync
-      systemctl --no-block poweroff
+      mkdir -p /run/kumo-files
+      mount -o ro /dev/disk/by-label/KUMOFILES /run/kumo-files
+      exec bash /run/kumo-files/lib/guest-finish.sh
 
 runcmd:
   - [bash, /run/kumo-image-provision]

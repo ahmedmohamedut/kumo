@@ -2531,14 +2531,21 @@ components:
             (07-databases.md section 3).
         engine:
           type: string
-          enum: [postgres]
+          enum: [postgres, kubernetes]
           nullable: true
-          description: Set on an engine image, null on any other.
+          description: >-
+            Set on an engine image, null on any other. `postgres` is a database
+            engine (07-databases.md); `kubernetes` is the node image of the
+            Kubernetes module (08-kubernetes.md) and is never offered as a
+            database.
         engine_version:
           type: string
           example: '18'
           nullable: true
-          description: Engine major version. Set on an engine image, null on any other.
+          description: >-
+            The version the engine is identified by: Postgres' major (`18`),
+            Kubernetes' minor (`1.37`). Set on an engine image, null on any
+            other.
         source_url:
           type: string
           format: uri
@@ -2617,20 +2624,22 @@ components:
           enum: [user, engine]
           description: >-
             Omit it to import an ordinary image, which is how it defaults.
-            `engine` imports a golden
-            image for the databases module and requires `engine` and
-            `engine_version`; both are refused without it.
+            `engine` imports a golden image for the databases or the
+            Kubernetes module and requires `engine` and `engine_version`;
+            both are refused without it.
         engine:
           type: string
-          enum: [postgres]
+          enum: [postgres, kubernetes]
           description: 'Required with `kind: engine`, refused otherwise.'
         engine_version:
           type: string
-          pattern: '^[0-9]{1,3}$'
+          pattern: '^([0-9]{1,3}|1\.[0-9]{1,3})$'
           example: '18'
           description: >-
-            Engine major version, digits only. Required with `kind: engine`,
-            refused otherwise.
+            Required with `kind: engine`, refused otherwise. One precision per
+            engine, so two spellings cannot name the same one: Postgres by its
+            major, 1-3 digits (`18`, never `18.6`); Kubernetes by its minor
+            (`1.37`, never `1.37.2`).
         tags:
           $ref: '#/components/schemas/TagMap'
     UpdateImageRequest:

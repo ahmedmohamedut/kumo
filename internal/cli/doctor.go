@@ -20,6 +20,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/hypervisor/libvirt"
 	"github.com/ahmedmohamedut/kumo/internal/logging"
 	"github.com/ahmedmohamedut/kumo/internal/network"
+	"github.com/ahmedmohamedut/kumo/internal/service/image"
 	"github.com/ahmedmohamedut/kumo/internal/store"
 )
 
@@ -313,9 +314,18 @@ func checkDatabases(ctx context.Context, cfg *config.Config) check {
 	}
 	defer db.Close() //nolint:errcheck // a failed close does not change the verdict
 
-	rows, err := db.ListAvailableEngineImages(ctx)
+	all, err := db.ListAvailableEngineImages(ctx)
 	if err != nil {
 		return check{name: name, ok: true, warn: true, note: "cannot read images: " + err.Error()}
+	}
+	// Only the engines a DB instance can boot: a Kubernetes node image is an
+	// engine image too, and would otherwise satisfy this check on a node that
+	// cannot create a single database.
+	rows := all[:0]
+	for _, row := range all {
+		if row.Engine.Valid && image.Engine(row.Engine.String).IsDatabase() {
+			rows = append(rows, row)
+		}
 	}
 	if len(rows) == 0 {
 		return check{

@@ -197,7 +197,8 @@ the port answers from outside the guest, and booting does not modify the
 published file. `packaging/images/postgres-18/README.md` has the details.
 
 Publish the `.qcow2` and its `.sha256` where this node can fetch them over
-HTTP, then import it as an **engine** image. The console's import form does not
+HTTP (gzipped as `.qcow2.gz` or not: the import decompresses a gzipped download,
+and the checksum is then of the `.gz`), then import it as an **engine** image. The console's import form does not
 offer the engine fields, so this one import goes through the API:
 
 ```bash
@@ -218,7 +219,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/v1/images/import \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{
     "name": "postgres-18",
-    "source_url": "https://your-mirror/kumo-postgres-18-20261105.qcow2",
+    "source_url": "https://your-mirror/kumo-postgres-18-20261105.qcow2.gz",
     "checksum": {"algorithm": "sha256", "value": "<the .sha256 beside it>"},
     "os_family": "linux", "architecture": "x86_64", "default_user": "ubuntu",
     "min_disk_gb": 6,

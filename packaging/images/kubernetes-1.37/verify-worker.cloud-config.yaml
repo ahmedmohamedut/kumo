@@ -1,0 +1,58 @@
+#cloud-config
+# Hand-written stand-in for the worker seed kumod will render
+# (docs/design/08-kubernetes.md §4, M8.2). Read by ./verify.sh only.
+#
+# It joins with the fixed token of verify-controlplane.cloud-config.yaml and
+# skips CA pinning, where the real seed pins the CA hash of the PKI kumod
+# generated (M8.2). The control plane may not be up yet when this boots, so the
+# join is retried until it is.
+#
+#   node        w1, 10.250.0.11 on the verify network (no route anywhere else)
+
+ssh_pwauth: false
+manage_etc_hosts: false
+
+write_files:
+  - path: /etc/hosts
+    append: true
+    content: |
+      10.250.0.10 api.verify.kumo
+
+  - path: /run/kumo-verify/join.yaml
+    permissions: '0600'
+    content: |
+      apiVersion: @KUBEADM_API@
+      kind: JoinConfiguration
+      discovery:
+        bootstrapToken:
+          apiServerEndpoint: api.verify.kumo:6443
+          token: kumovf.0123456789abcdef
+          unsafeSkipCAVerification: true
+      nodeRegistration:
+        name: w1
+        criSocket: unix:///var/run/crio/crio.sock
+
+  - path: /run/kumo-verify/run.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      export LC_ALL=C
+      LOG=/var/log/kumo-verify.log
+      say() { printf '%s\n' "$*" >/dev/console; }
+      trap 'tail -30 "$LOG" >/dev/console 2>&1 || true; say ""; say "KUMO-K8S-JOIN-FAILED"' ERR
+
+      api=$(kubeadm config print init-defaults 2>/dev/null | awk '/^apiVersion: kubeadm/ {print $2; exit}')
+      sed -i "s|@KUBEADM_API@|$api|" /run/kumo-verify/join.yaml
+
+      deadline=$((SECONDS + 900))
+      until kubeadm join --config /run/kumo-verify/join.yaml >>"$LOG" 2>&1; do
+      	[ "$SECONDS" -lt "$deadline" ] || false
+      	kubeadm reset -f >>"$LOG" 2>&1 || true
+      	sleep 15
+      done
+      say ""
+      say "KUMO-K8S-JOINED"
+
+runcmd:
+  - [bash, /run/kumo-verify/run.sh]
