@@ -122,3 +122,26 @@ func (h *Handler) sparkClientConfig(c *gin.Context) {
 		ClientConfig: conf.Value(), Filename: "kumo-" + c.Param("id") + ".conf",
 	})
 }
+
+// scaleSparkNodeGroup answers PATCH /spark/clusters/{id}/node-groups/{ng}:
+// 202 and a spark.scale task, or 200 with the cluster unchanged when the size
+// already is the one asked for (09-spark.md section 4).
+func (h *Handler) scaleSparkNodeGroup(c *gin.Context) {
+	var req scaleNodeGroupRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.DesiredSize == nil {
+		WriteError(c, h.logger, Invalid("the request body is not acceptable",
+			FieldError{Field: "desired_size", Reason: "is required"}))
+		return
+	}
+	scaled, err := h.sparkClusters.Scale(c.Request.Context(), c.Param("id"), c.Param("ng"), *req.DesiredSize)
+	if err != nil {
+		WriteError(c, h.logger, err)
+		return
+	}
+	if scaled.TaskID == nil {
+		c.JSON(http.StatusOK, scaled)
+		return
+	}
+	c.Header("Location", "/api/v1/tasks/"+*scaled.TaskID)
+	c.JSON(http.StatusAccepted, scaled)
+}

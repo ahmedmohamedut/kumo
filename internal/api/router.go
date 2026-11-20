@@ -342,6 +342,7 @@ func (h *Handler) Router() *gin.Engine {
 		write.POST("/clusters", h.createSparkCluster)
 		write.DELETE("/clusters/:id", h.deleteSparkCluster)
 		write.POST("/clusters/:id/client-config", h.sparkClientConfig)
+		write.PATCH("/clusters/:id/node-groups/:ng", h.scaleSparkNodeGroup)
 	}
 
 	// Host capacity. A launch form shows it next to the instance type, so both

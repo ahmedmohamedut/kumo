@@ -152,8 +152,12 @@ type Options struct {
 	PollInterval  time.Duration
 	// DrainTimeout bounds a worker's decommission (S13), written into its seed.
 	DrainTimeout time.Duration
-	Locks        *locks.Set
-	Now          func() time.Time
+	// DecommissionWait is how long a scale-down waits for a worker's VM to
+	// power off before forcing it: the drain timeout plus a minute for the
+	// OS's own shutdown, by default.
+	DecommissionWait time.Duration
+	Locks            *locks.Set
+	Now              func() time.Time
 }
 
 // Service owns Spark clusters.
@@ -171,6 +175,7 @@ type Service struct {
 	readyTimeout time.Duration
 	pollInterval time.Duration
 	drainTimeout time.Duration
+	decommWait   time.Duration
 	locks        *locks.Set
 	now          func() time.Time
 	health       *managedcluster.Health
@@ -217,6 +222,9 @@ func New(opts Options) (*Service, error) {
 	if opts.DrainTimeout <= 0 {
 		opts.DrainTimeout = DefaultDrainTimeout
 	}
+	if opts.DecommissionWait <= 0 {
+		opts.DecommissionWait = opts.DrainTimeout + drainMargin
+	}
 	if opts.S3Region == "" {
 		opts.S3Region = DefaultS3Region
 	}
@@ -230,7 +238,7 @@ func New(opts Options) (*Service, error) {
 		logger: opts.Logger, store: opts.Store, hv: opts.Hypervisor, instances: opts.Instances,
 		tasks: opts.Tasks, objects: opts.ObjectStore, s3Endpoint: opts.S3Endpoint, s3Region: opts.S3Region,
 		dataDir: opts.DataDir, api: opts.API, readyTimeout: opts.ReadyTimeout, pollInterval: opts.PollInterval,
-		drainTimeout: opts.DrainTimeout, locks: opts.Locks, now: opts.Now,
+		drainTimeout: opts.DrainTimeout, decommWait: opts.DecommissionWait, locks: opts.Locks, now: opts.Now,
 		health: managedcluster.NewHealth(opts.ProbeInterval, opts.Now),
 	}, nil
 }
@@ -246,6 +254,7 @@ func (s *Service) Handler() map[string]worker.Handler {
 	return map[string]worker.Handler{
 		task.TypeSparkClusterCreate: worker.HandlerFunc(s.CreateHandler),
 		task.TypeSparkClusterDelete: worker.HandlerFunc(s.DeleteHandler),
+		task.TypeSparkClusterScale:  worker.HandlerFunc(s.ScaleHandler),
 	}
 }
 

@@ -111,6 +111,9 @@ type harness struct {
 type options struct {
 	objects    bool
 	s3Endpoint string
+	// ignoreShutdown makes every guest ignore an ACPI shutdown, a worker
+	// that would never finish its decommission.
+	ignoreShutdown bool
 }
 
 func newHarness(t *testing.T, opt ...options) harness {
@@ -121,7 +124,8 @@ func newHarness(t *testing.T, opt ...options) harness {
 	}
 	ctx := t.Context()
 	db := storetest.New(t)
-	hv := fake.New(fake.Config{Capacity: hypervisor.Capacity{VCPUs: 16, MemoryBytes: 64 << 30, DiskBytes: 500 << 30}})
+	hv := fake.New(fake.Config{IgnoreShutdown: o.ignoreShutdown,
+		Capacity: hypervisor.Capacity{VCPUs: 16, MemoryBytes: 64 << 30, DiskBytes: 500 << 30}})
 	if err := hv.EnsureInfra(ctx, hypervisor.InfraConfig{
 		ImagesPool: imagesPool, InstancesPool: instancesPool, Network: "kumo-default", DataDir: t.TempDir(),
 	}); err != nil {
@@ -168,7 +172,7 @@ func newHarness(t *testing.T, opt ...options) harness {
 		Store:  db, Hypervisor: hv, Instances: instances, Tasks: tasks, ObjectStore: store,
 		S3Endpoint: o.s3Endpoint, DataDir: dataDir, API: m.factory,
 		ReadyTimeout: 100 * time.Millisecond, PollInterval: time.Millisecond, ProbeInterval: time.Minute,
-		Now: clock,
+		DecommissionWait: 50 * time.Millisecond, Now: clock,
 	})
 	if err != nil {
 		t.Fatal(err)

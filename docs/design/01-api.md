@@ -490,6 +490,7 @@ The module of `09-spark.md`. Every `/spark` route answers `503 unavailable` when
 | POST | `/spark/clusters` | (admin) Create → `202` with the cluster `creating` and `Location: /api/v1/tasks/<id>` |
 | GET | `/spark/clusters/{id}` | Detail: the master URL, the web UIs, the buckets, the node group and every node with what the master last said of it (`alive`) |
 | DELETE | `/spark/clusters/{id}` | (admin) → `202`, state `deleting`. Allowed from every state except `deleting`. The buckets and their event logs are kept |
+| PATCH | `/spark/clusters/{id}/node-groups/{ng}` | (admin) `{desired_size}` 1–10 → `202` with the cluster `updating` and a `spark.scale` task; `200` unchanged when the size already is that one. `409` unless `active` or `degraded`; `429` when a scale up does not fit, with nothing changed. Down decommissions the newest workers through a graceful shutdown; one that does not power off within the drain timeout is forced off and the cluster ends `degraded` naming it |
 | POST | `/spark/clusters/{id}/client-config` | (admin) The client `spark-defaults.conf`: the master URL, the cluster's secret, encryption, and with object storage the cluster's S3 key and event-log location (`09-spark.md` §5). Returned with `Cache-Control: no-store`. `409` until the cluster is active |
 
 ```json

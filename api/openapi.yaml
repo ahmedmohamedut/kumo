@@ -1832,6 +1832,78 @@ paths:
           $ref: '#/components/responses/Conflict'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /spark/clusters/{id}/node-groups/{ng}:
+    parameters:
+      - $ref: '#/components/parameters/SparkClusterID'
+      - name: ng
+        in: path
+        description: Node group id.
+        required: true
+        schema:
+          type: string
+          pattern: '^ng-[0-9a-f]{17}$'
+    patch:
+      tags: [Spark]
+      operationId: scaleSparkNodeGroup
+      summary: Resize a Spark node group
+      description: |
+        Sets `desired_size` (1-10) and answers `202` with the cluster
+        `updating` and a `spark.scale` task, or `200` with the cluster
+        unchanged when the size already is that one. `409` unless the cluster
+        is `active` or `degraded`, so one scale runs at a time.
+
+        **Up:** the new workers are reserved now, in one transaction with the
+        new size, so a size the node cannot hold is `429` with nothing
+        changed; the task builds them and waits until each is registered.
+        **Down:** the newest workers go first, each through a graceful
+        shutdown that decommissions it -- Spark moves its blocks and lets its
+        tasks finish -- bounded by KUMO_SPARK_DRAIN_TIMEOUT. A worker whose VM
+        is still running past that is forced off and removed all the same,
+        and the cluster ends `degraded` naming it (09-spark.md section 4).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [desired_size]
+              properties:
+                desired_size:
+                  type: integer
+                  minimum: 1
+                  maximum: 10
+      responses:
+        '200':
+          description: The size was already that one; nothing was queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SparkCluster'
+        '202':
+          description: The scale was accepted.
+          headers:
+            Location:
+              description: The task that tracks the scale.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SparkCluster'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /spark/clusters/{id}/client-config:
     parameters:
       - $ref: '#/components/parameters/SparkClusterID'

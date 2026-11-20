@@ -1053,6 +1053,43 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/spark/clusters/{id}/node-groups/{ng}': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Spark cluster id. */
+        id: components['parameters']['SparkClusterID']
+        /** @description Node group id. */
+        ng: string
+      }
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    /**
+     * Resize a Spark node group
+     * @description Sets `desired_size` (1-10) and answers `202` with the cluster
+     *     `updating` and a `spark.scale` task, or `200` with the cluster
+     *     unchanged when the size already is that one. `409` unless the cluster
+     *     is `active` or `degraded`, so one scale runs at a time.
+     *
+     *     **Up:** the new workers are reserved now, in one transaction with the
+     *     new size, so a size the node cannot hold is `429` with nothing
+     *     changed; the task builds them and waits until each is registered.
+     *     **Down:** the newest workers go first, each through a graceful
+     *     shutdown that decommissions it -- Spark moves its blocks and lets its
+     *     tasks finish -- bounded by KUMO_SPARK_DRAIN_TIMEOUT. A worker whose VM
+     *     is still running past that is forced off and removed all the same,
+     *     and the cluster ends `degraded` naming it (09-spark.md section 4).
+     */
+    patch: operations['scaleSparkNodeGroup']
+    trace?: never
+  }
   '/spark/clusters/{id}/client-config': {
     parameters: {
       query?: never
@@ -4298,6 +4335,55 @@ export interface operations {
       403: components['responses']['PermissionDenied']
       404: components['responses']['NotFound']
       409: components['responses']['Conflict']
+      503: components['responses']['Unavailable']
+    }
+  }
+  scaleSparkNodeGroup: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Spark cluster id. */
+        id: components['parameters']['SparkClusterID']
+        /** @description Node group id. */
+        ng: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': {
+          desired_size: number
+        }
+      }
+    }
+    responses: {
+      /** @description The size was already that one; nothing was queued. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SparkCluster']
+        }
+      }
+      /** @description The scale was accepted. */
+      202: {
+        headers: {
+          /** @description The task that tracks the scale. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SparkCluster']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+      429: components['responses']['TooManyRequests']
       503: components['responses']['Unavailable']
     }
   }
