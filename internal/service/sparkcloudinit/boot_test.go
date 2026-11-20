@@ -23,12 +23,11 @@ package sparkcloudinit_test
 
 import (
 	"bufio"
-	"encoding/json"
+	"context"
 	"fmt"
 	"io"
 	"math/rand/v2"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,6 +40,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/ahmedmohamedut/kumo/internal/service/sparkcloudinit"
+	"github.com/ahmedmohamedut/kumo/internal/sparkapi"
 )
 
 const (
@@ -147,7 +147,7 @@ func TestSeedsBootASparkClusterOnTheImage(t *testing.T) {
 	// The master answers kumod's readiness read with both workers ALIVE.
 	waitUntil(t, deadline, vms, "both workers ALIVE in the master's /json/", func() bool {
 		st, err := masterStatus(uiPort)
-		return err == nil && st.Status == "ALIVE" && st.alive() == 2
+		return err == nil && st.Alive() && len(st.AliveWorkers()) == 2
 	})
 	t.Logf("master ALIVE with 2 workers after %s", time.Since(start).Round(time.Second))
 
@@ -340,37 +340,16 @@ ethernets:
 	return cfg
 }
 
-type masterJSON struct {
-	Status  string `json:"status"`
-	Workers []struct {
-		Host  string `json:"host"`
-		State string `json:"state"`
-	} `json:"workers"`
-}
-
-func (m masterJSON) alive() int {
-	n := 0
-	for _, w := range m.Workers {
-		if w.State == "ALIVE" {
-			n++
-		}
-	}
-	return n
-}
-
-func masterStatus(port int) (masterJSON, error) {
-	var st masterJSON
-	c := http.Client{Timeout: 3 * time.Second}
-	resp, err := c.Get(fmt.Sprintf("http://127.0.0.1:%d/json/", port))
+// masterStatus reads the master through internal/sparkapi, the client kumod's
+// health pass uses (M9.4), so this run is that client's test against a real
+// Spark 4.3 master as well.
+func masterStatus(port int) (sparkapi.Status, error) {
+	c, err := sparkapi.New(sparkapi.Config{Address: fmt.Sprintf("127.0.0.1:%d", port), Timeout: 3 * time.Second})
 	if err != nil {
-		return st, err
+		return sparkapi.Status{}, err
 	}
-	defer resp.Body.Close() //nolint:errcheck // a read-only body
-	if resp.StatusCode != http.StatusOK {
-		return st, fmt.Errorf("status %d", resp.StatusCode) //nolint:err113 // a test's diagnostic
-	}
-	err = json.NewDecoder(resp.Body).Decode(&st)
-	return st, err
+	defer c.Close()
+	return c.Status(context.Background())
 }
 
 type vm struct {
