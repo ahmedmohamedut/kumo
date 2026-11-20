@@ -63,25 +63,29 @@ describe('activeHref', () => {
 })
 
 describe('navigationFor', () => {
-  const sections = (objectStorage: boolean, databases = true) =>
-    navigationFor({ objectStorage, databases }).flatMap((entry) =>
+  const sections = (objectStorage: boolean, databases = true, kubernetes = true) =>
+    navigationFor({ objectStorage, databases, kubernetes }).flatMap((entry) =>
       entry.type === 'section' ? [entry.text] : [],
     )
 
   it('adds Storage when object storage is on', () => {
-    expect(sections(true)).toEqual(['Compute', 'Networking', 'Storage', 'Databases'])
+    expect(sections(true)).toEqual(['Compute', 'Networking', 'Storage', 'Databases', 'Kubernetes'])
   })
 
   it('leaves Storage out when it is off', () => {
-    expect(sections(false)).toEqual(['Compute', 'Networking', 'Databases'])
+    expect(sections(false)).toEqual(['Compute', 'Networking', 'Databases', 'Kubernetes'])
   })
 
   it('leaves Databases out when the module is off', () => {
-    expect(sections(true, false)).toEqual(['Compute', 'Networking', 'Storage'])
+    expect(sections(true, false)).toEqual(['Compute', 'Networking', 'Storage', 'Kubernetes'])
   })
 
-  // A node with neither module is the smallest console there is.
-  it('keeps Compute and Networking with both modules off', () => {
-    expect(sections(false, false)).toEqual(['Compute', 'Networking'])
+  it('leaves Kubernetes out when the module is off', () => {
+    expect(sections(true, true, false)).toEqual(['Compute', 'Networking', 'Storage', 'Databases'])
+  })
+
+  // A node with no optional module is the smallest console there is.
+  it('keeps Compute and Networking with every module off', () => {
+    expect(sections(false, false, false)).toEqual(['Compute', 'Networking'])
   })
 })

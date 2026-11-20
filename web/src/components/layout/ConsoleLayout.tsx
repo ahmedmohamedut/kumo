@@ -23,6 +23,7 @@ const SERVICE_HOME: Record<string, string> = {
   storage: '/buckets',
   network: '/vpcs',
   database: '/databases',
+  kubernetes: '/kubernetes',
 }
 
 /**
@@ -31,7 +32,11 @@ const SERVICE_HOME: Record<string, string> = {
  * the module has been turned off.
  */
 function servicesMenu(
-  { objectStorage, databases }: { objectStorage: boolean; databases: boolean },
+  {
+    objectStorage,
+    databases,
+    kubernetes,
+  }: { objectStorage: boolean; databases: boolean; kubernetes: boolean },
   onOpen: (href: string) => void,
 ): Utilities {
   return [
@@ -47,6 +52,9 @@ function servicesMenu(
         databases
           ? { id: 'database', text: 'Databases', description: 'Managed Postgres' }
           : { id: 'database', text: 'Databases', description: 'Turned off', disabled: true },
+        kubernetes
+          ? { id: 'kubernetes', text: 'Kubernetes', description: 'Kubernetes clusters' }
+          : { id: 'kubernetes', text: 'Kubernetes', description: 'Turned off', disabled: true },
         { id: 'network', text: 'Network', description: 'VPCs and subnets' },
       ],
       onItemClick: ({ detail }) => {
@@ -106,9 +114,11 @@ export function ConsoleLayout() {
   // section rather than hiding it: a node that is still loading its info is
   // far more likely to have databases than not.
   const databases = info === undefined || info.databases.enabled
+  // Kubernetes is on by default too, and reads the same way while loading.
+  const kubernetes = info === undefined || info.kubernetes.enabled
   const navigation = useMemo(
-    () => navigationFor({ objectStorage, databases }),
-    [objectStorage, databases],
+    () => navigationFor({ objectStorage, databases, kubernetes }),
+    [objectStorage, databases, kubernetes],
   )
 
   const [navigationOpen, setNavigationOpen] = useState(true)
@@ -125,8 +135,11 @@ export function ConsoleLayout() {
   // TopNavigation re-measures itself whenever `utilities` changes identity, so
   // the list has to be stable across renders.
   const utilities = useMemo(
-    () => [...servicesMenu({ objectStorage, databases }, navigate), ...userMenu(username, signOut)],
-    [objectStorage, databases, navigate, username, signOut],
+    () => [
+      ...servicesMenu({ objectStorage, databases, kubernetes }, navigate),
+      ...userMenu(username, signOut),
+    ],
+    [objectStorage, databases, kubernetes, navigate, username, signOut],
   )
 
   return (

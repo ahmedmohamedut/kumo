@@ -30,6 +30,17 @@ const databasesSection: NavItem = {
 }
 
 /**
+ * The Kubernetes section (08-kubernetes.md). Shown unless the module is off;
+ * with no image the pages explain the import, as Databases do.
+ */
+const kubernetesSection: NavItem = {
+  type: 'section',
+  text: 'Kubernetes',
+  defaultExpanded: true,
+  items: [{ type: 'link', text: 'Clusters', href: '/kubernetes' }],
+}
+
+/**
  * Side navigation from 03-frontend.md §2: every section a node can have.
  * activeHref matches against all of it, so a Storage page is still the active
  * entry while the system info that reveals the section is loading.
@@ -58,6 +69,7 @@ export const navigationItems: ReadonlyArray<NavItem> = [
   },
   storageSection,
   databasesSection,
+  kubernetesSection,
 ]
 
 /**
@@ -68,13 +80,17 @@ export const navigationItems: ReadonlyArray<NavItem> = [
 export function navigationFor({
   objectStorage,
   databases,
+  kubernetes = true,
 }: {
   objectStorage: boolean
   databases: boolean
+  kubernetes?: boolean
 }): NavItem[] {
   return navigationItems.filter(
     (entry) =>
-      (objectStorage || entry !== storageSection) && (databases || entry !== databasesSection),
+      (objectStorage || entry !== storageSection) &&
+      (databases || entry !== databasesSection) &&
+      (kubernetes || entry !== kubernetesSection),
   )
 }
 
