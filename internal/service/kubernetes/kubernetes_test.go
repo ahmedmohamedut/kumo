@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,6 +56,17 @@ type cluster struct {
 	notReady map[string]bool
 	tokens   []k8spki.BootstrapToken
 	conns    []kubernetes.Connection
+	// pods are the pods on each node, for a drain; blocked are the ones a
+	// disruption budget protects; calls is every drain call, in order.
+	pods    map[string][]k8sapi.Pod
+	blocked map[string]bool
+	calls   []string
+}
+
+func (c *cluster) record(call string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, call)
 }
 
 func (c *cluster) factory(conn kubernetes.Connection) (kubernetes.ClusterAPI, error) {
@@ -109,11 +121,45 @@ func (s *scripted) CreateBootstrapToken(_ context.Context, tok k8spki.BootstrapT
 	s.c.tokens = append(s.c.tokens, tok)
 	return nil
 }
-func (s *scripted) Cordon(context.Context, string) error                     { return nil }
-func (s *scripted) PodsOnNode(context.Context, string) ([]k8sapi.Pod, error) { return nil, nil }
-func (s *scripted) Evict(context.Context, string, string) error              { return nil }
-func (s *scripted) DeleteNode(context.Context, string) error                 { return nil }
-func (s *scripted) Close()                                                   {}
+func (s *scripted) Cordon(_ context.Context, node string) error {
+	s.c.record("cordon " + node)
+	return nil
+}
+
+func (s *scripted) PodsOnNode(_ context.Context, node string) ([]k8sapi.Pod, error) {
+	s.c.mu.Lock()
+	defer s.c.mu.Unlock()
+	return append([]k8sapi.Pod(nil), s.c.pods[node]...), nil
+}
+
+func (s *scripted) Evict(_ context.Context, ns, pod string) error {
+	s.c.mu.Lock()
+	blocked := s.c.blocked[ns+"/"+pod]
+	s.c.mu.Unlock()
+	if blocked {
+		s.c.record("refused " + ns + "/" + pod)
+		return fmt.Errorf("%w: %s/%s", k8sapi.ErrEvictionBlocked, ns, pod)
+	}
+	s.c.record("evict " + ns + "/" + pod)
+	s.c.mu.Lock()
+	defer s.c.mu.Unlock()
+	for node, pods := range s.c.pods {
+		kept := pods[:0]
+		for _, p := range pods {
+			if p.Namespace != ns || p.Name != pod {
+				kept = append(kept, p)
+			}
+		}
+		s.c.pods[node] = kept
+	}
+	return nil
+}
+
+func (s *scripted) DeleteNode(_ context.Context, node string) error {
+	s.c.record("delete " + node)
+	return nil
+}
+func (s *scripted) Close() {}
 
 type harness struct {
 	svc       *kubernetes.Service
@@ -168,13 +214,14 @@ func newHarness(t *testing.T) harness {
 		t.Fatal(err)
 	}
 
-	api := &cluster{ready: true, notReady: map[string]bool{}}
+	api := &cluster{ready: true, notReady: map[string]bool{}, pods: map[string][]k8sapi.Pod{}, blocked: map[string]bool{}}
 	dataDir := t.TempDir()
 	svc, err := kubernetes.New(kubernetes.Options{
 		Logger: logging.Discard(), Store: db, Hypervisor: hv, Instances: instances, Tasks: tasks,
 		DataDir: dataDir, API: api.factory,
 		ReadyTimeout: 100 * time.Millisecond, PollInterval: time.Millisecond, ProbeInterval: time.Minute,
-		Now: func() time.Time { return now },
+		DrainTimeout: 50 * time.Millisecond,
+		Now:          func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatal(err)

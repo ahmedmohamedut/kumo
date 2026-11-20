@@ -916,6 +916,44 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/eks/clusters/{id}/node-groups/{ng}': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Kubernetes cluster id. */
+        id: components['parameters']['ClusterID']
+        /** @description Node group id. */
+        ng: string
+      }
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    /**
+     * Resize a node group
+     * @description Sets `desired_size` (1-10) and answers `202` with the cluster
+     *     `updating` and a `k8s.scale` task, or `200` with the cluster unchanged
+     *     when the size already is that one. `409` unless the cluster is
+     *     `active` or `degraded`, so one scale runs at a time.
+     *
+     *     **Up:** the new workers are reserved now, in one transaction with the
+     *     new size, so a size the node cannot hold is `429` with nothing
+     *     changed; the task builds them and joins them with a fresh token.
+     *     **Down:** the newest workers go first, each cordoned and drained
+     *     through the Eviction API, which honors PodDisruptionBudgets.
+     *     DaemonSet and static pods go with the node. A drain a budget holds
+     *     for 5 minutes stops the scale: the node is kept, cordoned, and the
+     *     cluster is `degraded` naming the pods. A scale never deletes past a
+     *     budget (08-kubernetes.md section 4).
+     */
+    patch: operations['scaleNodeGroup']
+    trace?: never
+  }
   '/eks/clusters/{id}/kubeconfig': {
     parameters: {
       query?: never
@@ -1766,7 +1804,7 @@ export interface components {
       items: components['schemas']['DBInstance'][]
     }
     /**
-     * @description `degraded` is a cluster whose control plane answers while something is wrong -- a node not Ready, or three health checks in a row failed -- with the reason in `state_reason`. `updating` is a scale in progress (M8.6).
+     * @description `degraded` is a cluster whose control plane answers while something is wrong -- a node not Ready, or three health checks in a row failed -- with the reason in `state_reason`. `updating` is a scale in progress.
      * @enum {string}
      */
     ClusterState: 'creating' | 'active' | 'updating' | 'degraded' | 'deleting' | 'failed'
@@ -3874,6 +3912,55 @@ export interface operations {
       }
       401: components['responses']['Unauthorized']
       404: components['responses']['NotFound']
+      503: components['responses']['Unavailable']
+    }
+  }
+  scaleNodeGroup: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Kubernetes cluster id. */
+        id: components['parameters']['ClusterID']
+        /** @description Node group id. */
+        ng: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': {
+          desired_size: number
+        }
+      }
+    }
+    responses: {
+      /** @description The size was already that one; nothing was queued. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Cluster']
+        }
+      }
+      /** @description The scale was accepted. */
+      202: {
+        headers: {
+          /** @description The task that tracks the scale. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Cluster']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+      429: components['responses']['TooManyRequests']
       503: components['responses']['Unavailable']
     }
   }

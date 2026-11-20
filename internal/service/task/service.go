@@ -61,6 +61,9 @@ const (
 	// TypeK8sClusterDelete removes every node, the endpoint record, the rows
 	// and, last, the cluster's PKI.
 	TypeK8sClusterDelete = "k8s.delete"
+	// TypeK8sClusterScale resizes a node group: new workers built and joined,
+	// or the newest drained and removed.
+	TypeK8sClusterScale = "k8s.scale"
 )
 
 // State is the lifecycle of a task. The values mirror the CHECK constraint on

@@ -96,3 +96,15 @@ DELETE FROM k8s_nodes WHERE instance_id = ?1;
 -- instance service's to delete, before this, in the same transaction.
 -- name: DeleteK8sCluster :exec
 DELETE FROM k8s_clusters WHERE id = ?1;
+
+-- A scale's new size. The node rows the scale adds or removes change in the
+-- same transaction.
+-- name: SetK8sNodeGroupSize :one
+UPDATE k8s_node_groups
+SET desired_size = ?2,
+    updated_at = ?3
+WHERE id = ?1
+RETURNING *;
+
+-- name: GetK8sNodeGroup :one
+SELECT * FROM k8s_node_groups WHERE id = ?1 AND cluster_id = ?2;

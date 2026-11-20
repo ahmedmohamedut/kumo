@@ -84,7 +84,8 @@ func newClusterRouter(t *testing.T, on bool) clusterRouter {
 		t.Fatal(err)
 	}
 	tasks, _ := task.New(task.Options{Store: db})
-	hv := fake.New(fake.Config{})
+	// 32 GiB, so a cluster of kumo.medium nodes has room to scale.
+	hv := fake.New(fake.Config{Capacity: hypervisor.Capacity{VCPUs: 16, MemoryBytes: 32 << 30, DiskBytes: 500 << 30}})
 	if err := hv.EnsureInfra(t.Context(), hypervisor.InfraConfig{
 		ImagesPool: imagesPool, InstancesPool: instancesPool, Network: networkName, DataDir: t.TempDir(),
 	}); err != nil {
@@ -356,5 +357,44 @@ func TestKubernetesOff(t *testing.T) {
 		if r.Code != http.StatusServiceUnavailable || !strings.Contains(r.Body.String(), "KUMO_KUBERNETES") {
 			t.Errorf("%s %s with the module off = %d %s, want 503 naming the switch", w.method, w.path, r.Code, r.Body)
 		}
+	}
+}
+
+// A node group is resized through PATCH: 202 and a task that ends active with
+// the new workers, 200 unchanged for the same size, 400 out of range, 403 for
+// a viewer.
+func TestScaleNodeGroup(t *testing.T) {
+	t.Parallel()
+	cr := newClusterRouter(t, true)
+	c := createActiveCluster(t, cr)
+	path := "/api/v1/eks/clusters/" + c.ID + "/node-groups/" + c.NodeGroups[0].ID
+
+	recorder := doWithToken(t, cr.router, http.MethodPatch, path, `{"desired_size":3}`, cr.tokens.access)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("PATCH = %d (%s)", recorder.Code, recorder.Body)
+	}
+	var scaled clusterBody
+	decode(t, recorder, &scaled)
+	if scaled.State != "updating" || scaled.TaskID == nil {
+		t.Fatalf("scaled = %+v", scaled)
+	}
+	waitForTaskState(t, cr.router, cr.tokens.access, *scaled.TaskID, "succeeded")
+	var after clusterBody
+	decode(t, doWithToken(t, cr.router, http.MethodGet, "/api/v1/eks/clusters/"+c.ID, "", cr.tokens.access), &after)
+	if after.State != "active" || after.NodeGroups[0].DesiredSize != 3 || len(after.Nodes) != 4 {
+		t.Errorf("after the scale: %s, desired %d, %d nodes", after.State, after.NodeGroups[0].DesiredSize, len(after.Nodes))
+	}
+
+	if r := doWithToken(t, cr.router, http.MethodPatch, path, `{"desired_size":3}`, cr.tokens.access); r.Code != http.StatusOK {
+		t.Errorf("PATCH to the same size = %d, want 200", r.Code)
+	}
+	for _, body := range []string{`{}`, `{"desired_size":0}`, `{"desired_size":11}`} {
+		if r := doWithToken(t, cr.router, http.MethodPatch, path, body, cr.tokens.access); r.Code != http.StatusBadRequest {
+			t.Errorf("PATCH %s = %d, want 400", body, r.Code)
+		}
+	}
+	viewer, _ := cr.signer.IssueAccessToken("01J00000000000000000000000", auth.RoleViewer)
+	if r := doWithToken(t, cr.router, http.MethodPatch, path, `{"desired_size":1}`, viewer.Token); r.Code != http.StatusForbidden {
+		t.Errorf("PATCH as a viewer = %d, want 403", r.Code)
 	}
 }

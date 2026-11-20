@@ -147,6 +147,9 @@ type Options struct {
 	// PollInterval is how often a create polls a starting cluster; tests
 	// shorten it.
 	PollInterval time.Duration
+	// DrainTimeout bounds the drain of one node in a scale down;
+	// DefaultDrainTimeout when zero.
+	DrainTimeout time.Duration
 	Locks        *locks.Set
 	Now          func() time.Time
 }
@@ -163,6 +166,7 @@ type Service struct {
 	readyTimeout  time.Duration
 	probeInterval time.Duration
 	pollInterval  time.Duration
+	drainTimeout  time.Duration
 	locks         *locks.Set
 	now           func() time.Time
 
@@ -213,6 +217,9 @@ func New(opts Options) (*Service, error) {
 	if opts.PollInterval <= 0 {
 		opts.PollInterval = 10 * time.Second
 	}
+	if opts.DrainTimeout <= 0 {
+		opts.DrainTimeout = DefaultDrainTimeout
+	}
 	if opts.Locks == nil {
 		opts.Locks = locks.New()
 	}
@@ -230,6 +237,7 @@ func New(opts Options) (*Service, error) {
 		readyTimeout:  opts.ReadyTimeout,
 		probeInterval: opts.ProbeInterval,
 		pollInterval:  opts.PollInterval,
+		drainTimeout:  opts.DrainTimeout,
 		locks:         opts.Locks,
 		now:           opts.Now,
 		probedAt:      map[string]time.Time{},
@@ -246,6 +254,7 @@ func (s *Service) Handler() map[string]worker.Handler {
 	return map[string]worker.Handler{
 		task.TypeK8sClusterCreate: worker.HandlerFunc(s.CreateHandler),
 		task.TypeK8sClusterDelete: worker.HandlerFunc(s.DeleteHandler),
+		task.TypeK8sClusterScale:  worker.HandlerFunc(s.ScaleHandler),
 	}
 }
 

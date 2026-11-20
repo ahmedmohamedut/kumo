@@ -106,6 +106,34 @@ func (h *Handler) listNodeGroups(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": found.NodeGroups})
 }
 
+// scaleNodeGroupRequest is the body of PATCH /eks/clusters/{id}/node-groups/{ng}.
+type scaleNodeGroupRequest struct {
+	DesiredSize *int `json:"desired_size"`
+}
+
+// scaleNodeGroup answers PATCH /eks/clusters/{id}/node-groups/{ng}: 202 and a
+// k8s.scale task, or 200 with the cluster unchanged when the size already is
+// the one asked for (08-kubernetes.md section 4).
+func (h *Handler) scaleNodeGroup(c *gin.Context) {
+	var req scaleNodeGroupRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.DesiredSize == nil {
+		WriteError(c, h.logger, Invalid("the request body is not acceptable",
+			FieldError{Field: "desired_size", Reason: "is required"}))
+		return
+	}
+	scaled, err := h.clusters.Scale(c.Request.Context(), c.Param("id"), c.Param("ng"), *req.DesiredSize)
+	if err != nil {
+		WriteError(c, h.logger, err)
+		return
+	}
+	if scaled.TaskID == nil {
+		c.JSON(http.StatusOK, scaled)
+		return
+	}
+	c.Header("Location", "/api/v1/tasks/"+*scaled.TaskID)
+	c.JSON(http.StatusAccepted, scaled)
+}
+
 // deleteCluster answers DELETE /eks/clusters/{id}: 202 and a task.
 func (h *Handler) deleteCluster(c *gin.Context) {
 	queued, err := h.clusters.Delete(c.Request.Context(), c.Param("id"))
