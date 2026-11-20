@@ -9,6 +9,8 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"os/user"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,6 +65,13 @@ func runDoctor(ctx context.Context, out io.Writer) error {
 	checks = append(checks, checkObjectStore(ctx, cfg)...)
 	checks = append(checks, checkDatabases(ctx, cfg))
 
+	// Said before the results rather than after them: an operator who ran
+	// `kumod doctor` as themselves reads FAIL lines first otherwise, and
+	// those look like a broken install when they are only this account's.
+	if hint := accountHint(cfg.DataDir, os.Geteuid()); hint != "" {
+		fmt.Fprintf(out, "note  %-18s %s\n", "account", hint)
+	}
+
 	failed := 0
 	for _, c := range checks {
 		switch {
@@ -81,6 +90,39 @@ func runDoctor(ctx context.Context, out io.Writer) error {
 	}
 
 	return nil
+}
+
+// accountHint explains failures, and damage, that come from running doctor as
+// the wrong account. The data directory belongs to the service user (kumo, on a
+// packaged node) and holds files only that user may read, such as the 0600
+// signing key, so checks that pass for the service fail for anybody else. Root
+// reads everything, but the database and signing key doctor creates would then
+// belong to root and the service could not write them (install.md). It returns
+// "" when the account owns the directory or the owner cannot be read.
+func accountHint(dataDir string, euid int) string {
+	owner, ok := ownerUID(dataDir)
+	if !ok || owner == euid {
+		return ""
+	}
+
+	ownerName := strconv.Itoa(owner)
+	if u, err := user.LookupId(ownerName); err == nil {
+		ownerName = u.Username
+	}
+	run := "run: sudo -u " + ownerName + " kumod doctor"
+
+	if euid == 0 {
+		return fmt.Sprintf("running as root, but %s belongs to %s: files doctor "+
+			"creates there would belong to root and the service could not write "+
+			"them; %s", dataDir, ownerName, run)
+	}
+
+	self := strconv.Itoa(euid)
+	if u, err := user.LookupId(self); err == nil {
+		self = u.Username
+	}
+	return fmt.Sprintf("running as %s, but %s belongs to %s, so checks that read "+
+		"its files fail for this account only; %s", self, dataDir, ownerName, run)
 }
 
 // checkDataDir reports whether the data directory exists and is writable.
@@ -366,7 +408,7 @@ func checkLibvirt(ctx context.Context, cfg *config.Config) []check {
 // control plane still runs - images import, the console works - but no guest
 // will ever boot, so it is reported as a blocking problem with the fix.
 func checkKVM() check {
-	if libvirt.HasKVM() {
+	if libvirt.DevKVMPresent() {
 		return check{name: "/dev/kvm", ok: true, note: "present and accessible"}
 	}
 

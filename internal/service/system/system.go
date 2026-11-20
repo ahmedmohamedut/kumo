@@ -26,9 +26,11 @@ type HypervisorChecker interface {
 
 // KVMReporter is the optional half of a backend that knows whether hardware
 // acceleration is usable. libvirt implements it; the fake does not, so the
-// field is null there instead of guessing.
+// field is null there instead of guessing. An error means the backend could not
+// be asked, which also leaves the field null: the hypervisor's ok already says
+// the daemon is down, and false would claim something nobody measured.
 type KVMReporter interface {
-	HasKVM() bool
+	HasKVM(ctx context.Context) (bool, error)
 }
 
 // CapacityReporter is the optional half of a backend that can measure the host.
@@ -221,8 +223,12 @@ func (s *Service) Info(ctx context.Context) (Info, error) {
 	// A nil KVM means the backend has no opinion (the fake); a pointer to false
 	// is the important signal: the daemon is up but no guest can boot.
 	if reporter, ok := s.hypervisorPin.(KVMReporter); ok {
-		kvm := reporter.HasKVM()
-		info.Hypervisor.KVM = &kvm
+		kvm, err := reporter.HasKVM(ctx)
+		if err != nil {
+			s.logger.DebugContext(ctx, "cannot ask the hypervisor about KVM", "error", err)
+		} else {
+			info.Hypervisor.KVM = &kvm
+		}
 	}
 
 	return info, nil

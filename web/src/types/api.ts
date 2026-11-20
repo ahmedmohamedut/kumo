@@ -1180,8 +1180,11 @@ export interface components {
         type: 'fake' | 'libvirt'
         ok: boolean
         /**
-         * @description Whether `/dev/kvm` is usable. False means the control plane runs
-         *     but no instance can boot; launches fail as `unavailable`.
+         * @description Whether libvirt can run `kvm` domains, from its capabilities
+         *     (not a stat of `/dev/kvm`, which the packaged service's sandbox
+         *     hides). False means the control plane runs but no instance can
+         *     boot; launches fail as `unavailable`. Null when the backend
+         *     cannot be asked.
          */
         kvm?: boolean | null
       }

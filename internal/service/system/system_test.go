@@ -36,10 +36,11 @@ func (s stubHypervisor) Ping(context.Context) error { return s.err }
 // /dev/kvm is usable, which the fake cannot report.
 type stubKVM struct {
 	stubHypervisor
-	kvm bool
+	kvm    bool
+	kvmErr error
 }
 
-func (s stubKVM) HasKVM() bool { return s.kvm }
+func (s stubKVM) HasKVM(context.Context) (bool, error) { return s.kvm, s.kvmErr }
 
 func TestInfo(t *testing.T) {
 	t.Parallel()
@@ -123,6 +124,21 @@ func TestInfo(t *testing.T) {
 				Version:    "v0.0.1",
 				NeedsSetup: false,
 				Hypervisor: system.HypervisorInfo{Type: "libvirt", OK: true, KVM: boolPtr(true)},
+			},
+		},
+		{
+			// libvirt could not be asked: the field stays null rather than
+			// claiming false, and ok carries the daemon's own state.
+			name:       "libvirt that cannot answer about kvm",
+			hypervisor: "libvirt",
+			pin: stubKVM{
+				stubHypervisor: stubHypervisor{err: errRefused},
+				kvmErr:         errRefused,
+			},
+			want: system.Info{
+				Version:    "v0.0.1",
+				NeedsSetup: false,
+				Hypervisor: system.HypervisorInfo{Type: "libvirt", OK: false, KVM: nil},
 			},
 		},
 	}

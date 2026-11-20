@@ -2,6 +2,7 @@ package libvirt
 
 import (
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,8 +16,6 @@ import (
 )
 
 var (
-	// ErrNoKVM is returned when /dev/kvm is not available.
-	ErrNoKVM = errors.New("libvirt: /dev/kvm not available")
 	// ErrLibvirtUnavailable is returned when libvirt is not reachable.
 	ErrLibvirtUnavailable = errors.New("libvirt: unavailable")
 )
@@ -88,10 +87,66 @@ func (c *Client) Close() error {
 
 // HasKVM implements system.KVMReporter on the Client, so /system/info can
 // report that the daemon is up while no guest can boot.
-func (c *Client) HasKVM() bool { return HasKVM() }
+//
+// It asks libvirt rather than looking for /dev/kvm, because kumod is not the
+// process that opens the device: qemu is, under libvirtd. The packaged unit
+// runs kumod with PrivateDevices=yes, so a stat of /dev/kvm from here says
+// "absent" on every packaged node however healthy the host is. libvirt's own
+// capabilities list a `kvm` domain type exactly when it can start the
+// type="kvm" domains domainxml builds, which is the question being asked.
+func (c *Client) HasKVM(ctx context.Context) (bool, error) {
+	var caps []byte
+	err := c.withConnection(ctx, func(conn *golibvirt.Libvirt) error {
+		var err error
+		caps, err = conn.Capabilities()
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("%w: capabilities: %w", ErrLibvirtUnavailable, err)
+	}
+	return capabilitiesOfferKVM(caps)
+}
 
-// HasKVM checks if /dev/kvm exists and is accessible.
-func HasKVM() bool {
+// libvirtCapabilities is the part of libvirt's capabilities document HasKVM
+// reads: per guest architecture, the domain types libvirt can run.
+type libvirtCapabilities struct {
+	Guests []struct {
+		OSType string `xml:"os_type"`
+		Arch   struct {
+			Name    string `xml:"name,attr"`
+			Domains []struct {
+				Type string `xml:"type,attr"`
+			} `xml:"domain"`
+		} `xml:"arch"`
+	} `xml:"guest"`
+}
+
+// capabilitiesOfferKVM reports whether any hvm guest in a libvirt capabilities
+// document can run as a kvm domain. A host without usable KVM still lists its
+// guests, with only the `qemu` (software emulation) domain type.
+func capabilitiesOfferKVM(doc []byte) (bool, error) {
+	var caps libvirtCapabilities
+	if err := xml.Unmarshal(doc, &caps); err != nil {
+		return false, fmt.Errorf("libvirt: parse capabilities: %w", err)
+	}
+	for _, guest := range caps.Guests {
+		if guest.OSType != "hvm" {
+			continue
+		}
+		for _, domain := range guest.Arch.Domains {
+			if domain.Type == "kvm" {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// DevKVMPresent reports whether /dev/kvm exists as a device node in this
+// process's view of /dev. It is the host check `kumod doctor` makes, run by an
+// operator outside the service's sandbox. It is not what /system/info reports
+// (see Client.HasKVM), and it does not test permissions.
+func DevKVMPresent() bool {
 	info, err := os.Stat("/dev/kvm")
 	if err != nil {
 		return false

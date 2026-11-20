@@ -276,7 +276,7 @@ Implementation notes:
 - `<graphics>` binds to `127.0.0.1`; `<channel type='unix'>` is the qemu-guest-agent socket that IP discovery reads.
 - The seed ISO is built by `internal/seediso`, which is independent of libvirt and of the instance service: it takes the three already-rendered documents and writes them into an ISO9660 image labelled `cidata`. Writing goes through a temporary file and a rename, so a failed build never leaves a truncated ISO at a path about to be attached to a domain.
 - UEFI/aarch64 support is out of scope for M4; leave `Firmware` field in `DomainSpec` for later (`<os firmware='efi'>`).
-- Honor `/dev/kvm` absence: `EnsureInfra`/`Ping` should report `kvm: false` in `/system/info`, and launches fail with `unavailable`.
+- Honor `/dev/kvm` absence: `/system/info` reports `kvm: false`, and launches fail with `unavailable`. The answer comes from libvirt's capabilities (an hvm guest offering a `kvm` domain type), not from a stat of `/dev/kvm`: kumod is not the process that opens the device, and the packaged unit's `PrivateDevices=yes` hides it from kumod, so a stat answered `false` on every packaged node. `kumod doctor` still checks the device node, because an operator runs it outside that sandbox.
 
 ## 6. Networking: VPCs & Subnets
 
