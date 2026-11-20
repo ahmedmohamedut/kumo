@@ -91,7 +91,7 @@
 | `KUMO_ALLOWED_ORIGINS` | *(empty)* | dev CORS (Vite at `http://localhost:5173`) |
 | `KUMO_WORKERS` | `4` | task worker count |
 | `KUMO_STOP_TIMEOUT` | `90s` | how long a graceful stop waits for the guest before the task fails and the instance stays `stopping` |
-| `KUMO_IMAGE_MAX_BYTES` | `20GiB` | max image import size |
+| `KUMO_IMAGE_MAX_BYTES` | `20GiB` | max image import size, of the download and again of a gzipped download once decompressed |
 | `KUMO_IMAGE_TEMP_DIR` | `$KUMO_DATA_DIR/staging` | where a download is staged; must share a filesystem with the images pool |
 | `KUMO_IMAGE_ALLOW_PRIVATE_URLS` | `false` | allow imports from loopback/private/link-local hosts (trusted LAN mirrors) |
 | `KUMO_MEMORY_RESERVE_MIB` | `1024` | host memory kept out of the pool of allocatable RAM |

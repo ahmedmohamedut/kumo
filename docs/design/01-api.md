@@ -111,12 +111,20 @@ which is what every client written before the databases module sends. A golden i
 module is imported with
 
 ```json
-{ "name": "postgres-18", "source_url": "https://.../kumo-postgres-18-20261028.qcow2",
+{ "name": "postgres-18", "source_url": "https://.../kumo-postgres-18-20261028.qcow2.gz",
   "checksum": { "algorithm": "sha256", "value": "..." },
   "kind": "engine", "engine": "postgres", "engine_version": "18", "min_disk_gb": 6 }
 ```
 
-and `engine`/`engine_version` are required with `kind: "engine"` and refused without it. An engine
+Any import may be **gzipped**: a download that starts with the gzip magic bytes is decompressed
+after the checksum is checked, so the checksum is of the `.gz`, as published. The URL's extension
+does not matter. The decompressed image is bounded by `KUMO_IMAGE_MAX_BYTES` like a download, and
+a stream that is not valid gzip fails the import. The volume is always stored uncompressed.
+
+and `engine`/`engine_version` are required with `kind: "engine"` and refused without it. `engine` is
+`postgres` (a database engine, versioned by its major, `18`) or `kubernetes` (the Kubernetes
+module's node image, versioned by its minor, `1.37`; `08-kubernetes.md` §7). A Kubernetes image is
+never offered as a database: `/system/info`'s `databases.engines` lists database engines only. An engine
 image is reachable at `GET /images/{id}` but never appears in `GET /images`, so the Images pages
 cannot offer a machine nobody should launch directly; `GET /system/info` reports which engines a
 node can create a DB instance from (`07-databases.md`).

@@ -61,13 +61,23 @@ const (
 	KindEngine Kind = "engine"
 )
 
-// Engine is the database engine an engine image carries. It is a value rather
-// than something inferred from a name, so a second engine is data plus an
-// image rather than a code change.
+// Engine is what an engine image carries: a database engine, or Kubernetes. It
+// is a value rather than something inferred from a name, so a new version of
+// an engine is data plus an image rather than a code change.
 type Engine string
 
-// EnginePostgres is the only engine of this phase (07-databases.md R1).
-const EnginePostgres Engine = "postgres"
+const (
+	// EnginePostgres is the databases module's engine (07-databases.md R1).
+	EnginePostgres Engine = "postgres"
+	// EngineKubernetes is the Kubernetes module's node image
+	// (08-kubernetes.md section 7).
+	EngineKubernetes Engine = "kubernetes"
+)
+
+// IsDatabase reports whether a DB instance can be created from this engine,
+// which is what the databases module may list. A Kubernetes node image is an
+// engine image too, and must never be offered as a database.
+func (e Engine) IsDatabase() bool { return e == EnginePostgres }
 
 // ChecksumAlgorithm is a hash the import verifies the download against.
 type ChecksumAlgorithm string

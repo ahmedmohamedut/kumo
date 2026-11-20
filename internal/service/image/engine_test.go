@@ -13,6 +13,12 @@ import (
 // and runs the task so the row reaches available.
 func (h *harness) importEngine(t *testing.T, name, version string) image.Image {
 	t.Helper()
+	return h.importEngineOf(t, image.EnginePostgres, name, version)
+}
+
+// importEngineOf imports and publishes an engine image of any engine.
+func (h *harness) importEngineOf(t *testing.T, engine image.Engine, name, version string) image.Image {
+	t.Helper()
 
 	body := qcow2test.Tiny(virtualDiskGB << 30)
 	url, sum := h.serveImage(t, body)
@@ -22,7 +28,7 @@ func (h *harness) importEngine(t *testing.T, name, version string) image.Image {
 		SourceURL:     url,
 		Checksum:      image.Checksum{Algorithm: image.ChecksumSHA256, Value: sum},
 		Kind:          image.KindEngine,
-		Engine:        image.EnginePostgres,
+		Engine:        engine,
 		EngineVersion: version,
 	})
 	if err != nil {
@@ -226,6 +232,36 @@ func TestEngineFieldValidation(t *testing.T) {
 			field: "engine_version",
 		},
 		{
+			// Each engine is identified at one precision: Kubernetes by its
+			// minor, so a patch release would name the same engine twice.
+			name: "a Kubernetes version that is a patch release",
+			mutate: func(in *image.ImportInput) {
+				in.Kind = image.KindEngine
+				in.Engine = image.EngineKubernetes
+				in.EngineVersion = "1.37.2"
+			},
+			field: "engine_version",
+		},
+		{
+			name: "a Kubernetes version that is only a major",
+			mutate: func(in *image.ImportInput) {
+				in.Kind = image.KindEngine
+				in.Engine = image.EngineKubernetes
+				in.EngineVersion = "37"
+			},
+			field: "engine_version",
+		},
+		{
+			// The patterns are per engine, not shared.
+			name: "a Postgres version in Kubernetes' shape",
+			mutate: func(in *image.ImportInput) {
+				in.Kind = image.KindEngine
+				in.Engine = image.EnginePostgres
+				in.EngineVersion = "1.37"
+			},
+			field: "engine_version",
+		},
+		{
 			name:   "a user image claiming an engine",
 			mutate: func(in *image.ImportInput) { in.Engine = image.EnginePostgres },
 			field:  "engine",
@@ -363,4 +399,58 @@ func TestAvailableEnginesReportsWhatCanBoot(t *testing.T) {
 			t.Errorf("image_id = %q, want the newest image %q", engines[0].ImageID, newer.ID)
 		}
 	})
+}
+
+// The Kubernetes node image is an engine image, versioned by its minor
+// (docs/design/08-kubernetes.md section 7).
+func TestImportRecordsAKubernetesEngineImage(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	got := h.importEngineOf(t, image.EngineKubernetes, "kubernetes-1.37", "1.37")
+
+	if got.Kind != image.KindEngine {
+		t.Errorf("kind = %q, want engine", got.Kind)
+	}
+	if got.Engine == nil || *got.Engine != image.EngineKubernetes {
+		t.Errorf("engine = %v, want kubernetes", got.Engine)
+	}
+	if got.EngineVersion == nil || *got.EngineVersion != "1.37" {
+		t.Errorf("engine_version = %v, want \"1.37\"", got.EngineVersion)
+	}
+}
+
+// A Kubernetes image is an available engine, and must never be offered as a
+// database: /system/info's databases block and kumod doctor list database
+// engines only.
+func TestAvailableDatabaseEnginesLeavesOutKubernetes(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.importEngineOf(t, image.EngineKubernetes, "kubernetes-1.37", "1.37")
+
+	all, err := h.svc.AvailableEngines(t.Context())
+	if err != nil {
+		t.Fatalf("AvailableEngines(): %v", err)
+	}
+	if len(all) != 1 || all[0].Engine != image.EngineKubernetes {
+		t.Fatalf("AvailableEngines() = %+v, want the kubernetes image", all)
+	}
+
+	databases, err := h.svc.AvailableDatabaseEngines(t.Context())
+	if err != nil {
+		t.Fatalf("AvailableDatabaseEngines(): %v", err)
+	}
+	if len(databases) != 0 {
+		t.Fatalf("AvailableDatabaseEngines() = %+v, want none: kubernetes is not a database", databases)
+	}
+
+	h.importEngine(t, "postgres-18", "18")
+	databases, err = h.svc.AvailableDatabaseEngines(t.Context())
+	if err != nil {
+		t.Fatalf("AvailableDatabaseEngines(): %v", err)
+	}
+	if len(databases) != 1 || databases[0].Engine != image.EnginePostgres {
+		t.Errorf("AvailableDatabaseEngines() = %+v, want postgres 18 alone", databases)
+	}
 }

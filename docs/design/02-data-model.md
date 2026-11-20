@@ -221,7 +221,7 @@ ALTER TABLE images ADD COLUMN engine_version TEXT;
 CREATE INDEX idx_images_engine ON images(kind, engine, engine_version);
 ```
 
-- An **engine image** is an ordinary image the user does not launch: `kind='engine'` marks a golden image the databases module boots (`07-databases.md` §7). `engine`/`engine_version` are set on one and `NULL` otherwise, and they are how a create request resolves "Postgres 18" to a volume.
+- An **engine image** is an ordinary image the user does not launch: `kind='engine'` marks a golden image the databases module boots (`07-databases.md` §7). `engine`/`engine_version` are set on one and `NULL` otherwise, and they are how a create request resolves "Postgres 18" to a volume. The Kubernetes module's node image is an engine image too (`engine='kubernetes'`, `engine_version` its minor, `1.37`; `08-kubernetes.md` §7); the databases module only ever lists and resolves database engines (`postgres`).
 - Every image list query filters on `kind`, and the service substitutes `user` for an empty filter, so a caller that does not think about it cannot publish engine images on a page the console reaches. `GET /images/{id}` still serves one: an operator debugging a database needs the row.
 - The columns arrive in a migration of their own rather than with `db_instances` below, because the two were separate tasks and an applied migration is never edited.
 

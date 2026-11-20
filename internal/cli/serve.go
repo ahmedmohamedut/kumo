@@ -221,7 +221,7 @@ func serve(ctx context.Context, stdout io.Writer) error {
 	// (docs/design/07-databases.md section 2). The adapter keeps the system
 	// service from depending on the image service for one struct.
 	systemService.SetDatabases(cfg.Databases, func(ctx context.Context) ([]system.DatabaseEngineInfo, error) {
-		available, err := images.AvailableEngines(ctx)
+		available, err := images.AvailableDatabaseEngines(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -235,7 +235,7 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		return engines, nil
 	})
 	if cfg.Databases {
-		if engines, err := images.AvailableEngines(ctx); err != nil {
+		if engines, err := images.AvailableDatabaseEngines(ctx); err != nil {
 			logger.WarnContext(ctx, "cannot list the database engines", "error", err)
 		} else if len(engines) == 0 {
 			logger.InfoContext(ctx, "databases are on but no engine image is available; "+

@@ -39,7 +39,9 @@ var ErrBadTaskPayload = errors.New("image: the task payload is not acceptable")
 //
 //  1. mark the row downloading, so the console stops showing "queued";
 //  2. download into a temp file, hashing as it goes, refusing an oversized body;
-//  3. compare the checksum if one was requested, before anything is published;
+//  3. compare the checksum if one was requested, before anything is published,
+//     then decompress a gzipped download (the checksum covers what was
+//     published, which for an engine image is the .qcow2.gz);
 //  4. parse the header, which decides qcow2 vs raw and the capacity;
 //  5. hand the file to the hypervisor, which places it in the images pool;
 //  6. finalize the row.
@@ -194,6 +196,19 @@ func (s *Service) stage(ctx context.Context, row sqlc.Image) (string, error) {
 		if err := compareDigest(digest, row.ChecksumAlgo.String, row.ChecksumValue.String); err != nil {
 			return "", err
 		}
+	}
+
+	// After the checksum, which covers the bytes that were published, and
+	// before anything reads the file as an image (gzip.go).
+	unpacked, err := s.gunzipIfCompressed(row, path)
+	if err != nil {
+		return "", err
+	}
+	if unpacked != path {
+		// The compressed file is gone and the deferred cleanup above guards a
+		// path that no longer exists; the decompressed file is the caller's.
+		keep = true
+		return unpacked, nil
 	}
 
 	keep = true

@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/service"
 	authservice "github.com/ahmedmohamedut/kumo/internal/service/auth"
 	"github.com/ahmedmohamedut/kumo/internal/store"
+	"github.com/ahmedmohamedut/kumo/internal/store/sqlc"
 )
 
 const cliPassword = "correct horse battery staple"
@@ -439,6 +441,37 @@ func TestDoctorReportsTheDatabasesModule(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "warn  databases") {
 		t.Errorf("stdout = %q, want the databases line to warn", stdout)
+	}
+}
+
+// A Kubernetes node image is an engine image too, but no DB instance can boot
+// from it, so a node that has only that one still has no database engine, and
+// doctor must keep saying so (docs/design/08-kubernetes.md section 7).
+func TestDoctorDoesNotCountAKubernetesImageAsADatabase(t *testing.T) {
+	dir := testDir(t)
+	db := openDB(t, dir)
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := db.CreateImage(t.Context(), sqlc.CreateImageParams{
+		ID: "img-0123456789abcdef0", Name: "kubernetes-1.37", Architecture: "x86_64",
+		Format: "qcow2", State: "available", Progress: 100, MinDiskGb: 8,
+		VolumeName: sql.NullString{String: "img-0123456789abcdef0.qcow2", Valid: true},
+		CreatedAt:  now, UpdatedAt: now,
+		Kind:          "engine",
+		Engine:        sql.NullString{String: "kubernetes", Valid: true},
+		EngineVersion: sql.NullString{String: "1.37", Valid: true},
+	}); err != nil {
+		t.Fatalf("CreateImage(): %v", err)
+	}
+
+	code, stdout, _ := runCLI(t, "", "doctor")
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "warn  databases") || !strings.Contains(stdout, "no engine image is available") {
+		t.Errorf("stdout = %q, want the databases line to warn that no database engine is available", stdout)
+	}
+	if strings.Contains(stdout, "kubernetes 1.37") {
+		t.Errorf("stdout = %q, want kubernetes left out of the databases line", stdout)
 	}
 }
 

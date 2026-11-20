@@ -1348,12 +1348,12 @@ export interface components {
        */
       kind: 'user' | 'engine'
       /**
-       * @description Set on an engine image, null on any other.
+       * @description Set on an engine image, null on any other. `postgres` is a database engine (07-databases.md); `kubernetes` is the node image of the Kubernetes module (08-kubernetes.md) and is never offered as a database.
        * @enum {string|null}
        */
-      engine?: 'postgres' | null
+      engine?: 'postgres' | 'kubernetes' | null
       /**
-       * @description Engine major version. Set on an engine image, null on any other.
+       * @description The version the engine is identified by: Postgres' major (`18`), Kubernetes' minor (`1.37`). Set on an engine image, null on any other.
        * @example 18
        */
       engine_version?: string | null
@@ -1410,7 +1410,7 @@ export interface components {
       default_user?: string
       min_disk_gb?: number
       /**
-       * @description Omit it to import an ordinary image, which is how it defaults. `engine` imports a golden image for the databases module and requires `engine` and `engine_version`; both are refused without it.
+       * @description Omit it to import an ordinary image, which is how it defaults. `engine` imports a golden image for the databases or the Kubernetes module and requires `engine` and `engine_version`; both are refused without it.
        * @enum {string}
        */
       kind?: 'user' | 'engine'
@@ -1418,9 +1418,9 @@ export interface components {
        * @description Required with `kind: engine`, refused otherwise.
        * @enum {string}
        */
-      engine?: 'postgres'
+      engine?: 'postgres' | 'kubernetes'
       /**
-       * @description Engine major version, digits only. Required with `kind: engine`, refused otherwise.
+       * @description Required with `kind: engine`, refused otherwise. One precision per engine, so two spellings cannot name the same one: Postgres by its major, 1-3 digits (`18`, never `18.6`); Kubernetes by its minor (`1.37`, never `1.37.2`).
        * @example 18
        */
       engine_version?: string
