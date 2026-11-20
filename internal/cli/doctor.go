@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/user"
@@ -64,7 +66,7 @@ func runDoctor(ctx context.Context, out io.Writer) error {
 		checks = append(checks, checkLibvirt(ctx, cfg)...)
 	}
 	checks = append(checks, checkObjectStore(ctx, cfg)...)
-	checks = append(checks, checkDatabases(ctx, cfg), checkKubernetes(ctx, cfg))
+	checks = append(checks, checkDatabases(ctx, cfg), checkKubernetes(ctx, cfg), checkSpark(ctx, cfg))
 
 	// Said before the results rather than after them: an operator who ran
 	// `kumod doctor` as themselves reads FAIL lines first otherwise, and
@@ -503,4 +505,55 @@ func checkIPForward() check {
 	}
 
 	return check{name: "ip_forward", ok: true, note: "enabled"}
+}
+
+// checkSpark reports the Spark module (docs/design/09-spark.md section 2): off,
+// on with no image (the import a cluster needs first), or on with the
+// versions available. With object storage on it also warns about a guest S3
+// endpoint no VPC can reach, which would refuse every cluster that asks for
+// object storage.
+func checkSpark(ctx context.Context, cfg *config.Config) check {
+	const name = "spark"
+	if !cfg.Spark {
+		return check{name: name, ok: true, note: "off (set KUMO_SPARK=on to enable)"}
+	}
+	db, err := store.Open(ctx, cfg.DBPath)
+	if err != nil {
+		return check{name: name, ok: true, warn: true, note: "not checked: " + err.Error()}
+	}
+	defer db.Close() //nolint:errcheck // a failed close does not change the verdict
+
+	rows, err := db.ListAvailableEngineImages(ctx)
+	if err != nil {
+		return check{name: name, ok: true, warn: true, note: "cannot read images: " + err.Error()}
+	}
+	var versions []string
+	for _, row := range rows {
+		if row.Engine.Valid && image.Engine(row.Engine.String) == image.EngineSpark && row.EngineVersion.Valid {
+			versions = append(versions, row.EngineVersion.String)
+		}
+	}
+	if len(versions) == 0 {
+		return check{name: name, ok: true, warn: true,
+			note: "on, but no Spark image is available: import one before creating a " +
+				"cluster (see packaging/images/spark-4.3/README.md)"}
+	}
+	if cfg.ObjectStore != config.ObjectStoreNone && sparkEndpointUnroutable(cfg.SparkS3Endpoint) {
+		return check{name: name, ok: true, warn: true,
+			note: "on (Spark " + strings.Join(versions, ", ") + "), but KUMO_SPARK_S3_ENDPOINT " +
+				"(" + cfg.SparkS3Endpoint + ") is not an address a VPC can reach: clusters with " +
+				"object storage will be refused; set it to the host's LAN address"}
+	}
+	return check{name: name, ok: true, note: "on (Spark " + strings.Join(versions, ", ") + ")"}
+}
+
+// sparkEndpointUnroutable is the create's own check (internal/service/spark):
+// empty, unparsable or loopback.
+func sparkEndpointUnroutable(endpoint string) bool {
+	u, err := url.Parse(endpoint)
+	if endpoint == "" || err != nil || u.Hostname() == "" || u.Hostname() == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(u.Hostname())
+	return ip != nil && ip.IsLoopback()
 }

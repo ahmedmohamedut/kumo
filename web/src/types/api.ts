@@ -987,6 +987,104 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/spark/clusters': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * List Spark clusters
+     * @description Newest first, keyset-paged like every collection.
+     */
+    get: operations['listSparkClusters']
+    put?: never
+    /**
+     * Create a Spark cluster
+     * @description Runs as a task and answers `202` with the cluster `creating`: kumod
+     *     makes the cluster's secret and, with object storage, its own access
+     *     key, reserves the master and every worker in one transaction (a
+     *     cluster the node cannot hold is refused whole, `429`, and the key and
+     *     secrets go with it), then builds them. The cluster ends `active` once
+     *     every worker is registered, `degraded` if the master works but a
+     *     worker never registered, or `failed` if the master never answered
+     *     (09-spark.md section 4).
+     *
+     *     Validation: `name` is a DNS label of 1-40 characters; the nodes are
+     *     `<name>-master` and `<name>-default-<n>`. `worker_count` is 1-10
+     *     (default 2). `master_type` needs 2 vCPU and 4096 MiB (default
+     *     `kumo.medium`), `worker_type` 2048 MiB (default `kumo.large`). With
+     *     `object_storage`, `buckets` names 1-10 existing buckets the cluster's
+     *     key may read and write, and `event_log_bucket`, one of them, turns on
+     *     event logs and the history server; without it both are refused.
+     */
+    post: operations['createSparkCluster']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/spark/clusters/{id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Spark cluster id. */
+        id: components['parameters']['SparkClusterID']
+      }
+      cookie?: never
+    }
+    /**
+     * Spark cluster detail
+     * @description The cluster with its node group and its nodes. A node's `alive` is what the master last said of it, null before the first look. No secret is ever returned here.
+     */
+    get: operations['getSparkCluster']
+    put?: never
+    post?: never
+    /**
+     * Delete a Spark cluster
+     * @description Runs as a task and answers `202` with the cluster `deleting`. Allowed from every state but `deleting`. Every node's VM, the endpoint's DNS record, the cluster's access key, the rows and its secrets are removed. The buckets and their event logs are the user's and stay.
+     */
+    delete: operations['deleteSparkCluster']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/spark/clusters/{id}/client-config': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Spark cluster id. */
+        id: components['parameters']['SparkClusterID']
+      }
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * The cluster's client configuration
+     * @description The client `spark-defaults.conf` an admin submits jobs with from an
+     *     instance in the cluster's VPC: the master URL, the cluster's secret,
+     *     encryption, and with object storage the guests' S3 endpoint, the
+     *     cluster's access key and the event-log location (09-spark.md section
+     *     5). A POST, admin-only, and `Cache-Control: no-store`, because it
+     *     carries the cluster's secrets. `409` until the cluster is active (or
+     *     degraded).
+     *
+     *     Use it as `spark-submit --properties-file <file> --conf
+     *     spark.driver.host=<the instance's address> ...`.
+     */
+    post: operations['sparkClientConfig']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/tasks': {
     parameters: {
       query?: never
@@ -1370,6 +1468,12 @@ export interface components {
       kubernetes: {
         enabled: boolean
         versions: string[]
+      }
+      /** @description The Spark module (09-spark.md section 2). `enabled` is KUMO_SPARK; `versions` is every Spark minor with an available engine image, newest first, empty until one is imported; `object_storage` is whether a cluster can be given object storage on this node. */
+      spark: {
+        enabled: boolean
+        versions: string[]
+        object_storage: boolean
       }
     }
     /** @description Host totals versus what is already allocated. `total` is measured by the hypervisor (node vCPUs multiplied by the configured overcommit ratio, node memory, and the size of the instances pool); `allocated` is summed from the instances table, counting every instance that is not `terminated`. A terminate deletes the row, so a terminated instance stops being counted as soon as it is gone, and rows left in `terminated` by an earlier release hold nothing. The capacity rules are documented in `00-architecture.md` §6. */
@@ -1874,6 +1978,80 @@ export interface components {
       node_count: number
       node_root_disk_gb?: number
     }
+    SparkNode: {
+      /** @example etl-master */
+      name: string
+      instance_id: string
+      /** @enum {string} */
+      role: 'master' | 'worker'
+      node_group_id: string | null
+      /** @description The VM's state, as on an instance. */
+      state: string
+      private_ip: string
+      /** @description What the master last said: its own state for the master, registered ALIVE for a worker. Null before the first look. */
+      alive: boolean | null
+    }
+    SparkCluster: {
+      /** @example spk-0a1b2c3d4e5f60718 */
+      id: string
+      /** @example etl */
+      name: string
+      /** @example 4.3 */
+      spark_version: string
+      state: components['schemas']['ClusterState']
+      state_reason: string | null
+      /**
+       * @description The master URL, set once active; reachable from the VPC only.
+       * @example spark://etl.default:7077
+       */
+      endpoint: string | null
+      /** @example http://etl.default:8080 */
+      master_ui_url: string | null
+      /**
+       * @description Null without an event-log bucket.
+       * @example http://etl.default:18080
+       */
+      history_url: string | null
+      vpc_id: string
+      subnet_id: string
+      master_type: string
+      object_storage: boolean
+      buckets: string[]
+      event_log_bucket: string | null
+      node_groups: components['schemas']['NodeGroup'][]
+      nodes: components['schemas']['SparkNode'][]
+      /** Format: date-time */
+      created_at: string
+      /** Format: date-time */
+      updated_at: string
+      /** @description The task a create or a delete queued. */
+      task_id?: string
+    }
+    SparkClusterList: {
+      items: components['schemas']['SparkCluster'][]
+      next_page_token: string | null
+    }
+    CreateSparkClusterRequest: {
+      /** @example etl */
+      name: string
+      /** @example 4.3 */
+      spark_version?: string
+      subnet_id?: string
+      /** @example kumo.medium */
+      master_type?: string
+      /** @example kumo.large */
+      worker_type?: string
+      worker_count?: number
+      object_storage?: boolean
+      buckets?: string[]
+      event_log_bucket?: string
+    }
+    SparkClientConfig: {
+      /** @description The spark-defaults.conf, carrying the cluster's secrets. */
+      client_config: string
+      /** @example kumo-spk-0a1b2c3d4e5f60718.conf */
+      filename: string
+    }
     Kubeconfig: {
       /** @description The kubeconfig file, YAML. It holds a private key; it is returned once. */
       kubeconfig: string
@@ -2283,6 +2461,8 @@ export interface components {
     DBInstanceID: string
     /** @description Kubernetes cluster id. */
     ClusterID: string
+    /** @description Spark cluster id. */
+    SparkClusterID: string
     /** @description Task id. */
     TaskID: string
     /** @description VPC id. */
@@ -3988,6 +4168,164 @@ export interface operations {
         }
       }
       401: components['responses']['Unauthorized']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+      503: components['responses']['Unavailable']
+    }
+  }
+  listSparkClusters: {
+    parameters: {
+      query?: {
+        /** @description Items per page. */
+        page_size?: components['parameters']['PageSize']
+        /** @description Continuation token from a previous page; absent on the first page. */
+        page_token?: components['parameters']['PageToken']
+        /** @description Case-insensitive substring of the resource name. */
+        q?: components['parameters']['Query']
+        /** @description Restrict the page to one cluster state. */
+        state?: components['schemas']['ClusterState']
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description A page of clusters. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SparkClusterList']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      503: components['responses']['Unavailable']
+    }
+  }
+  createSparkCluster: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CreateSparkClusterRequest']
+      }
+    }
+    responses: {
+      /** @description The create was accepted. */
+      202: {
+        headers: {
+          /** @description The task that tracks the create. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SparkCluster']
+        }
+      }
+      400: components['responses']['InvalidArgument']
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      /** @description A cluster of that name exists (`already_exists`), no Spark engine image is available (`no_engine_image`), or the guests could not reach object storage (`conflict`). */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ErrorResponse']
+        }
+      }
+      429: components['responses']['TooManyRequests']
+      503: components['responses']['Unavailable']
+    }
+  }
+  getSparkCluster: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Spark cluster id. */
+        id: components['parameters']['SparkClusterID']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The cluster. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SparkCluster']
+        }
+      }
+      401: components['responses']['Unauthorized']
+      404: components['responses']['NotFound']
+      503: components['responses']['Unavailable']
+    }
+  }
+  deleteSparkCluster: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Spark cluster id. */
+        id: components['parameters']['SparkClusterID']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The delete was accepted. */
+      202: {
+        headers: {
+          /** @description The task that tracks the delete. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SparkCluster']
+        }
+      }
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
+      404: components['responses']['NotFound']
+      409: components['responses']['Conflict']
+      503: components['responses']['Unavailable']
+    }
+  }
+  sparkClientConfig: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Spark cluster id. */
+        id: components['parameters']['SparkClusterID']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The client configuration. */
+      200: {
+        headers: {
+          /** @description Always `no-store`. */
+          'Cache-Control'?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SparkClientConfig']
+        }
+      }
+      401: components['responses']['Unauthorized']
+      403: components['responses']['PermissionDenied']
       404: components['responses']['NotFound']
       409: components['responses']['Conflict']
       503: components['responses']['Unavailable']

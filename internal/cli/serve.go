@@ -33,6 +33,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/service/instancetype"
 	"github.com/ahmedmohamedut/kumo/internal/service/keypair"
 	"github.com/ahmedmohamedut/kumo/internal/service/kubernetes"
+	"github.com/ahmedmohamedut/kumo/internal/service/spark"
 	"github.com/ahmedmohamedut/kumo/internal/service/subnet"
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
 	"github.com/ahmedmohamedut/kumo/internal/service/task"
@@ -343,6 +344,55 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		return versions, nil
 	})
 
+	// The Spark module, wired like Kubernetes: a nil service makes every
+	// /spark route answer 503 (docs/design/09-spark.md section 2), and on the
+	// fake hypervisor the master's status is one that answers.
+	var sparkClusters *spark.Service
+	if cfg.Spark {
+		sparkAPI := spark.RealAPI
+		s3Endpoint := cfg.SparkS3Endpoint
+		if cfg.Hypervisor == config.HypervisorFake {
+			sparkAPI = spark.FakeAPI
+			// No guest runs, so none has to reach object storage; a
+			// documentation address keeps the create's routability check
+			// satisfied without pretending to be anything.
+			if s3Endpoint == "" {
+				s3Endpoint = "http://192.0.2.1:9000"
+			}
+		}
+		sparkClusters, err = spark.New(spark.Options{
+			Logger:        logger,
+			Store:         db,
+			Hypervisor:    hv,
+			Instances:     instances,
+			Tasks:         tasks,
+			ObjectStore:   objects,
+			S3Endpoint:    s3Endpoint,
+			S3Region:      cfg.S3Region,
+			DataDir:       cfg.DataDir,
+			API:           sparkAPI,
+			ReadyTimeout:  cfg.SparkReadyTimeout,
+			ProbeInterval: cfg.SparkProbeInterval,
+			DrainTimeout:  cfg.SparkDrainTimeout,
+		})
+		if err != nil {
+			return fmt.Errorf("build the Spark service: %w", err)
+		}
+	}
+	systemService.SetSpark(cfg.Spark, func(ctx context.Context) ([]string, error) {
+		available, err := images.AvailableEngines(ctx)
+		if err != nil {
+			return nil, err
+		}
+		var versions []string
+		for _, engine := range available {
+			if engine.Engine == image.EngineSpark {
+				versions = append(versions, engine.Version)
+			}
+		}
+		return versions, nil
+	}, objects != nil)
+
 	// Object storage is wired only when the module is on; a nil service makes
 	// every /s3 route answer 503.
 	var buckets *bucket.Service
@@ -377,6 +427,9 @@ func serve(ctx context.Context, stdout io.Writer) error {
 	}
 	if clusters != nil {
 		handlers = append(handlers, clusters.Handler())
+	}
+	if sparkClusters != nil {
+		handlers = append(handlers, sparkClusters.Handler())
 	}
 
 	// The worker drains the tasks table. Recover runs before the first claim, so
@@ -444,6 +497,16 @@ func serve(ctx context.Context, stdout io.Writer) error {
 						"clusters", health.Clusters, "probed", health.Probed, "updated", health.Updated)
 				}
 			}
+			if sparkClusters != nil {
+				health, err := sparkClusters.Reconcile(ctx)
+				if err != nil {
+					return err
+				}
+				if health.Updated > 0 {
+					logger.InfoContext(ctx, "checked the Spark clusters",
+						"clusters", health.Clusters, "probed", health.Probed, "updated", health.Updated)
+				}
+			}
 			return nil
 		},
 		Hint:   instances.ReconcileInstance,
@@ -488,6 +551,7 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		AccessKeys:    accessKeys,
 		DBInstances:   dbInstances,
 		Clusters:      clusters,
+		SparkClusters: sparkClusters,
 		Tasks:         tasks,
 		Signer:        signer,
 		ReadyChecks: []api.Check{

@@ -60,6 +60,17 @@ type Info struct {
 	// Kubernetes tells the console whether to offer the Kubernetes pages, and
 	// which versions a cluster can be created at.
 	Kubernetes KubernetesInfo `json:"kubernetes"`
+	Spark      SparkInfo      `json:"spark"`
+}
+
+// SparkInfo describes the Spark module (docs/design/09-spark.md section 2).
+// Versions is the Spark minors with an available engine image, newest first;
+// ObjectStorage is whether a cluster can be given object storage here, which
+// the create form reads to offer buckets or not.
+type SparkInfo struct {
+	Enabled       bool     `json:"enabled"`
+	Versions      []string `json:"versions"`
+	ObjectStorage bool     `json:"object_storage"`
 }
 
 // KubernetesInfo describes the Kubernetes module
@@ -137,6 +148,9 @@ type Service struct {
 	engines       EngineLister
 	kubernetes    bool
 	k8sVersions   VersionLister
+	spark         bool
+	sparkVersions VersionLister
+	sparkObjects  bool
 }
 
 // New builds the service. users, hypervisorPin and allocator may be nil, which
@@ -167,6 +181,13 @@ func New(
 func (s *Service) SetObjectStore(backend string, pin HypervisorChecker) {
 	s.objectBackend = backend
 	s.objectPin = pin
+}
+
+// SetSpark reports the Spark module in Info.
+func (s *Service) SetSpark(enabled bool, versions VersionLister, objectStorage bool) {
+	s.spark = enabled
+	s.sparkVersions = versions
+	s.sparkObjects = objectStorage
 }
 
 // SetKubernetes reports the Kubernetes module in Info.
@@ -202,6 +223,14 @@ func (s *Service) Info(ctx context.Context) (Info, error) {
 			Engines: []DatabaseEngineInfo{},
 		},
 		Kubernetes: KubernetesInfo{Enabled: s.kubernetes, Versions: []string{}},
+		Spark:      SparkInfo{Enabled: s.spark, Versions: []string{}, ObjectStorage: s.spark && s.sparkObjects},
+	}
+	if s.spark && s.sparkVersions != nil {
+		if versions, err := s.sparkVersions(ctx); err != nil {
+			s.logger.WarnContext(ctx, "cannot list the Spark versions", "error", err)
+		} else if len(versions) > 0 {
+			info.Spark.Versions = versions
+		}
 	}
 	if s.kubernetes && s.k8sVersions != nil {
 		if versions, err := s.k8sVersions(ctx); err != nil {

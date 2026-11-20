@@ -62,3 +62,25 @@ func TestInfoReportsTheKubernetesModule(t *testing.T) {
 		})
 	}
 }
+
+// The Spark block mirrors the Kubernetes one, and says whether a cluster can
+// have object storage on this node (docs/design/09-spark.md section 2).
+func TestInfoReportsTheSparkModule(t *testing.T) {
+	t.Parallel()
+	svc := system.New(logging.Discard(), "v0.0.1", "fake", nil, nil, nil)
+	info, err := svc.Info(t.Context())
+	if err != nil || info.Spark.Enabled || info.Spark.Versions == nil || info.Spark.ObjectStorage {
+		t.Fatalf("an unset module = %+v, %v; want off, no versions, no object storage", info.Spark, err)
+	}
+	svc.SetSpark(true, func(context.Context) ([]string, error) { return []string{"4.3"}, nil }, true)
+	info, err = svc.Info(t.Context())
+	if err != nil || !info.Spark.Enabled || len(info.Spark.Versions) != 1 || info.Spark.Versions[0] != "4.3" ||
+		!info.Spark.ObjectStorage {
+		t.Errorf("on = %+v, %v", info.Spark, err)
+	}
+	svc.SetSpark(true, func(context.Context) ([]string, error) { return nil, errListing }, false)
+	info, _ = svc.Info(t.Context())
+	if info.Spark.Versions == nil || len(info.Spark.Versions) != 0 || info.Spark.ObjectStorage {
+		t.Errorf("a listing failure = %+v, want an empty list", info.Spark)
+	}
+}

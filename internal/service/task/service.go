@@ -64,6 +64,13 @@ const (
 	// TypeK8sClusterScale resizes a node group: new workers built and joined,
 	// or the newest drained and removed.
 	TypeK8sClusterScale = "k8s.scale"
+	// TypeSparkClusterCreate builds a Spark cluster: the master, its endpoint
+	// record, the workers, until every worker is registered
+	// (docs/design/09-spark.md section 4).
+	TypeSparkClusterCreate = "spark.create"
+	// TypeSparkClusterDelete removes every node, the endpoint record, the
+	// cluster's access key, the rows and the cluster's secrets.
+	TypeSparkClusterDelete = "spark.delete"
 )
 
 // State is the lifecycle of a task. The values mirror the CHECK constraint on

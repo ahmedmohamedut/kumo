@@ -147,6 +147,7 @@ func TestSystemInfo(t *testing.T) {
 			// with no engines, and never a null list.
 			Databases:  system.DatabasesInfo{Enabled: false, Engines: []system.DatabaseEngineInfo{}},
 			Kubernetes: system.KubernetesInfo{Enabled: false, Versions: []string{}},
+			Spark:      system.SparkInfo{Enabled: false, Versions: []string{}},
 		}
 		if !reflect.DeepEqual(body, want) {
 			t.Errorf("body = %+v, want %+v", body, want)

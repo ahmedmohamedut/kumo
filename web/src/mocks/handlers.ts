@@ -63,6 +63,7 @@ let info: SystemInfo = {
   object_storage: { backend: 'fake', ok: true },
   databases: { enabled: true, engines: [{ engine: 'postgres', version: '18' }] },
   kubernetes: { enabled: true, versions: ['1.37'] },
+  spark: { enabled: true, versions: ['4.3'], object_storage: true },
 }
 
 /** setMockObjectStorage switches the object storage module, e.g. to off. */
@@ -1150,6 +1151,7 @@ export function resetMockState(): void {
     object_storage: { backend: 'fake', ok: true },
     databases: { enabled: true, engines: MOCK_ENGINES },
     kubernetes: { enabled: true, versions: ['1.37'] },
+    spark: { enabled: true, versions: ['4.3'], object_storage: true },
   }
 }
 

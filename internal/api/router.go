@@ -20,6 +20,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/service/instancetype"
 	"github.com/ahmedmohamedut/kumo/internal/service/keypair"
 	"github.com/ahmedmohamedut/kumo/internal/service/kubernetes"
+	"github.com/ahmedmohamedut/kumo/internal/service/spark"
 	"github.com/ahmedmohamedut/kumo/internal/service/subnet"
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
 	"github.com/ahmedmohamedut/kumo/internal/service/task"
@@ -67,6 +68,9 @@ type Options struct {
 	// Clusters answers the /api/v1/eks endpoints. Nil means the Kubernetes
 	// module is off, and every /eks route answers 503.
 	Clusters *kubernetes.Service
+	// SparkClusters answers the /api/v1/spark endpoints. Nil means the Spark
+	// module is off, and every /spark route answers 503.
+	SparkClusters *spark.Service
 	// Tasks answers the /api/v1/tasks endpoints, which is where the Location
 	// header of an asynchronous image operation points.
 	Tasks *task.Service
@@ -102,6 +106,7 @@ type Handler struct {
 	accessKeys     *accesskey.Service
 	dbInstances    *dbinstance.Service
 	clusters       *kubernetes.Service
+	sparkClusters  *spark.Service
 	tasks          *task.Service
 	signer         *auth.Signer
 	refreshTTL     time.Duration
@@ -128,6 +133,7 @@ func NewHandler(opts Options) *Handler {
 		accessKeys:     opts.AccessKeys,
 		dbInstances:    opts.DBInstances,
 		clusters:       opts.Clusters,
+		sparkClusters:  opts.SparkClusters,
 		tasks:          opts.Tasks,
 		signer:         opts.Signer,
 		refreshTTL:     opts.RefreshTTL,
@@ -321,6 +327,21 @@ func (h *Handler) Router() *gin.Engine {
 		write.POST("/clusters", h.createCluster)
 		write.DELETE("/clusters/:id", h.deleteCluster)
 		write.PATCH("/clusters/:id/node-groups/:ng", h.scaleNodeGroup)
+	}
+
+	// Spark clusters (docs/design/09-spark.md section 8). The client
+	// configuration carries the cluster's secret and S3 key, so it is an
+	// admin's (section 5, option A).
+	sparkGroup := secured.Group("/spark")
+	if h.sparkClusters == nil {
+		sparkGroup.Any("/*path", h.sparkOff)
+	} else {
+		sparkGroup.GET("/clusters", h.listSparkClusters)
+		sparkGroup.GET("/clusters/:id", h.getSparkCluster)
+		write := sparkGroup.Group("", middleware.RequireRole(auth.RoleAdmin))
+		write.POST("/clusters", h.createSparkCluster)
+		write.DELETE("/clusters/:id", h.deleteSparkCluster)
+		write.POST("/clusters/:id/client-config", h.sparkClientConfig)
 	}
 
 	// Host capacity. A launch form shows it next to the instance type, so both
