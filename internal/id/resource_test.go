@@ -47,6 +47,8 @@ func TestNetworkResourceIDs(t *testing.T) {
 		{name: "vpc", prefix: id.PrefixVPC, got: id.VPC()},
 		{name: "subnet", prefix: id.PrefixSubnet, got: id.Subnet()},
 		{name: "network interface", prefix: id.PrefixNetworkInterface, got: id.NetworkInterface()},
+		{name: "kubernetes cluster", prefix: id.PrefixK8sCluster, got: id.K8sCluster()},
+		{name: "node group", prefix: id.PrefixNodeGroup, got: id.NodeGroup()},
 	}
 
 	for _, tt := range tests {

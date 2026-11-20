@@ -107,6 +107,44 @@ type InstanceType struct {
 	Description string `json:"description"`
 }
 
+type K8sCluster struct {
+	ID                string         `json:"id"`
+	Name              string         `json:"name"`
+	KubernetesVersion string         `json:"kubernetes_version"`
+	ImageID           string         `json:"image_id"`
+	VpcID             string         `json:"vpc_id"`
+	SubnetID          string         `json:"subnet_id"`
+	PodCidr           string         `json:"pod_cidr"`
+	ServiceCidr       string         `json:"service_cidr"`
+	ControlPlaneCount int64          `json:"control_plane_count"`
+	ControlPlaneType  string         `json:"control_plane_type"`
+	State             string         `json:"state"`
+	StateReason       sql.NullString `json:"state_reason"`
+	Endpoint          sql.NullString `json:"endpoint"`
+	CaCertPem         string         `json:"ca_cert_pem"`
+	CreatedBy         sql.NullString `json:"created_by"`
+	CreatedAt         string         `json:"created_at"`
+	UpdatedAt         string         `json:"updated_at"`
+}
+
+type K8sNode struct {
+	InstanceID  string         `json:"instance_id"`
+	ClusterID   string         `json:"cluster_id"`
+	NodeGroupID sql.NullString `json:"node_group_id"`
+	Role        string         `json:"role"`
+}
+
+type K8sNodeGroup struct {
+	ID           string `json:"id"`
+	ClusterID    string `json:"cluster_id"`
+	Name         string `json:"name"`
+	InstanceType string `json:"instance_type"`
+	RootDiskGb   int64  `json:"root_disk_gb"`
+	DesiredSize  int64  `json:"desired_size"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+}
+
 type KeyPair struct {
 	ID          string         `json:"id"`
 	Name        string         `json:"name"`

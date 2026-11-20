@@ -168,6 +168,9 @@ type ownerReader interface {
 	GetDBInstanceByInstance(
 		ctx context.Context, arg sqlc.GetDBInstanceByInstanceParams,
 	) (sqlc.GetDBInstanceByInstanceRow, error)
+	GetK8sClusterByInstance(
+		ctx context.Context, arg sqlc.GetK8sClusterByInstanceParams,
+	) (sqlc.GetK8sClusterByInstanceRow, error)
 }
 
 // errManaged refuses an action on an instance another module owns, naming the
@@ -194,7 +197,24 @@ func (s *Service) errManaged(ctx context.Context, q ownerReader, row sqlc.Instan
 		return fmt.Errorf("%w: instance %q is managed by %q, not by %q",
 			service.ErrConflict, row.ID, row.ManagedBy, want)
 	}
-	if ManagedBy(row.ManagedBy) != ManagedByDatabases {
+	switch ManagedBy(row.ManagedBy) {
+	case ManagedByDatabases:
+	case ManagedByKubernetes:
+		// A node: stopping or terminating it under the cluster would take a
+		// node away without the cluster's own service knowing, and a drain
+		// is the only safe way a node leaves (docs/design/08-kubernetes.md
+		// section 4).
+		cluster, err := q.GetK8sClusterByInstance(ctx, sqlc.GetK8sClusterByInstanceParams{
+			InstanceID: row.ID,
+		})
+		if err != nil {
+			return fmt.Errorf("%w: instance %q is a Kubernetes node and is managed through "+
+				"/api/v1/eks/clusters", service.ErrConflict, row.ID)
+		}
+		return fmt.Errorf("%w: instance %q is a node of the Kubernetes cluster %s (%q); "+
+			"act on it through /api/v1/eks/clusters/%s",
+			service.ErrConflict, row.ID, cluster.ID, cluster.Name, cluster.ID)
+	default:
 		return fmt.Errorf("%w: instance %q is managed by %q and cannot be changed directly",
 			service.ErrConflict, row.ID, row.ManagedBy)
 	}

@@ -263,6 +263,59 @@ CREATE UNIQUE INDEX idx_db_instances_instance ON db_instances(instance_id);
 - **`identifier` is immutable**, because it is the endpoint. It is also the backing instance's name, so it shares `idx_instances_name_live` with every user instance: an identifier that collides with a live instance name is refused.
 - Tags are not wired up for a DB instance in this version. The generic `tags` table keyed on `db-<id>` is what it would use.
 
+## Kubernetes clusters (0008_kubernetes.sql)
+
+```sql
+CREATE TABLE k8s_clusters (
+  id                  TEXT PRIMARY KEY,           -- eks-<17 hex>
+  name                TEXT NOT NULL,              -- DNS label; the endpoint is api.<name>.<vpc>
+  kubernetes_version  TEXT NOT NULL,              -- '1.37', matched against images.engine_version
+  image_id            TEXT NOT NULL REFERENCES images(id),
+  vpc_id              TEXT NOT NULL REFERENCES vpcs(id),
+  subnet_id           TEXT NOT NULL REFERENCES subnets(id),
+  pod_cidr            TEXT NOT NULL,
+  service_cidr        TEXT NOT NULL,
+  control_plane_count INTEGER NOT NULL DEFAULT 1 CHECK (control_plane_count IN (1, 3)),
+  control_plane_type  TEXT NOT NULL REFERENCES instance_types(id),
+  state               TEXT NOT NULL CHECK (state IN
+                       ('creating','active','updating','degraded','deleting','failed')),
+  state_reason        TEXT,
+  endpoint            TEXT,                       -- https://api.<name>.<vpc>:6443, set once active
+  ca_cert_pem         TEXT NOT NULL,              -- public; the keys are not in the database
+  created_by          TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL
+);
+CREATE UNIQUE INDEX idx_k8s_clusters_name ON k8s_clusters(name);
+
+CREATE TABLE k8s_node_groups (
+  id            TEXT PRIMARY KEY,                 -- ng-<17 hex>
+  cluster_id    TEXT NOT NULL REFERENCES k8s_clusters(id) ON DELETE CASCADE,
+  name          TEXT NOT NULL,                    -- 'default' in v1
+  instance_type TEXT NOT NULL REFERENCES instance_types(id),
+  root_disk_gb  INTEGER NOT NULL,
+  desired_size  INTEGER NOT NULL CHECK (desired_size BETWEEN 1 AND 10),
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL
+);
+CREATE UNIQUE INDEX idx_k8s_node_groups_name ON k8s_node_groups(cluster_id, name);
+
+CREATE TABLE k8s_nodes (
+  instance_id   TEXT PRIMARY KEY REFERENCES instances(id),
+  cluster_id    TEXT NOT NULL REFERENCES k8s_clusters(id) ON DELETE CASCADE,
+  node_group_id TEXT REFERENCES k8s_node_groups(id) ON DELETE CASCADE,  -- NULL for a control plane
+  role          TEXT NOT NULL CHECK (role IN ('control-plane', 'worker')),
+  CHECK ((role = 'control-plane') = (node_group_id IS NULL))
+);
+CREATE INDEX idx_k8s_nodes_cluster ON k8s_nodes(cluster_id);
+```
+
+- **A node is a row in `instances` with `managed_by = 'eks'`**, hidden from the Instances pages and counted against capacity exactly as a DB instance's VM is (`08-kubernetes.md` K8). `managed_by` has no CHECK constraint, so the new value needed no change to `instances`. Every write through `/instances/{id}` on a node answers `409`, naming the cluster and `/api/v1/eks/clusters/<id>`.
+- **No key column.** Only the CA certificate, which every kubeconfig embeds, is in the database. The CA keys, the service account key and kumod's client key live in `$KUMO_DATA_DIR/clusters/<id>/`, 0600 (`08-kubernetes.md` section 5), so a copy of `kumo.db` -- the thing operators make for backups and bug reports -- is never a copy of a cluster's CA.
+- **A control plane belongs to no node group and a worker always to one**, enforced by the table's CHECK. `control_plane_count` admits 3 so high availability needs no migration (K5).
+- **A cluster's VMs are reserved together.** `instance.WithManagedReservations` checks the capacity of all of them as one sum, takes one subnet lock, and writes every `instances` row in the same transaction as the cluster's own rows: a cluster is reserved whole or not at all.
+- `k8s_nodes.instance_id` is the key, so a VM is a node of at most one cluster, and `GetK8sClusterByInstance` finds it.
+
 ## Notes
 
 - A terminate **deletes** the `instances` row rather than keeping it as history (`01-api.md`): its `network_interfaces` rows follow through the cascade and its tags go in the same transaction, so a terminated instance leaves nothing behind but its tasks and its id, which stays allocated. Rows an earlier release left in `terminated` are the exception and stay until an operator `DELETE`s that id — the `state` CHECK still accepts the value and the partial unique index still releases the name, so such a row neither blocks a launch nor needs a migration of its own to disappear.

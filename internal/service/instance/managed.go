@@ -88,44 +88,94 @@ func (s *Service) WithManagedReservation(
 	ctx context.Context, in ManagedReservation,
 	fn func(ctx context.Context, tx *store.Tx, reserved ManagedReserved) error,
 ) error {
-	if in.Owner == ManagedByNone {
-		return fmt.Errorf("%w: a managed reservation needs an owner", service.ErrInvalid)
-	}
-	if reason := validateName(in.Name); reason != "" {
-		return &service.ValidationError{
-			Message: "the reservation is not acceptable",
-			Fields:  []service.FieldError{{Field: "name", Reason: reason}},
-		}
-	}
+	return s.WithManagedReservations(ctx, []ManagedReservation{in},
+		func(ctx context.Context, tx *store.Tx, reserved []ManagedReserved) error {
+			return fn(ctx, tx, reserved[0])
+		})
+}
 
-	preset, err := s.types.Get(ctx, in.InstanceType)
-	if err != nil {
-		if errors.Is(err, service.ErrNotFound) {
+// WithManagedReservations reserves several VMs for one owning module, in one
+// subnet, and runs fn in the very same transaction as all of them -- a
+// Kubernetes cluster's control plane and workers
+// (docs/design/08-kubernetes.md section 4).
+//
+// It is all or nothing. The capacity check is of the sum, before anything is
+// locked or written, so a cluster the node cannot hold is refused whole rather
+// than reserved up to its third worker; and every row, with the module's own,
+// commits in one transaction, so a crash leaves either the whole cluster
+// reserved or none of it. The addresses are allocated one after another inside
+// that transaction, each seeing the ones before it. The returned slice is in
+// the order of ins.
+func (s *Service) WithManagedReservations(
+	ctx context.Context, ins []ManagedReservation,
+	fn func(ctx context.Context, tx *store.Tx, reserved []ManagedReserved) error,
+) error {
+	if len(ins) == 0 {
+		return fmt.Errorf("%w: a managed reservation needs at least one VM", service.ErrInvalid)
+	}
+	owner, subnetID := ins[0].Owner, ins[0].SubnetID
+	names := make(map[string]struct{}, len(ins))
+	presets := make([]struct{ vcpus, memoryMiB int }, len(ins))
+	var want capacity.Request
+
+	for i, in := range ins {
+		if in.Owner == ManagedByNone {
+			return fmt.Errorf("%w: a managed reservation needs an owner", service.ErrInvalid)
+		}
+		// One module, one subnet: the reservation holds one subnet lock and
+		// its rows commit together, which only makes sense for one owner.
+		if in.Owner != owner || in.SubnetID != subnetID {
+			return fmt.Errorf("%w: the VMs of one reservation share an owner and a subnet",
+				service.ErrInvalid)
+		}
+		if reason := validateName(in.Name); reason != "" {
+			return &service.ValidationError{
+				Message: "the reservation is not acceptable",
+				Fields:  []service.FieldError{{Field: "name", Reason: reason}},
+			}
+		}
+		if _, dup := names[in.Name]; dup {
 			return &service.ValidationError{
 				Message: "the reservation is not acceptable",
 				Fields: []service.FieldError{{
-					Field:  "instance_type",
-					Reason: fmt.Sprintf("no instance type %q exists", in.InstanceType),
+					Field: "name", Reason: fmt.Sprintf("%q is reserved twice", in.Name),
 				}},
 			}
 		}
-		return fmt.Errorf("read the instance type %q: %w", in.InstanceType, err)
-	}
+		names[in.Name] = struct{}{}
 
-	// The data disk counts against the node as much as the root overlay does,
-	// so the check is the sum rather than the launch's root disk alone.
-	want := capacity.Build(preset.VCPUs, int64(preset.MemoryMiB),
-		int64(in.RootDiskGB)+int64(in.ExtraDiskGB))
+		preset, err := s.types.Get(ctx, in.InstanceType)
+		if err != nil {
+			if errors.Is(err, service.ErrNotFound) {
+				return &service.ValidationError{
+					Message: "the reservation is not acceptable",
+					Fields: []service.FieldError{{
+						Field:  "instance_type",
+						Reason: fmt.Sprintf("no instance type %q exists", in.InstanceType),
+					}},
+				}
+			}
+			return fmt.Errorf("read the instance type %q: %w", in.InstanceType, err)
+		}
+		presets[i].vcpus, presets[i].memoryMiB = preset.VCPUs, preset.MemoryMiB
+
+		// A data disk counts against the node as much as the root overlay does.
+		one := capacity.Build(preset.VCPUs, int64(preset.MemoryMiB),
+			int64(in.RootDiskGB)+int64(in.ExtraDiskGB))
+		want.VCPUs += one.VCPUs
+		want.MemoryBytes += one.MemoryBytes
+		want.DiskBytes += one.DiskBytes
+	}
 	if err := s.checkCapacity(ctx, want); err != nil {
 		return err
 	}
 
-	allocSubnet, err := s.resolveLaunchSubnet(ctx, in.SubnetID)
+	allocSubnet, err := s.resolveLaunchSubnet(ctx, subnetID)
 	if err != nil {
 		return err
 	}
 
-	release, err := s.subnetLocks.TryAcquire(subnet.LockKey(allocSubnet.ID), string(in.Owner))
+	release, err := s.subnetLocks.TryAcquire(subnet.LockKey(allocSubnet.ID), string(owner))
 	if err != nil {
 		holder, held := s.subnetLocks.Holder(subnet.LockKey(allocSubnet.ID))
 		if !held {
@@ -141,9 +191,13 @@ func (s *Service) WithManagedReservation(
 	// at write time and a fresh allocation is what resolves it.
 	for attempt := 0; attempt < maxLaunchAllocationAttempts; attempt++ {
 		err = s.store.WithTx(ctx, func(ctx context.Context, tx *store.Tx) error {
-			reserved, err := s.reserveManaged(ctx, tx, in, preset.VCPUs, preset.MemoryMiB, allocSubnet)
-			if err != nil {
-				return err
+			reserved := make([]ManagedReserved, 0, len(ins))
+			for i, in := range ins {
+				r, err := s.reserveManaged(ctx, tx, in, presets[i].vcpus, presets[i].memoryMiB, allocSubnet)
+				if err != nil {
+					return err
+				}
+				reserved = append(reserved, r)
 			}
 			return fn(ctx, tx, reserved)
 		})
