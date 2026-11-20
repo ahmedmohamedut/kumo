@@ -252,13 +252,31 @@ What kumod generates at create, all in pure Go (`crypto/x509`, `crypto/ecdsa`,
 | Cluster CA key | `$KUMO_DATA_DIR/clusters/<id>/ca.key`, 0600, and the control-plane seed | Signs kubeconfigs on demand (K10) and, in v2, new control-plane nodes |
 | front-proxy CA, etcd CA, service-account key | Same directory, and the control-plane seed | kubeadm needs all four to init without generating its own; v2's second and third control planes need the same ones |
 | kumod's client cert and key (`kumo:system`, bound to a role with exactly the verbs of §6) | Same directory | kumod's own access; not `cluster-admin` |
-| Bootstrap token | The worker seeds only; 1 h TTL | Expires on its own; scale-up mints a new one |
+| Bootstrap token | The control plane's kubeadm configuration (which creates it) and the worker seeds; 1 h TTL | Expires on its own; scale-up mints a new one |
 
 The seed ISO stays attached to the domain, as for databases, so **the control
 plane's seed holds CA keys for as long as the VM exists**. That is no wider than
 the control plane's own `/etc/kubernetes/pki`, which holds the same keys by
 design. The first-boot script shreds cloud-init's copies under `/var/lib/cloud`,
 as `dbcloudinit` does. Worker seeds hold only the expiring token and the CA hash.
+
+**As built (M8.2).** `internal/service/k8spki` generates all of it with the
+standard library, every key ECDSA P-256, the CAs with kubeadm's own common names
+and its 10-year validity, kumod's certificate for one year (kumod holds the CA,
+so it re-signs its own whenever it likes). Private material is a `Secret`, whose
+`String`, `GoString`, `Format`, `LogValue` and `MarshalJSON` all refuse to show
+it, so a key cannot reach a log line or a task payload by being formatted. The
+directory holds ten files, all 0600 in a 0700 directory, written by
+temp-file-and-rename with the CA certificate last; a second write over an
+existing CA is refused, because it would lock kumod out of a running cluster.
+`internal/service/k8scloudinit` renders the seeds: the control plane's writes
+the PKI where kubeadm looks for it and kubeadm signs every leaf with kumod's
+CAs; a worker's pins the CA by hash and never skips verification. Neither names
+a Kubernetes version: the control plane fills in its own kubeadm's version at
+boot, so a seed cannot ask an image for a version it does not carry (which
+would make kubeadm pull). Both write the endpoint into `/etc/hosts` at the
+control plane's address, so a first boot does not wait on the VPC's DNS. The
+scripts interpolate nothing: every request value reaches the node as a file.
 
 **Kubeconfigs are minted, not stored.** `POST /eks/clusters/{id}/kubeconfig`
 signs a fresh client certificate for the calling user (CN = Kumo username, O =
