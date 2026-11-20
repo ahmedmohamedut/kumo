@@ -35,6 +35,9 @@ import { DBInstanceDetailPage } from '@/features/dbinstances/DBInstanceDetailPag
 import { ClustersListPage } from '@/features/kubernetes/ClustersListPage'
 import { CreateClusterPage } from '@/features/kubernetes/CreateClusterPage'
 import { ClusterDetailPage } from '@/features/kubernetes/ClusterDetailPage'
+import { CreateSparkClusterPage } from '@/features/spark/CreateSparkClusterPage'
+import { SparkClusterDetailPage } from '@/features/spark/SparkClusterDetailPage'
+import { SparkClustersListPage } from '@/features/spark/SparkClustersListPage'
 import { AccessKeysListPage } from '@/features/accesskeys/AccessKeysListPage'
 import { CreateAccessKeyPage, EditAccessKeyPage } from '@/features/accesskeys/AccessKeyFormPage'
 
@@ -82,6 +85,9 @@ export const router = createBrowserRouter([
       { path: 'kubernetes', element: <ClustersListPage /> },
       { path: 'kubernetes/create', element: <CreateClusterPage /> },
       { path: 'kubernetes/:clusterId', element: <ClusterDetailPage /> },
+      { path: 'spark', element: <SparkClustersListPage /> },
+      { path: 'spark/create', element: <CreateSparkClusterPage /> },
+      { path: 'spark/:clusterId', element: <SparkClusterDetailPage /> },
       { path: 'access-keys', element: <AccessKeysListPage /> },
       { path: 'access-keys/create', element: <CreateAccessKeyPage /> },
       { path: 'access-keys/:accessKeyId/edit', element: <EditAccessKeyPage /> },

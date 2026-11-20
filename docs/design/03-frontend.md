@@ -30,7 +30,7 @@ Stack: React 18, TypeScript (strict), Vite, Redux Toolkit + RTK Query, React Rou
 
 - `AppLayout` (navigation = `SideNavigation`, breadcrumbs, notifications = `Flashbar`, `toolsHide` for now, `headerSelector="#h"`, content type per page: `table`, `form`, `wizard`, `default`).
 - `TopNavigation`: logo + "Kumo", a **Services** utility menu listing the service groups, each opening its first page. Storage is disabled and marked "Not configured" on a node without object storage. User menu: profile, theme toggle, sign out.
-- Side navigation items: **Dashboard**, **Compute** (Instances, Instance types, Images, Key pairs), **Networking** (VPCs, Subnets), **Storage** (Buckets, Access keys), **Databases** and **Kubernetes** (Clusters). Storage appears only when `/system/info` reports `object_storage.backend` other than `none`, Databases only when it reports `databases.enabled`, and Kubernetes only when it reports `kubernetes.enabled` (`navigationFor`). An info payload that has not arrived yet keeps Databases and Kubernetes: both modules are on by default, so hiding them while loading would flicker them away on most nodes. Active item follows the route.
+- Side navigation items: **Dashboard**, **Compute** (Instances, Instance types, Images, Key pairs), **Networking** (VPCs, Subnets), **Storage** (Buckets, Access keys), **Databases**, **Kubernetes** (Clusters) and **Spark** (Clusters). Storage appears only when `/system/info` reports `object_storage.backend` other than `none`, Databases only when it reports `databases.enabled`, Kubernetes only when it reports `kubernetes.enabled`, and Spark only when it reports `spark.enabled` (`navigationFor`). An info payload that has not arrived yet keeps Databases, Kubernetes and Spark: the modules are on by default, so hiding them while loading would flicker them away on most nodes. Active item follows the route.
 - Layout component: `components/layout/ConsoleLayout.tsx`; routes render inside via `<Outlet />`. Pages set breadcrumbs through a small context/hook (`usePageMeta({breadcrumbs})`).
 
 ## 3. Routes
@@ -265,6 +265,24 @@ Every Kubernetes page renders inside `KubernetesGate` (`features/kubernetes`), t
 **Resize** is `ResizeNodeGroupModal`: 1-10 workers; shrinking adds an alert that the newest workers are drained first and that a PodDisruptionBudget holding a pod for 5 minutes stops the resize with the cluster degraded.
 
 **Delete** is `DeleteClusterModal`: every node and everything on them goes, `local-path` volumes included, and the confirm button stays disabled until the name is typed exactly.
+
+### 6.11 Spark clusters
+Every Spark page renders inside `SparkGate` (`features/spark`), the Kubernetes gate's twin: `spark.enabled: false` is an info alert explaining `KUMO_SPARK=on`; the module on with `spark.versions` empty keeps the pages, disables **Create cluster** and explains the import of the `spark-4.3-<date>` release (or the recipe in `packaging/images/spark-4.3/`).
+
+**Status mapping** (`SPARK_INDICATOR`): the Kubernetes one -- `creating`, `updating`, `deleting` → in-progress; `active` → success; `degraded` → **warning** (the master answers, `state_reason` says what is wrong); `failed` → error.
+
+**List.** Columns: Name (link), Status, Spark (version), Workers alive (`alive / total`, from the master's last answer), Object storage (the buckets, or a dash), Master (the `spark://` URL, or a dash), Created. Polled at 5 s while anything is transitional or degraded.
+
+**Create.** Name, Spark version (from `spark.versions`), master size (at least 2 vCPU and 4096 MiB), worker size (at least 2048 MiB), workers 1-10. **Object storage** is a checkbox shown only when `spark.object_storage` is true: checked, it reveals a bucket multiselect (from `GET /s3/buckets`) and an event-log select over the chosen buckets, defaulting to *None* (no event logs, no history server, 09-spark.md S10); unchecked or unavailable, the cluster runs without. The bucket rules are checked locally (`bucketsProblem`). A VPC-only alert explains that jobs are submitted from an instance in the VPC.
+
+**Detail** has three tabs:
+- **Overview**: status, version, workers alive, master size, the buckets, the event-log location (`s3a://<bucket>/spark-events/<id>`), created, id; the node group with an admin-only **Resize**; the cluster's tasks.
+- **Nodes**: each VM with its role, what the master last said of it (`Alive`, `Not registered`, `Not yet seen`), VM state, address and instance id.
+- **Connect**: for an admin, **Download client configuration** (a POST; the `spark-defaults.conf` with the cluster's secret and S3 key, saved as `kumo-<id>.conf`, never cached, enabled once the cluster is up); for a viewer, an alert that submitting needs the secret only an admin can download. The master URL and a `spark-submit` example to copy -- `--properties-file` and `--conf spark.driver.host=$(hostname -I | cut -d' ' -f1)` --, the master and history UI addresses, and an alert on why the driver host is passed and that the UIs have no sign-in.
+
+**Resize** is `ResizeSparkNodeGroupModal`: 1-10 workers; shrinking warns that the newest workers are decommissioned first and that one not done within the drain timeout is powered off with the cluster degraded.
+
+**Delete** is `DeleteSparkClusterModal`: every node and running job goes, with the cluster's access key; the buckets and event logs are named as kept; the name is typed to confirm.
 
 ## 7. UX details
 
