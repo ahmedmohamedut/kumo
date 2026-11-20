@@ -13,9 +13,8 @@ from inside the VPC only.
 
 ## 0. Status
 
-**Proposed 2026-11-20; awaiting the owner's approval.** Nothing is built.
-The owner's answers that shape it are in §11; two points this design adds on
-top of them need a yes or a no (§11, S12 and S13).
+**Approved 2026-11-20; not started.** The owner's answers that shape it,
+including S12 and S13, are in §11. Build it one M9 task at a time, in order.
 
 ### Scope of the first version
 
@@ -56,8 +55,8 @@ autoscaling, more than one node group, upgrades in place, YARN or HDFS.
 | S9 | **Object storage through a per-cluster access key** (approved) | A RustFS user of its own (`06-object-storage.md` §5), read-write on the buckets chosen at create, deleted with the cluster |
 | S10 | **History server on the master, event logs in a bucket** (approved) | The logs are objects, so they survive the cluster; with object storage off they go to the master's disk and go with it |
 | S11 | **IDs `spk-` and `ng-`; API under `/api/v1/spark`** (approved) | `spk-` + 17 hex for clusters; node groups reuse `ng-`, in their own table |
-| S12 | **Kumo keeps the cluster's access key secret** (to approve) | A worker added by a scale-up needs the S3 credentials in its seed, so the secret cannot be shown once and forgotten as `06-object-storage.md` §6 does for a user's key. It is kept beside the Spark secret, 0600, as K4 keeps a cluster CA (§5) |
-| S13 | **Decommission by ACPI shutdown, not by the master's UI** (to approve) | The master's decommission endpoint has no authentication; opening it would let any VPC host drain workers. Instead the worker's systemd unit stops Spark with `SIGPWR`, which Spark treats as "decommission", so kumod's ordinary graceful shutdown drains the worker (§4) |
+| S12 | **Kumo keeps the cluster's access key secret** (approved) | A worker added by a scale-up needs the S3 credentials in its seed, so the secret cannot be shown once and forgotten as `06-object-storage.md` §6 does for a user's key. It is kept beside the Spark secret, 0600, as K4 keeps a cluster CA (§5) |
+| S13 | **Decommission by ACPI shutdown, not by the master's UI** (approved) | The master's decommission endpoint has no authentication; opening it would let any VPC host drain workers. Instead the worker's systemd unit stops Spark with `SIGPWR`, which Spark treats as "decommission", so kumod's ordinary graceful shutdown drains the worker (§4) |
 
 ## 1. Shape
 
@@ -281,12 +280,8 @@ Answered 2026-11-20:
 | 6 | Naming | **`spk-`**, API `/api/v1/spark` (S11) |
 | 7 | Shared cluster code: extract or copy? | **Extract first** (S5, §10) |
 
-To approve:
-
-| # | Question | Proposed |
-|---|---|---|
-| S12 | May Kumo keep each cluster's access key secret, 0600, beside the Spark secret? | Yes: a scale-up cannot work otherwise |
-| S13 | Decommission through the VM's ACPI shutdown (`SIGPWR`) rather than the master's unauthenticated endpoint? | Yes |
+| S12 | May Kumo keep each cluster's access key secret, 0600, beside the Spark secret? | **Yes** |
+| S13 | Decommission through the VM's ACPI shutdown (`SIGPWR`) rather than the master's unauthenticated endpoint? | **Yes**; M9.2 verifies `SIGPWR` decommissions on the 4.3 image before M9.6 relies on it |
 
 ## 12. Milestone (M9)
 

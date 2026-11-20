@@ -277,7 +277,7 @@ Design: `08-kubernetes.md`. **Approved and built 2026-11-20**: M8.1 to M8.8 are 
 
 ## M9 — Spark clusters (EMR-like, standalone)
 
-Design: `09-spark.md`. **Proposed 2026-11-20; awaiting approval, not started.** Decisions from the owner (§11): Spark standalone on VMs from a golden image; Spark 4.3; integrated with Kumo object storage through a per-cluster access key; job submission from inside the VPC only (the REST submission server off); a history server on the master with event logs in a bucket; IDs `spk-`, API `/api/v1/spark`; the cluster machinery shared with M8 extracted first. Two points to approve (§11): Kumo keeps each cluster's access key secret (S12), and scale-down decommissions through the VM's ACPI shutdown (S13).
+Design: `09-spark.md`. **Approved 2026-11-20; not started.** Decisions from the owner (§11): Spark standalone on VMs from a golden image; Spark 4.3; integrated with Kumo object storage through a per-cluster access key; job submission from inside the VPC only (the REST submission server off); a history server on the master with event logs in a bucket; IDs `spk-`, API `/api/v1/spark`; the cluster machinery shared with M8 extracted first. Also approved: Kumo keeps each cluster's access key secret (S12), and scale-down decommissions through the VM's ACPI shutdown (S13).
 
 - [ ] **M9.0 Extract the managed-cluster machinery**: `internal/service/managedcluster` takes the multi-VM create skeleton, the endpoint DNS record, the bounded wait, node-group arithmetic, the tolerant teardown and the health strikes out of `internal/service/kubernetes` (`09-spark.md` §10).
   AC: no behavior change in Kubernetes: its unit tests pass unchanged and `make test-k8s-journey` passes on a real node.

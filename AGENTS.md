@@ -17,6 +17,7 @@ Before writing code, read the relevant files in `docs/design/`:
 | `06-object-storage.md` | Touching `internal/objectstore`, the S3 services, or the Storage pages |
 | `07-databases.md` | Touching `internal/service/dbinstance`, engine images, or the Databases pages |
 | `08-kubernetes.md` | Touching `internal/service/kubernetes`, the cluster PKI or seeds, the Kubernetes image, or the Kubernetes pages |
+| `09-spark.md` | Touching `internal/service/spark`, `internal/service/managedcluster`, the Spark image or seeds, or the Spark pages |
 
 If code and design docs disagree, **stop and flag it**. Do not silently diverge. If a design change is justified, update the doc in the same PR.
 
@@ -26,7 +27,7 @@ If code and design docs disagree, **stop and flag it**. Do not silently diverge.
 - Backend: Go, Gin, `github.com/digitalocean/go-libvirt`, SQLite (`modernc.org/sqlite`, pure Go, no CGO), JWT, `github.com/aws/aws-sdk-go-v2/service/s3` (object storage only, inside `internal/objectstore/rustfs`).
 - Frontend: React + Redux Toolkit (RTK Query) + Vite + TypeScript + Cloudscape Design System.
 - Production artifact: a single binary `bin/kumod` with the built frontend embedded via `go:embed`.
-- Scope of the current phase: **Instances, Images, Key Pairs, Auth**, plus **object storage (S3 via RustFS, M6)**. Managed Postgres is **built** (M7, `docs/design/07-databases.md`), including the real-node end-to-end run. Kubernetes clusters are **built** (M8, `docs/design/08-kubernetes.md`), including the real-node end-to-end run (`make test-k8s-journey`). Do not implement Redis, queues or secrets yet.
+- Scope of the current phase: **Instances, Images, Key Pairs, Auth**, plus **object storage (S3 via RustFS, M6)**. Managed Postgres is **built** (M7, `docs/design/07-databases.md`), including the real-node end-to-end run. Kubernetes clusters are **built** (M8, `docs/design/08-kubernetes.md`), including the real-node end-to-end run (`make test-k8s-journey`). Spark clusters are **designed and approved as M9** (`docs/design/09-spark.md`): build them one M9 task at a time, in order. Do not implement Redis, queues or secrets yet.
 
 ## Commands
 
