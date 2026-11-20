@@ -126,6 +126,35 @@ subjects:
     kind: Group
     name: kumo:viewers
 ---
+# view is namespaced reads only, so a viewer's kubectl get nodes would be
+# refused. Nodes are what a viewer most wants to see of a cluster, and reading
+# them reveals nothing a viewer cannot already see on the console.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kumo:viewers-nodes
+  labels:
+    app.kubernetes.io/managed-by: kumo
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kumo:viewers-nodes
+  labels:
+    app.kubernetes.io/managed-by: kumo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kumo:viewers-nodes
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: kumo:viewers
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

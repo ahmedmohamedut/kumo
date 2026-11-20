@@ -227,21 +227,25 @@ func TestRBAC(t *testing.T) {
 	rbac := docs(t, parseSeed(t, out).file(t, "/run/kumo-k8s/rbac.yaml").Content)
 
 	bindings := map[string]string{}
-	var systemRules []any
+	var systemRules, viewerNodeRules []any
 	for _, d := range rbac {
 		name, _ := dig(d, "metadata", "name").(string)
 		switch d["kind"] {
 		case "ClusterRoleBinding", "RoleBinding":
 			bindings[name], _ = dig(d, "roleRef", "name").(string)
 		case "ClusterRole":
-			if name == "kumo:system" {
+			switch name {
+			case "kumo:system":
 				systemRules, _ = d["rules"].([]any)
+			case "kumo:viewers-nodes":
+				viewerNodeRules, _ = d["rules"].([]any)
 			}
 		}
 	}
 	for binding, role := range map[string]string{
 		"kumo:admins":                  "cluster-admin",
 		"kumo:viewers":                 "view",
+		"kumo:viewers-nodes":           "kumo:viewers-nodes",
 		"kumo:system":                  "kumo:system",
 		"kumo:system-bootstrap-tokens": "kumo:system-bootstrap-tokens",
 	} {
@@ -270,6 +274,24 @@ func TestRBAC(t *testing.T) {
 				}
 			}
 		}
+	}
+
+	// A viewer reads nodes and does nothing else to them.
+	var viewerGrants []string
+	for _, r := range viewerNodeRules {
+		rule, _ := r.(map[string]any)
+		resources, _ := rule["resources"].([]any)
+		verbs, _ := rule["verbs"].([]any)
+		for _, res := range resources {
+			for _, v := range verbs {
+				resource, _ := res.(string)
+				verb, _ := v.(string)
+				viewerGrants = append(viewerGrants, resource+"/"+verb)
+			}
+		}
+	}
+	if got := strings.Join(viewerGrants, " "); got != "nodes/get nodes/list nodes/watch" {
+		t.Errorf("kumo:viewers-nodes grants %q, want read-only on nodes", got)
 	}
 }
 
