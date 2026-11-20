@@ -53,9 +53,9 @@ autoscaling, more than one node group, upgrades in place, YARN or HDFS.
 | S7 | **The endpoint is a DNS name** | `<cluster>.<vpc>`, served by the VPC's dnsmasq through `hypervisor.AddDNSHost`, as K6 |
 | S8 | **Authentication and encryption on** | `spark.authenticate` with a per-cluster 256-bit secret and `spark.network.crypto.enabled`, so a VPC host without the secret can neither submit nor join as a worker (§5) |
 | S9 | **Object storage through a per-cluster access key** (approved) | A RustFS user of its own (`06-object-storage.md` §5), read-write on the buckets chosen at create, deleted with the cluster |
-| S10 | **History server on the master, event logs in a bucket** (approved) | The logs are objects, so they survive the cluster; with object storage off they go to the master's disk and go with it |
+| S10 | **History server on the master, event logs in a bucket** (approved) | The logs are objects, so they survive the cluster. Event logs are written by each job's **driver**, which runs on the submitting instance or a worker and never on the master, so there is no local fallback: a cluster without an event-log bucket has event logs off and no history server, and the console says why (revised 2026-11-21, M9.2) |
 | S11 | **IDs `spk-` and `ng-`; API under `/api/v1/spark`** (approved) | `spk-` + 17 hex for clusters; node groups reuse `ng-`, in their own table |
-| S12 | **Kumo keeps the cluster's access key secret** (approved) | A worker added by a scale-up needs the S3 credentials in its seed, so the secret cannot be shown once and forgotten as `06-object-storage.md` §6 does for a user's key. It is kept beside the Spark secret, 0600, as K4 keeps a cluster CA (§5) |
+| S12 | **Kumo keeps the cluster's access key secret, and admins get it in the client configuration** (approved; revised 2026-11-21, option A) | A job's S3 settings travel from its driver to its executors, and the driver runs where `spark-submit` runs, so the settings must be on the submitting instance, not in the workers' seeds. Connect hands an admin a client `spark-defaults.conf` carrying them (§5), so Kumo keeps the secret, 0600, beside the Spark secret, as K4 keeps a cluster CA. Of the nodes, only the master's history server holds it |
 | S13 | **Decommission by ACPI shutdown, not by the master's UI** (approved) | The master's decommission endpoint has no authentication; opening it would let any VPC host drain workers. Instead the worker's systemd unit stops Spark with `SIGPWR`, which Spark treats as "decommission", so kumod's ordinary graceful shutdown drains the worker (§4) |
 
 ## 1. Shape
@@ -133,13 +133,14 @@ prepare   the Spark secret; with object storage, the access key (RustFS user
           $KUMO_DATA_DIR/spark/<id>/ (0700 dir, 0600 files)
 reserve   in 1 txn, managedcluster: capacity and addresses for 1 + N VMs, the
           cluster, its node group, its nodes and the task
-1. the master: seed (spark-env, spark-defaults with the secret, the S3
-   settings and the event-log location, systemd units for master and history
-   server), root overlay, domain
+1. the master: seed (spark-defaults with the secret; with an event-log
+   bucket, the S3 settings and the event-log location for the history
+   server; the units for master, and history server if there is a bucket),
+   root overlay, domain
 2. the DNS record <cluster>.<vpc> -> the master's address
 3. wait for the master's /json/ to answer with status ALIVE
-4. the workers: seed (the master URL and the same secret and S3 settings),
-   overlay, domain each
+4. the workers: seed (the master URL and the same secret; no S3 settings,
+   which reach executors from their driver), overlay, domain each
 5. wait until every expected worker is registered ALIVE
 6. in 1 txn: instances -> running, cluster -> active, endpoint written;
    degraded with the missing workers named if step 5 timed out
@@ -151,8 +152,8 @@ so a requeued task completes rather than duplicates.
 
 ### Scale (task `spark.scale`)
 
-- **Up** launches workers with the same seed recipe; the secret and the S3
-  credentials come from the cluster's directory (S12).
+- **Up** launches workers with the same seed recipe; the secret comes from
+  the cluster's directory.
 - **Down**, newest first, one worker at a time (S13):
   1. a graceful ACPI shutdown of the worker's VM;
   2. systemd stops `spark-worker` with `KillSignal=SIGPWR` and a stop timeout
@@ -177,13 +178,32 @@ and the event logs in them are the user's and are kept.**
 
 | Secret | Where it lives | Who sees it |
 |---|---|---|
-| Spark auth secret (256-bit, per cluster) | `$KUMO_DATA_DIR/spark/<id>/spark.secret`, 0600; every node's seed | An admin, from **Connect**, on demand; never a viewer, never a log line, never a task payload |
-| Access key secret (S12) | `$KUMO_DATA_DIR/spark/<id>/s3.secret`, 0600; every node's seed | Nobody through the API: jobs get it from `spark-defaults.conf` on the nodes |
+| Spark auth secret (256-bit, per cluster) | `$KUMO_DATA_DIR/spark/<id>/spark.secret`, 0600; every node's seed | An admin, in the client configuration; never a viewer, never a log line, never a task payload |
+| Access key secret (S12) | `$KUMO_DATA_DIR/spark/<id>/s3.secret`, 0600; the master's seed when there is an event-log bucket (the history server reads the logs) | An admin, in the client configuration |
 
-- **Why the user needs the Spark secret**: `spark-submit` from a VPC instance
-  must present it (`--conf spark.authenticate.secret=…`). The console shows it
-  once per request, like a kubeconfig download, with `Cache-Control:
-  no-store`.
+**The client configuration** is what makes `s3a://` work with nothing to
+configure. A job's settings, its S3 endpoint and credentials included, travel
+from its driver to its executors; the driver runs where `spark-submit` runs (a
+VPC instance in client mode, a worker in cluster mode, still with the
+submitter's settings), so the settings belong to the submitter. Connect hands
+an admin a `spark-defaults.conf`, minted on demand with `Cache-Control:
+no-store` like a kubeconfig, carrying:
+
+- the master URL, `spark.authenticate` and its secret, `spark.network.crypto.enabled`;
+- the decommissioning settings, which are a job's (`spark.decommission.enabled`,
+  `spark.storage.decommission.*`);
+- with object storage, `spark.hadoop.fs.s3a.*`: the guests' S3 endpoint, path-style
+  access, the cluster's access key and secret;
+- with an event-log bucket, `spark.eventLog.enabled` and `spark.eventLog.dir`.
+
+The user runs `spark-submit --properties-file kumo-<cluster>.conf --conf
+spark.driver.host=$(hostname -I | cut -d' ' -f1) …`, as the file's header and
+the console's example say. The executors connect back to the driver, and by
+default Spark advertises the driver's **hostname**, which a worker resolves only
+if the VPC's DNS happens to know it; the address always works (M9.2's boot test
+found executors dying on an unresolvable driver host). The key
+it carries is the cluster's own, scoped to the cluster's buckets and deleted
+with it, so a leaked file reaches those buckets until the cluster goes.
 - **Seeds are shredded** after first boot, as the Kubernetes seeds are, so the
   secrets do not linger in `/var/lib/cloud`.
 - The web UIs (master `:8080`, workers `:8081`, history `:18080`) have no
@@ -230,7 +250,7 @@ Expected about 1.2 GB gzipped, under GitHub's 2 GiB asset limit.
 | `POST /spark/clusters` | admin | create; `202` with the cluster `creating` |
 | `GET /spark/clusters/{id}` | any | detail with node group, nodes, endpoint, UI addresses |
 | `PATCH /spark/clusters/{id}/node-groups/{ng}` | admin | resize; `202`, or `200` unchanged |
-| `POST /spark/clusters/{id}/secret` | admin | the Spark secret, `no-store` |
+| `POST /spark/clusters/{id}/client-config` | admin | the client `spark-defaults.conf` (§5), `no-store` |
 | `DELETE /spark/clusters/{id}` | admin | delete; `202` |
 
 The create body: `name`, `spark_version` (optional, newest), `subnet_id`
@@ -287,7 +307,7 @@ Answered 2026-11-20:
 | 6 | Naming | **`spk-`**, API `/api/v1/spark` (S11) |
 | 7 | Shared cluster code: extract or copy? | **Extract first** (S5, §10) |
 
-| S12 | May Kumo keep each cluster's access key secret, 0600, beside the Spark secret? | **Yes** |
+| S12 | May Kumo keep each cluster's access key secret, 0600, beside the Spark secret? | **Yes**; and (2026-11-21) admins get it in the client configuration, option A of the M9.2 review |
 | S13 | Decommission through the VM's ACPI shutdown (`SIGPWR`) rather than the master's unauthenticated endpoint? | **Yes**; M9.2 verifies `SIGPWR` decommissions on the 4.3 image before M9.6 relies on it |
 
 ## 12. Milestone (M9)
@@ -306,7 +326,7 @@ One task per PR, in order (acceptance criteria in `05-roadmap.md`):
 - **M9.4 Master client** — `internal/sparkapi`, the `/json/` reader, against
   `httptest` servers that answer like a master.
 - **M9.5 Clusters API and tasks** — create, delete, health, the access key
-  lifecycle, the secret endpoint, `/system/info`, `kumod doctor`,
+  lifecycle, the client configuration, `/system/info`, `kumod doctor`,
   `openapi.yaml`, `01-api.md`.
 - **M9.6 Scale** — up, and down by ACPI shutdown.
 - **M9.7 Console** — the Spark pages.
