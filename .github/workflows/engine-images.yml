@@ -105,7 +105,12 @@ jobs:
             sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-          test -w /dev/kvm
+          # trigger only queues the event; settle waits for the rule to apply.
+          sudo udevadm settle
+          if [ ! -w /dev/kvm ]; then
+            ls -l /dev/kvm || echo "::error::this runner has no /dev/kvm"
+            exit 1
+          fi
 
       # What build.sh's need_tools checks for, plus gpg for the signature over
       # the base image's checksums. verify.sh needs nothing more: its SCRAM
