@@ -183,7 +183,11 @@ reserve   in 1 txn, instance.WithManagedReservations: capacity for 1 + node_coun
   4. mint the workers' bootstrap token through the API (1 h), then each worker:
      root overlay, seed (kubeadm join: endpoint, that token, the CA hash),
      domain. The token comes from the running API rather than from step 1's
-     seed, so a requeued create never needs a token it no longer has
+     seed, so a requeued create never needs a token it no longer has. The
+     mint is part of step 3's wait: /readyz answers before the seed has
+     applied the RBAC that admits kumo:system, and on a fast node the gap is
+     seconds, so a 403 (or an unreachable API) is "not yet" and is retried
+     until the ready timeout; any other error fails the create at once
   5. wait until every expected node reports Ready, via the API
   6. in 1 txn: instances -> running, cluster -> active, endpoint written; and
      degraded, with the nodes named, if step 5 timed out

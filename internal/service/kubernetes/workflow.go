@@ -183,22 +183,52 @@ func (s *Service) create(ctx context.Context, row sqlc.K8sCluster) error {
 		return fmt.Errorf("open the API of cluster %q: %w", row.ID, err)
 	}
 	defer api.Close()
-	if err := s.await(ctx, row.ID, "the API server to be ready", func(ctx context.Context) bool {
-		return api.Ready(ctx) == nil
-	}); err != nil {
-		return err
-	}
 
 	// 4. The workers, with a token the API mints now: whatever attempt this
 	//    is, the token is fresh and the API is the one that will check it.
-	if len(l.workers) > 0 {
-		token, err := k8spki.NewBootstrapToken(nil)
+	//
+	//    /readyz answers before the seed has applied the RBAC that admits
+	//    kumo:system -- it can only be applied once the API is up -- and on a
+	//    fast node the gap is seconds (M8.8 hit it). So the mint is part of the
+	//    wait: a refusal or an unreachable API is "not yet", and anything else
+	//    fails the create at once.
+	var token k8spki.BootstrapToken
+	var lastRefusal, fatal error
+	if err := s.await(ctx, row.ID, "the API server to admit kumod", func(ctx context.Context) bool {
+		if api.Ready(ctx) != nil {
+			return false
+		}
+		if len(l.workers) == 0 {
+			return true
+		}
+		fresh, err := k8spki.NewBootstrapToken(nil)
 		if err != nil {
-			return err
+			fatal = err
+			return true
 		}
-		if err := api.CreateBootstrapToken(ctx, token, s.now().Add(workerTokenTTL)); err != nil {
-			return fmt.Errorf("mint the workers' bootstrap token: %w", err)
+		err = api.CreateBootstrapToken(ctx, fresh, s.now().Add(workerTokenTTL))
+		switch {
+		case err == nil:
+			token = fresh
+			return true
+		case errors.Is(err, k8sapi.ErrForbidden), errors.Is(err, k8sapi.ErrUnavailable):
+			lastRefusal = err
+			return false
+		default:
+			fatal = err
+			return true
 		}
+	}); err != nil {
+		if lastRefusal != nil {
+			return fmt.Errorf("%w; the API server last answered: %v", err, lastRefusal) //nolint:errorlint // one cause is wrapped, the other is context
+		}
+		return err
+	}
+	if fatal != nil {
+		return fmt.Errorf("mint the workers' bootstrap token: %w", fatal)
+	}
+
+	if len(l.workers) > 0 {
 		hash, err := k8spki.CAHash(pki.CA.CertPEM)
 		if err != nil {
 			return err

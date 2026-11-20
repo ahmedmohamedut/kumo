@@ -56,6 +56,9 @@ type cluster struct {
 	notReady map[string]bool
 	tokens   []k8spki.BootstrapToken
 	conns    []kubernetes.Connection
+	// tokenRefusals are answers CreateBootstrapToken gives, in order, before
+	// it accepts one: kumod's RBAC not applied yet, or something worse.
+	tokenRefusals []error
 	// pods are the pods on each node, for a drain; blocked are the ones a
 	// disruption budget protects; calls is every drain call, in order.
 	pods    map[string][]k8sapi.Pod
@@ -118,6 +121,11 @@ func (s *scripted) Nodes(context.Context) ([]k8sapi.Node, error) {
 func (s *scripted) CreateBootstrapToken(_ context.Context, tok k8spki.BootstrapToken, _ time.Time) error {
 	s.c.mu.Lock()
 	defer s.c.mu.Unlock()
+	if len(s.c.tokenRefusals) > 0 {
+		err := s.c.tokenRefusals[0]
+		s.c.tokenRefusals = s.c.tokenRefusals[1:]
+		return err
+	}
 	s.c.tokens = append(s.c.tokens, tok)
 	return nil
 }
@@ -548,6 +556,53 @@ func TestCreateHandlerFailsWhenTheAPINeverAnswers(t *testing.T) {
 		t.Errorf("the control plane's domain was removed: %v", err)
 	}
 }
+
+// /readyz answers before the seed has applied the RBAC that admits kumod, so
+// the first mints are refused: that is "not yet", and the create carries on
+// with the token the API finally accepts (found by M8.8 on a fast node).
+func TestCreateHandlerWaitsForKumodToBeAdmitted(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.kubernetesImage(t, "1.37")
+	c := h.create(t, "orders")
+	h.api.set(true)
+	h.api.mu.Lock()
+	h.api.tokenRefusals = []error{k8sapi.ErrForbidden, k8sapi.ErrForbidden, k8sapi.ErrUnavailable}
+	h.api.mu.Unlock()
+
+	if err := h.run(t, c.ID, h.svc.CreateHandler); err != nil {
+		t.Fatalf("CreateHandler(): %v", err)
+	}
+	if got := h.get(t, c.ID); got.State != kubernetes.StateActive {
+		t.Fatalf("state = %s (%v), want active", got.State, got.StateReason)
+	}
+	if len(h.api.tokens) != 1 {
+		t.Errorf("%d tokens accepted, want the one the workers joined with", len(h.api.tokens))
+	}
+}
+
+// Any other answer to the mint is not a race, and fails the create at once
+// rather than after the ready timeout.
+func TestCreateHandlerFailsOnAnUnexpectedMintError(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.kubernetesImage(t, "1.37")
+	c := h.create(t, "orders")
+	h.api.set(true)
+	h.api.mu.Lock()
+	h.api.tokenRefusals = []error{errMintBroken}
+	h.api.mu.Unlock()
+
+	if err := h.run(t, c.ID, h.svc.CreateHandler); !errors.Is(err, errMintBroken) {
+		t.Fatalf("CreateHandler() = %v, want the mint's error", err)
+	}
+	got := h.get(t, c.ID)
+	if got.State != kubernetes.StateFailed || got.StateReason == nil || !strings.Contains(*got.StateReason, "bootstrap token") {
+		t.Errorf("state = %s (%v), want failed naming the bootstrap token", got.State, got.StateReason)
+	}
+}
+
+var errMintBroken = errors.New("the secrets API is broken")
 
 // Nodes that never become Ready leave the cluster degraded, not failed: the
 // control plane works, and the endpoint is published.
