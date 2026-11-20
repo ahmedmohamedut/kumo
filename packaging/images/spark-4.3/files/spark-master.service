@@ -1,0 +1,24 @@
+# The Spark master of a Kumo Spark cluster (docs/design/09-spark.md section 1).
+# Shipped disabled: a node's seed enables it on the master only, after writing
+# /etc/spark/spark-defaults.conf (the secret, encryption) and kumo-node.env.
+[Unit]
+Description=Spark master
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/spark/kumo-node.env
+
+[Service]
+User=spark
+Group=spark
+EnvironmentFile=/etc/spark/kumo-node.env
+Environment=SPARK_HOME=/opt/spark SPARK_CONF_DIR=/etc/spark SPARK_LOG_DIR=/var/log/spark
+# spark-class runs the daemon in the foreground, which is what systemd wants;
+# the sbin/start-*.sh scripts would fork it away. It reads spark-defaults.conf
+# itself, so the secret is never on a command line.
+ExecStart=/opt/spark/bin/spark-class org.apache.spark.deploy.master.Master \
+  --host ${SPARK_NODE_IP} --port 7077 --webui-port 8080
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

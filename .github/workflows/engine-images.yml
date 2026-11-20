@@ -1,6 +1,7 @@
 # Builds, verifies and publishes Kumo's engine images: the golden images the
-# databases module (docs/design/07-databases.md section 7) and the Kubernetes
-# module (docs/design/08-kubernetes.md section 7) boot from. One recipe per
+# databases module (docs/design/07-databases.md section 7), the Kubernetes
+# module (docs/design/08-kubernetes.md section 7) and the Spark module
+# (docs/design/09-spark.md section 7) boot from. One recipe per
 # directory under packaging/images/, all built by packaging/images/lib.
 #
 # Separate from ci.yml on purpose. An engine image is immutable and versioned on
@@ -14,7 +15,7 @@
 #   schedule           the monthly refresh: build, verify and publish every recipe
 #
 # Each image is a GitHub release tagged <recipe>-<version> (postgres-18-20261120,
-# kubernetes-1.37-20261120), never marked latest: scripts/install.sh resolves
+# kubernetes-1.37-20261120, spark-4.3-20261121), never marked latest: scripts/install.sh resolves
 # /releases/latest to find Kumo itself, and an image release there would send
 # every new install to a tag with no kumod. Kumo's own version lookups match
 # v* only, so these tags never stamp a binary.
@@ -32,7 +33,7 @@ on:
         required: false
         default: all
         type: choice
-        options: [all, postgres-18, kubernetes-1.37]
+        options: [all, postgres-18, kubernetes-1.37, spark-4.3]
       version:
         description: "Version string for the image name (default: today's UTC date, YYYYMMDD)"
         required: false
@@ -79,8 +80,8 @@ jobs:
           EVENT: ${{ github.event_name }}
         run: |
           case "${INPUT_RECIPE:-all}" in
-            all) recipes='["postgres-18","kubernetes-1.37"]' ;;
-            postgres-18 | kubernetes-1.37) recipes="[\"$INPUT_RECIPE\"]" ;;
+            all) recipes='["postgres-18","kubernetes-1.37","spark-4.3"]' ;;
+            postgres-18 | kubernetes-1.37 | spark-4.3) recipes="[\"$INPUT_RECIPE\"]" ;;
             *) echo "::error::unknown recipe '$INPUT_RECIPE'"; exit 1 ;;
           esac
           v=${INPUT_VERSION:-$(date -u +%Y%m%d)}

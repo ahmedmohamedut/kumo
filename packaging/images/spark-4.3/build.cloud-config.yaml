@@ -1,0 +1,133 @@
+#cloud-config
+# Build-time provisioning for the Kumo Spark 4.3 golden image.
+#
+# Read by ./build.sh (../lib/build-image.sh) only, inside a throwaway VM that
+# powers itself off when it is done. This is NOT the seed a node boots with:
+# that one is rendered at create time by kumod (docs/design/09-spark.md
+# section 4, M9.2), and ./verify.cloud-config.yaml is a hand-written stand-in.
+#
+# The image is the same for a master and a worker; the seed decides which. It
+# carries everything a node needs and nothing that makes it one cluster's:
+# Ubuntu 26.04, OpenJDK 21, Spark 4.3.0 with PySpark, the S3 connector, and
+# systemd units for master, worker and history server, all disabled. No
+# secret, no configuration, no cluster.
+
+ssh_pwauth: false
+disable_root: true
+
+package_update: true
+package_upgrade: true
+
+write_files:
+  # A node is not a machine anyone has a shell on; see the Postgres recipe.
+  - path: /etc/ssh/sshd_config.d/60-kumo.conf
+    permissions: '0644'
+    content: |
+      PasswordAuthentication no
+      PermitRootLogin no
+      KbdInteractiveAuthentication no
+
+  - path: /etc/kumo-image
+    permissions: '0644'
+    content: |
+      engine=spark
+      engine_version=4.3
+      base=ubuntu-26.04
+      spark_home=/opt/spark
+      spark_conf_dir=/etc/spark
+      built_by=packaging/images/spark-4.3/build.sh
+
+  # Written to /run and run with `bash <path>` because /run is noexec, as in
+  # the other recipes.
+  - path: /run/kumo-image-provision
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      export LC_ALL=C
+      export DEBIAN_FRONTEND=noninteractive
+
+      trap 'printf "\nKUMO-IMAGE-FAILED\n" >/dev/console; sync; systemctl --no-block poweroff' ERR
+
+      # Every version the image is made of, and the SHA-512 each download must
+      # have. A bump is an edit here. Spark's hash is the one Apache publishes
+      # beside the release; the S3 bundle's is Maven Central's; hadoop-aws has
+      # only a SHA-1 on Maven Central, so this SHA-512 was computed from the jar
+      # whose SHA-1 matched it. hadoop-aws is the Hadoop Spark 4.3.0 bundles
+      # (3.5.0), and the bundle is the AWS SDK that Hadoop 3.5.0 names.
+      SPARK_VERSION=4.3.0
+      SPARK_DIST=spark-4.3.0-bin-hadoop3
+      SPARK_URL=https://archive.apache.org/dist/spark/spark-4.3.0/spark-4.3.0-bin-hadoop3.tgz
+      SPARK_SHA512=51a2473d09c74b6b755d3c4158275922fe4fed9c3801d9e48ade6083dc03b45693274020fe0fcf2be2a607a6a828f7159f78609ef913049e98c1882d2d0aab5f
+      HADOOP_AWS_URL=https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.5.0/hadoop-aws-3.5.0.jar
+      HADOOP_AWS_SHA512=68d112702267efaec0ed88fc1b9a0cf93fb6175f4cce2f6d72822c3ceda03651e9299d2284ec1a747f36671a5f47e0501884f9a7e218b3a2a530a00f77a99333
+      AWS_BUNDLE_URL=https://repo1.maven.org/maven2/software/amazon/awssdk/bundle/2.35.4/bundle-2.35.4.jar
+      AWS_BUNDLE_SHA512=92117c93e34c8c8f5c7e27c0f29f9ae027a2d8ff186da7e40b4815cfeb1607b4cc121fd20fa7b58ee4cb692a4f5e919953e11263d831cc9b2b69c6bed124f6db
+
+      mkdir -p /run/kumo-files
+      mount -o ro /dev/disk/by-label/KUMOFILES /run/kumo-files
+      FILES=/run/kumo-files/recipe
+
+      # Java 21: Spark 4.3 needs 17.0.11 or later. Headless, because nothing
+      # here draws a window. Python is the cloud image's own, for PySpark.
+      apt-get install -y -q --no-install-recommends openjdk-21-jre-headless python3
+
+      fetch() { # url sha512 dest
+      	curl -fsSL --retry 5 --retry-delay 5 -o "$3" "$1"
+      	echo "$2  $3" | sha512sum -c --quiet -
+      }
+      fetch "$SPARK_URL" "$SPARK_SHA512" /var/tmp/spark.tgz
+      tar -xzf /var/tmp/spark.tgz -C /opt
+      rm /var/tmp/spark.tgz
+      mv "/opt/$SPARK_DIST" "/opt/spark-$SPARK_VERSION"
+      ln -s "/opt/spark-$SPARK_VERSION" /opt/spark
+      # What a standalone node never runs: the YARN and Kubernetes
+      # integrations' extras and SparkR (R is not installed).
+      rm -rf /opt/spark/R /opt/spark/yarn /opt/spark/kubernetes
+      chown -R root:root "/opt/spark-$SPARK_VERSION"
+
+      fetch "$HADOOP_AWS_URL" "$HADOOP_AWS_SHA512" /opt/spark/jars/hadoop-aws-3.5.0.jar
+      fetch "$AWS_BUNDLE_URL" "$AWS_BUNDLE_SHA512" /opt/spark/jars/aws-sdk-bundle-2.35.4.jar
+      chmod 0644 /opt/spark/jars/*.jar
+
+      # The account every daemon runs as, and the directories it writes.
+      # /etc/spark is filled by a node's seed; the secret in it is readable by
+      # spark and root only.
+      useradd --system --home-dir /var/lib/spark --shell /usr/sbin/nologin spark
+      install -d -m 0750 -o root -g spark /etc/spark
+      install -d -m 0750 -o spark -g spark /var/lib/spark /var/lib/spark/work /var/lib/spark/events
+      install -d -m 0750 -o spark -g spark /var/log/spark
+
+      install -m 0644 "$FILES/spark-master.service" "$FILES/spark-worker.service" \
+      	"$FILES/spark-history.service" /etc/systemd/system/
+      install -D -m 0755 "$FILES/spark-worker-drain" /usr/lib/kumo/spark-worker-drain
+      systemctl daemon-reload
+
+      # Whoever inspects a node with the console finds the tools on PATH.
+      printf 'export SPARK_HOME=/opt/spark\nexport SPARK_CONF_DIR=/etc/spark\nexport PATH="$PATH:/opt/spark/bin"\n' \
+      	>/etc/profile.d/spark.sh
+
+      # A smoke test of the install, before the image is sealed.
+      java -version 2>&1 | head -1 >/dev/console
+      release=$(SPARK_CONF_DIR=/nonexistent /opt/spark/bin/spark-submit --version 2>&1 |
+      	sed -n 's/.*version \([0-9][0-9.]*\).*/\1/p' | head -1)
+      [ "$release" = "$SPARK_VERSION" ]
+      python3 --version >/dev/console
+
+      {
+      	printf 'engine_release=%s\nengine_package=%s\n' "$release" "$SPARK_DIST"
+      	printf 'java=%s\npython=%s\nhadoop_aws=3.5.0\naws_sdk_bundle=2.35.4\n' \
+      		"$(dpkg-query -W -f='${Version}' openjdk-21-jre-headless)" "$(python3 -c 'import platform; print(platform.python_version())')"
+      } >>/etc/kumo-image
+
+      # A node never installs a snap; see the Kubernetes recipe.
+      systemctl disable --now snapd.socket snapd.service snapd.seeded.service >/dev/null 2>&1 || true
+      apt-get purge -y -q snapd >/dev/null
+      rm -rf /snap /var/snap /var/lib/snapd /var/cache/snapd
+
+      printf '\nKUMO-IMAGE-ENGINE=%s\n' "$release" >/dev/console
+      printf 'KUMO-IMAGE-PKG=%s\n' "$SPARK_DIST" >/dev/console
+      exec bash /run/kumo-files/lib/guest-finish.sh
+
+runcmd:
+  - [bash, /run/kumo-image-provision]

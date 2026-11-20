@@ -1,0 +1,21 @@
+# The Spark history server of a Kumo Spark cluster, on the master
+# (docs/design/09-spark.md S10). It reads spark.history.fs.logDirectory from
+# spark-defaults.conf: a bucket through s3a, or the master's disk with object
+# storage off. Shipped disabled.
+[Unit]
+Description=Spark history server
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/spark/kumo-node.env
+
+[Service]
+User=spark
+Group=spark
+EnvironmentFile=/etc/spark/kumo-node.env
+Environment=SPARK_HOME=/opt/spark SPARK_CONF_DIR=/etc/spark SPARK_LOG_DIR=/var/log/spark
+ExecStart=/opt/spark/bin/spark-class org.apache.spark.deploy.history.HistoryServer
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

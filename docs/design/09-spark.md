@@ -71,7 +71,7 @@ autoscaling, more than one node group, upgrades in place, YARN or HDFS.
                      │          executors ──────────────────────┐             │
                      └──────────────────────────────────────────┼─────────────┘
  kumod (host, the VPC's gateway)                                │ s3a://
-   ├── GET http://<master>:8080/json   health (§6)              ▼
+   ├── GET http://<master>:8080/json/  health (§6)              ▼
    ├── libvirt: VMs, DNS record, ACPI shutdown         RustFS (S3 port on the host)
    └── RustFS admin: the cluster's access key
 ```
@@ -137,7 +137,7 @@ reserve   in 1 txn, managedcluster: capacity and addresses for 1 + N VMs, the
    settings and the event-log location, systemd units for master and history
    server), root overlay, domain
 2. the DNS record <cluster>.<vpc> -> the master's address
-3. wait for the master's /json to answer with status ALIVE
+3. wait for the master's /json/ to answer with status ALIVE
 4. the workers: seed (the master URL and the same secret and S3 settings),
    overlay, domain each
 5. wait until every expected worker is registered ALIVE
@@ -194,10 +194,12 @@ and the event logs in them are the user's and are kept.**
 
 ## 6. Readiness and health
 
-kumod reads `GET http://<master>:8080/json`, Spark's own JSON view of the
+kumod reads `GET http://<master>:8080/json/`, Spark's own JSON view of the
 master: `status` and the `workers` with their state. No client library and no
 credential: it is a read of what any VPC host can read. Parsed with
-`encoding/json` in `internal/sparkapi` (M9.4).
+`encoding/json` in `internal/sparkapi` (M9.4). The trailing slash matters: Spark 4.3 answers `/json`
+with a `301` to `/json/` (found by M9.1's verify), and a client that does not
+follow redirects would read nothing.
 
 The health pass, on the shared strike logic (S5): a master that does not
 answer, or a worker that is not `ALIVE`, is a strike; three in a row make the
@@ -301,7 +303,7 @@ One task per PR, in order (acceptance criteria in `05-roadmap.md`):
   the secret is refused, and `SIGPWR` decommissions a worker holding blocks.
 - **M9.3 Data model** — `0009_spark.sql`, `managed_by='spk'`, `spk-` in
   `internal/id`.
-- **M9.4 Master client** — `internal/sparkapi`, the `/json` reader, against
+- **M9.4 Master client** — `internal/sparkapi`, the `/json/` reader, against
   `httptest` servers that answer like a master.
 - **M9.5 Clusters API and tasks** — create, delete, health, the access key
   lifecycle, the secret endpoint, `/system/info`, `kumod doctor`,

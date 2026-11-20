@@ -1,0 +1,143 @@
+#cloud-config
+# The seed ./verify.sh boots the Spark 4.3 image with: a hand-written stand-in
+# for the master and worker seeds internal/service/sparkcloudinit will render
+# (docs/design/09-spark.md section 4, M9.2), both roles in one VM.
+#
+# It configures what a cluster's seeds will -- the shared secret, encryption on
+# the wire, the REST server off, decommissioning on, event logs and the history
+# server -- then runs the checks and reports each on the serial console as a
+# KUMO-SPARK-* marker. verify.sh reads only the console.
+
+ssh_pwauth: false
+disable_root: true
+
+write_files:
+  - path: /etc/spark/spark-defaults.conf
+    owner: root:spark
+    permissions: '0640'
+    defer: true
+    content: |
+      spark.authenticate                    true
+      spark.authenticate.secret             kumo-verify-not-a-real-secret-0123456789abcdef
+      spark.network.crypto.enabled          true
+      spark.master.rest.enabled             false
+      spark.ui.killEnabled                  false
+      spark.decommission.enabled            true
+      spark.storage.decommission.enabled    true
+      spark.eventLog.enabled                true
+      spark.eventLog.dir                    file:///var/lib/spark/events
+      spark.history.fs.logDirectory         file:///var/lib/spark/events
+      spark.history.fs.update.interval      2s
+      spark.history.ui.port                 18080
+
+  - path: /run/kumo-spark-verify
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -uo pipefail
+      export LC_ALL=C
+      say() { printf '%s\n' "$*" >/dev/console; }
+      # A failure prints what the daemons said: the serial log is all a CI run
+      # keeps of the guest.
+      fail() {
+      	say "verify: $*"
+      	{
+      		systemctl --no-pager status spark-master spark-worker spark-history
+      		journalctl --no-pager -n 60 -u spark-master -u spark-worker -u spark-history
+      		tail -n 40 /var/log/spark/*
+      		command -v curl python3
+      		curl -sS -i --max-time 5 http://127.0.0.1:8080/json/ | head -c 1500
+      		echo
+      	} >/dev/console 2>&1
+      	say "KUMO-SPARK-FAILED"
+      	exit 1
+      }
+
+      # The node's own address. Not "the source of the default route": the
+      # verify network routes nothing (restrict=on), and neither does an
+      # isolated VPC.
+      ip=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1)
+      [ -n "$ip" ] || fail "no address"
+      cat >/etc/spark/kumo-node.env <<ENV
+      SPARK_NODE_IP=$ip
+      SPARK_MASTER_URL=spark://$ip:7077
+      SPARK_WORKER_CORES=2
+      SPARK_WORKER_MEMORY=2g
+      SPARK_DRAIN_TIMEOUT=60
+      ENV
+      chown root:spark /etc/spark/kumo-node.env
+      chmod 0640 /etc/spark/kumo-node.env
+
+      systemctl start spark-master spark-worker spark-history || fail "the daemons did not start"
+
+      # The master answers and the worker registered ALIVE: kumod's readiness
+      # check (09-spark.md section 6), from inside.
+      for _ in $(seq 1 60); do
+      	alive=$(curl -fsS http://127.0.0.1:8080/json/ 2>/dev/null |
+      		python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["status"], sum(w["state"]=="ALIVE" for w in s["workers"]))' 2>/dev/null)
+      	[ "$alive" = "ALIVE 1" ] && break
+      	sleep 2
+      done
+      [ "$alive" = "ALIVE 1" ] || fail "master/worker state: ${alive:-no answer}"
+      say "KUMO-SPARK-MASTER=ALIVE"
+
+      run() { runuser -u spark -- env SPARK_CONF_DIR=/etc/spark /opt/spark/bin/spark-submit --master "spark://$ip:7077" "$@"; }
+
+      # SparkPi, the JVM path, with authentication and encryption on.
+      pi=$(run --class org.apache.spark.examples.SparkPi /opt/spark/examples/jars/spark-examples_2.13-4.3.0.jar 20 2>/var/log/spark/verify-pi.log |
+      	sed -n 's/^Pi is roughly \([0-9.]*\).*/\1/p')
+      [ -n "$pi" ] || fail "SparkPi printed no result; see /var/log/spark/verify-pi.log"
+      say "KUMO-SPARK-PI=$pi"
+
+      # A PySpark job, the Python path, on this image's Python.
+      cat >/var/lib/spark/verify.py <<'PY'
+      from pyspark.sql import SparkSession
+      spark = SparkSession.builder.appName("kumo-verify-pyspark").getOrCreate()
+      total = spark.range(1, 101).groupBy().sum("id").collect()[0][0]
+      print("KUMO-PYSPARK-SUM=%d" % total)
+      spark.stop()
+      PY
+      chown spark:spark /var/lib/spark/verify.py
+      sum=$(run /var/lib/spark/verify.py 2>/var/log/spark/verify-py.log | sed -n 's/^KUMO-PYSPARK-SUM=//p')
+      [ "$sum" = 5050 ] || fail "the PySpark job gave '${sum}'; see /var/log/spark/verify-py.log"
+      say "KUMO-SPARK-PYSPARK=$sum"
+
+      # A client with the wrong secret is refused: nothing in the VPC can use
+      # the cluster without the secret (S8).
+      if timeout 90 runuser -u spark -- env SPARK_CONF_DIR=/etc/spark /opt/spark/bin/spark-submit \
+      	--master "spark://$ip:7077" --conf spark.authenticate.secret=wrong \
+      	--conf spark.eventLog.enabled=false \
+      	--class org.apache.spark.examples.SparkPi /opt/spark/examples/jars/spark-examples_2.13-4.3.0.jar 2 \
+      	>/var/log/spark/verify-wrong.log 2>&1 && grep -q '^Pi is roughly' /var/log/spark/verify-wrong.log; then
+      	fail "a client with the wrong secret ran a job"
+      fi
+      # Refused for the right reason: the handshake with the master failed on
+      # the secret (Spark tries its auth protocol, then SASL, and both fail),
+      # and the client could not register. A failure anywhere else would not
+      # prove the secret is what keeps it out.
+      grep -q 'AuthClientBootstrap: New auth protocol failed' /var/log/spark/verify-wrong.log &&
+      	grep -q 'Failed to connect to master' /var/log/spark/verify-wrong.log ||
+      	fail "the wrong-secret client failed, but not on authentication: $(grep -m1 -E 'ERROR|Exception' /var/log/spark/verify-wrong.log)"
+      say "KUMO-SPARK-WRONG-SECRET-WHY=the_authentication_handshake_with_the_master_failed"
+      say "KUMO-SPARK-WRONG-SECRET=refused"
+
+      # The REST submission server is off: nothing listens on 6066.
+      if curl -fsS --max-time 5 "http://$ip:6066/" >/dev/null 2>&1 || ss -ltn | grep -q ':6066 '; then
+      	fail "something listens on 6066"
+      fi
+      say "KUMO-SPARK-REST=off"
+
+      # The history server lists both jobs from their event logs.
+      for _ in $(seq 1 30); do
+      	apps=$(curl -fsS http://127.0.0.1:18080/api/v1/applications 2>/dev/null |
+      		python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null)
+      	[ "${apps:-0}" -ge 2 ] && break
+      	sleep 2
+      done
+      [ "${apps:-0}" -ge 2 ] || fail "the history server lists ${apps:-no} applications"
+      say "KUMO-SPARK-HISTORY=$apps"
+
+      say "KUMO-SPARK-READY"
+
+runcmd:
+  - [bash, /run/kumo-spark-verify]

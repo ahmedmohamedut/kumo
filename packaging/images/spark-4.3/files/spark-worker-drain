@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# spark-worker-drain -- ExecStop of spark-worker.service (09-spark.md S13).
+#
+# Asks the worker to decommission (SIGPWR, which Spark maps to decommissioning
+# when spark.decommission.enabled is on) and waits until its own status page
+# shows no executor and no driver left, or SPARK_DRAIN_TIMEOUT seconds pass.
+# Returning lets systemd send the worker its SIGTERM. A worker that is already
+# gone, or a status page that stops answering, ends the wait at once.
+set -uo pipefail
+pid=${1:-}
+timeout=${SPARK_DRAIN_TIMEOUT:-600}
+[ -n "$pid" ] && kill -PWR "$pid" 2>/dev/null || exit 0
+echo "spark-worker-drain: decommissioning, waiting up to ${timeout}s" >&2
+deadline=$((SECONDS + timeout))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	left=$(curl -fsS --max-time 5 http://127.0.0.1:8081/json/ 2>/dev/null |
+		python3 -c 'import json,sys; s=json.load(sys.stdin); print(len(s.get("executors",[]))+len(s.get("drivers",[])))') || break
+	if [ "$left" = 0 ]; then
+		echo "spark-worker-drain: drained" >&2
+		exit 0
+	fi
+	sleep 2
+done
+echo "spark-worker-drain: stopping with work still on the worker" >&2
+exit 0

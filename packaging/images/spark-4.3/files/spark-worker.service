@@ -1,0 +1,32 @@
+# A Spark worker of a Kumo Spark cluster (docs/design/09-spark.md sections 1, 4).
+# Shipped disabled: a node's seed enables it on the workers only.
+#
+# Stopping it is how a scale-down drains a worker (S13): kumod shuts the VM down
+# gracefully, systemd runs ExecStop, which asks Spark to decommission the worker
+# (SIGPWR, spark.decommission.enabled) and waits until no executor or driver is
+# left on it, bounded by SPARK_DRAIN_TIMEOUT. Only then does the process get
+# its SIGTERM and the VM power off.
+[Unit]
+Description=Spark worker
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/spark/kumo-node.env
+
+[Service]
+User=spark
+Group=spark
+EnvironmentFile=/etc/spark/kumo-node.env
+Environment=SPARK_HOME=/opt/spark SPARK_CONF_DIR=/etc/spark SPARK_LOG_DIR=/var/log/spark
+ExecStart=/opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker \
+  --host ${SPARK_NODE_IP} --webui-port 8081 \
+  --cores ${SPARK_WORKER_CORES} --memory ${SPARK_WORKER_MEMORY} \
+  --work-dir /var/lib/spark/work ${SPARK_MASTER_URL}
+ExecStop=/usr/lib/kumo/spark-worker-drain $MAINPID
+# The drain's own bound is SPARK_DRAIN_TIMEOUT (default 600 s); this is the
+# backstop above it.
+TimeoutStopSec=660
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
