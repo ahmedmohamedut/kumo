@@ -118,6 +118,8 @@ type fakeNetwork struct {
 	active bool
 	// dhcpHosts is keyed by MAC, the way DeleteDHCPHost finds a host.
 	dhcpHosts map[string]hypervisor.DHCPHost
+	// dnsHosts is keyed by address, the way the libvirt backend finds one.
+	dnsHosts map[string]hypervisor.DNSHost
 }
 
 // subscriber is one Events() consumer.
@@ -830,6 +832,7 @@ func (f *Fake) DefineNetwork(ctx context.Context, spec hypervisor.NetworkSpec) e
 			Domain:  spec.Domain,
 		},
 		dhcpHosts: make(map[string]hypervisor.DHCPHost),
+		dnsHosts:  make(map[string]hypervisor.DNSHost),
 	}
 	return nil
 }
@@ -948,6 +951,49 @@ func (f *Fake) AddDHCPHost(ctx context.Context, name string, host hypervisor.DHC
 	return nil
 }
 
+// AddDNSHost adds a DNS record to an active network.
+func (f *Fake) AddDNSHost(ctx context.Context, name string, host hypervisor.DNSHost) error {
+	if host.IP == "" || len(host.Hostnames) == 0 {
+		return fmt.Errorf("%w: a dns host needs an address and a hostname", ErrInvalidSpec)
+	}
+	if err := f.begin(ctx, hypervisor.OpAddDNSHost); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	net, ok := f.networks[name]
+	if !ok {
+		return fmt.Errorf("fake: the network %q: %w", name, hypervisor.ErrNotFound)
+	}
+	if !net.active {
+		return fmt.Errorf("fake: the network %q is not active: %w", name, hypervisor.ErrInvalidState)
+	}
+	if _, taken := net.dnsHosts[host.IP]; taken {
+		return fmt.Errorf("fake: the dns host %s is already on the network %q: %w",
+			host.IP, name, hypervisor.ErrAlreadyExists)
+	}
+	net.dnsHosts[host.IP] = host
+	return nil
+}
+
+// DeleteDNSHost removes a DNS record by address.
+func (f *Fake) DeleteDNSHost(ctx context.Context, name string, host hypervisor.DNSHost) error {
+	if err := f.begin(ctx, hypervisor.OpDeleteDNSHost); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	net, ok := f.networks[name]
+	if !ok {
+		return fmt.Errorf("fake: the network %q: %w", name, hypervisor.ErrNotFound)
+	}
+	if _, ok := net.dnsHosts[host.IP]; !ok {
+		return fmt.Errorf("fake: the dns host %s on the network %q: %w", host.IP, name, hypervisor.ErrNotFound)
+	}
+	delete(net.dnsHosts, host.IP)
+	return nil
+}
+
 // DeleteDHCPHost removes a static host entry by MAC. An entry that is already
 // gone is a not-found error; the terminate workflow tolerates it.
 func (f *Fake) DeleteDHCPHost(ctx context.Context, name, mac string) error {
@@ -977,6 +1023,10 @@ func (f *Fake) networkInfoLocked(net *fakeNetwork) hypervisor.NetworkInfo {
 	info.DHCPHosts = make([]hypervisor.DHCPHost, 0, len(net.dhcpHosts))
 	for _, host := range net.dhcpHosts {
 		info.DHCPHosts = append(info.DHCPHosts, host)
+	}
+	info.DNSHosts = make([]hypervisor.DNSHost, 0, len(net.dnsHosts))
+	for _, host := range net.dnsHosts {
+		info.DNSHosts = append(info.DNSHosts, host)
 	}
 	sort.Slice(info.DHCPHosts, func(i, j int) bool {
 		if info.DHCPHosts[i].MAC != info.DHCPHosts[j].MAC {

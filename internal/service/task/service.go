@@ -54,6 +54,13 @@ const (
 	// TypeDBInstanceDelete removes the server, the data disk and both rows of
 	// a deleted DB instance.
 	TypeDBInstanceDelete = "db.delete"
+	// TypeK8sClusterCreate builds a Kubernetes cluster: the control plane, its
+	// endpoint record, the workers, until every node is Ready
+	// (docs/design/08-kubernetes.md section 4).
+	TypeK8sClusterCreate = "k8s.create"
+	// TypeK8sClusterDelete removes every node, the endpoint record, the rows
+	// and, last, the cluster's PKI.
+	TypeK8sClusterDelete = "k8s.delete"
 )
 
 // State is the lifecycle of a task. The values mirror the CHECK constraint on

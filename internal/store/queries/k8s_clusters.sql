@@ -50,3 +50,49 @@ FROM k8s_nodes n
 JOIN instances i ON i.id = n.instance_id
 WHERE n.cluster_id = ?1
 ORDER BY n.role, i.name;
+
+-- GET /eks/clusters: newest first, keyset-paged on (created_at, id) like
+-- every collection. instr(haystack, '') is 1, so an empty query matches every
+-- row, and an empty state_filter matches every state.
+-- name: ListK8sClusters :many
+SELECT * FROM k8s_clusters
+WHERE instr(lower(name), lower(sqlc.arg(query))) > 0
+  AND (CAST(sqlc.arg(state_filter) AS TEXT) = '' OR state = CAST(sqlc.arg(state_filter) AS TEXT))
+  AND (CAST(sqlc.arg(cursor_created) AS TEXT) = ''
+       OR created_at < CAST(sqlc.arg(cursor_created) AS TEXT)
+       OR (created_at = CAST(sqlc.arg(cursor_created) AS TEXT) AND id < sqlc.arg(cursor_id)))
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg(page_limit);
+
+-- The clusters the health pass watches (section 6).
+-- name: ListK8sClustersInState :many
+SELECT * FROM k8s_clusters WHERE state = ?1 ORDER BY created_at;
+
+-- The state and the reason are written together, so a cluster cannot end up
+-- failed or degraded with nothing to say about it.
+-- name: SetK8sClusterState :one
+UPDATE k8s_clusters
+SET state = ?2,
+    state_reason = ?3,
+    updated_at = ?4
+WHERE id = ?1
+RETURNING *;
+
+-- The end of a successful create: the endpoint is published with the state
+-- that makes it usable.
+-- name: MarkK8sClusterActive :one
+UPDATE k8s_clusters
+SET state = 'active',
+    state_reason = NULL,
+    endpoint = ?2,
+    updated_at = ?3
+WHERE id = ?1
+RETURNING *;
+
+-- name: DeleteK8sNode :exec
+DELETE FROM k8s_nodes WHERE instance_id = ?1;
+
+-- The node groups and the node rows cascade; the instances rows are the
+-- instance service's to delete, before this, in the same transaction.
+-- name: DeleteK8sCluster :exec
+DELETE FROM k8s_clusters WHERE id = ?1;

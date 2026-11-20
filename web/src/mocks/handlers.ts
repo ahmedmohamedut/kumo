@@ -61,6 +61,7 @@ let info: SystemInfo = {
   hypervisor: { type: 'fake', ok: true },
   object_storage: { backend: 'fake', ok: true },
   databases: { enabled: true, engines: [{ engine: 'postgres', version: '18' }] },
+  kubernetes: { enabled: true, versions: ['1.37'] },
 }
 
 /** setMockObjectStorage switches the object storage module, e.g. to off. */

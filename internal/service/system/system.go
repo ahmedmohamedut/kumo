@@ -57,7 +57,23 @@ type Info struct {
 	// Databases tells the console whether to offer the Databases pages, and
 	// what a DB instance can be created from.
 	Databases DatabasesInfo `json:"databases"`
+	// Kubernetes tells the console whether to offer the Kubernetes pages, and
+	// which versions a cluster can be created at.
+	Kubernetes KubernetesInfo `json:"kubernetes"`
 }
+
+// KubernetesInfo describes the Kubernetes module
+// (docs/design/08-kubernetes.md section 2). Versions is the Kubernetes minors
+// with an available engine image, newest first, and stays empty until one is
+// imported -- which, as for databases, is a state the console explains rather
+// than a fault.
+type KubernetesInfo struct {
+	Enabled  bool     `json:"enabled"`
+	Versions []string `json:"versions"`
+}
+
+// VersionLister reports the Kubernetes versions a cluster can be created at.
+type VersionLister func(ctx context.Context) ([]string, error)
 
 // DatabasesInfo describes the databases module (docs/design/07-databases.md
 // section 2). Enabled is the configuration; Engines is what a DB instance can
@@ -119,6 +135,8 @@ type Service struct {
 	objectPin     HypervisorChecker
 	databases     bool
 	engines       EngineLister
+	kubernetes    bool
+	k8sVersions   VersionLister
 }
 
 // New builds the service. users, hypervisorPin and allocator may be nil, which
@@ -151,6 +169,12 @@ func (s *Service) SetObjectStore(backend string, pin HypervisorChecker) {
 	s.objectPin = pin
 }
 
+// SetKubernetes reports the Kubernetes module in Info.
+func (s *Service) SetKubernetes(enabled bool, versions VersionLister) {
+	s.kubernetes = enabled
+	s.k8sVersions = versions
+}
+
 // SetDatabases reports the databases module in Info. engines is nil when the
 // module is off, or in the API tests built without an image service, and Info
 // then reports no engines rather than failing.
@@ -177,6 +201,14 @@ func (s *Service) Info(ctx context.Context) (Info, error) {
 			// would make "no engine image yet" an error case for it.
 			Engines: []DatabaseEngineInfo{},
 		},
+		Kubernetes: KubernetesInfo{Enabled: s.kubernetes, Versions: []string{}},
+	}
+	if s.kubernetes && s.k8sVersions != nil {
+		if versions, err := s.k8sVersions(ctx); err != nil {
+			s.logger.WarnContext(ctx, "cannot list the Kubernetes versions", "error", err)
+		} else if len(versions) > 0 {
+			info.Kubernetes.Versions = versions
+		}
 	}
 
 	if s.users != nil {

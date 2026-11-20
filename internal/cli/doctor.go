@@ -64,7 +64,7 @@ func runDoctor(ctx context.Context, out io.Writer) error {
 		checks = append(checks, checkLibvirt(ctx, cfg)...)
 	}
 	checks = append(checks, checkObjectStore(ctx, cfg)...)
-	checks = append(checks, checkDatabases(ctx, cfg))
+	checks = append(checks, checkDatabases(ctx, cfg), checkKubernetes(ctx, cfg))
 
 	// Said before the results rather than after them: an operator who ran
 	// `kumod doctor` as themselves reads FAIL lines first otherwise, and
@@ -349,6 +349,40 @@ func checkDatabases(ctx context.Context, cfg *config.Config) check {
 		engines = append(engines, label)
 	}
 	return check{name: name, ok: true, note: "on (" + strings.Join(engines, ", ") + ")"}
+}
+
+// checkKubernetes reports the Kubernetes module the way checkDatabases reports
+// the databases one: a warning, not a failure, when it is on and no Kubernetes
+// image is available (docs/design/08-kubernetes.md section 2).
+func checkKubernetes(ctx context.Context, cfg *config.Config) check {
+	const name = "kubernetes"
+	if !cfg.Kubernetes {
+		return check{name: name, ok: true, note: "off (set KUMO_KUBERNETES=on to enable)"}
+	}
+	db, err := store.Open(ctx, cfg.DBPath)
+	if err != nil {
+		return check{name: name, ok: true, warn: true, note: "not checked: " + err.Error()}
+	}
+	defer db.Close() //nolint:errcheck // a failed close does not change the verdict
+
+	rows, err := db.ListAvailableEngineImages(ctx)
+	if err != nil {
+		return check{name: name, ok: true, warn: true, note: "cannot read images: " + err.Error()}
+	}
+	var versions []string
+	for _, row := range rows {
+		if row.Engine.Valid && image.Engine(row.Engine.String) == image.EngineKubernetes && row.EngineVersion.Valid {
+			versions = append(versions, row.EngineVersion.String)
+		}
+	}
+	if len(versions) == 0 {
+		return check{
+			name: name, ok: true, warn: true,
+			note: "on, but no Kubernetes image is available: import one before creating a " +
+				"cluster (see packaging/images/kubernetes-1.37/README.md)",
+		}
+	}
+	return check{name: name, ok: true, note: "on (Kubernetes " + strings.Join(versions, ", ") + ")"}
 }
 
 func gib(bytes uint64) float64 { return float64(bytes) / (1 << 30) }

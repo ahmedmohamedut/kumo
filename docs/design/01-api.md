@@ -36,7 +36,7 @@ Access JWT claims: `sub` (user id), `role`, `iat`, `exp`, `jti`. Password policy
 | Method | Path | Description |
 |---|---|---|
 | GET | `/healthz`, `/readyz` | (no auth, outside `/api/v1`) |
-| GET | `/api/v1/system/info` | (no auth) `{version, needs_setup, hypervisor: {type, ok, kvm}, object_storage: {backend, ok}, databases: {enabled, engines}}` (`kvm` is null when the backend cannot answer; `backend` is `none` when object storage is off, see `06-object-storage.md`; `databases.engines` is `[{engine, version}]` and is empty until an engine image is imported, see `07-databases.md`) |
+| GET | `/api/v1/system/info` | (no auth) `{version, needs_setup, hypervisor: {type, ok, kvm}, object_storage: {backend, ok}, databases: {enabled, engines}, kubernetes: {enabled, versions}}` (`kvm` is null when the backend cannot answer; `backend` is `none` when object storage is off, see `06-object-storage.md`; `databases.engines` is `[{engine, version}]` and is empty until an engine image is imported, see `07-databases.md`; `kubernetes.versions` is the Kubernetes minors with an available image, newest first, see `08-kubernetes.md`) |
 | GET | `/api/v1/system/capacity` | Host CPU/memory/disk totals vs allocated; see `00-architecture.md` §6 |
 | GET | `/api/v1/system/orphans` | (admin) Domains running under an instance id that no row claims, from the last reconcile pass; see `00-architecture.md` §4.3. Reported, never removed |
 
@@ -441,6 +441,42 @@ Create body:
 - **`instance_id` is returned on purpose.** The server is not reachable through `/instances`, but the console log and the orphan report are keyed by its id, and hiding it would make the module harder to support without making it safer.
 - **Delete takes the data with it.** The data disk is deleted with the server; there is no final snapshot and no recovery, which is what the console's confirmation says in as many words.
 
+## Kubernetes clusters
+
+The module of `08-kubernetes.md`. Every `/eks` route answers `503 unavailable` when `KUMO_KUBERNETES` is `off`, after authentication. A cluster's VMs are Kumo's: they are absent from `GET /instances` and their own lifecycle endpoints answer `409` naming the cluster (`08-kubernetes.md` K8).
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/eks/clusters` | List, newest first, keyset-paged; `?q=` matches the name, `?state=` one state |
+| POST | `/eks/clusters` | (admin) Create → `202` with the cluster `creating` and `Location: /api/v1/tasks/<id>` |
+| GET | `/eks/clusters/{id}` | Detail: the endpoint, the CA certificate, the node group and every node with its Kubernetes `ready` |
+| DELETE | `/eks/clusters/{id}` | (admin) → `202`, state `deleting`. Allowed from every state except `deleting` |
+| GET | `/eks/clusters/{id}/node-groups` | The node groups: one, `default`, in this version |
+| POST | `/eks/clusters/{id}/kubeconfig` | A kubeconfig for the caller, by role: `kumo:admins` or `kumo:viewers`, 30 days, returned once with `Cache-Control: no-store`. `409` until the cluster is active |
+
+```json
+{ "id": "eks-0a1b2c3d4e5f60718", "name": "orders", "kubernetes_version": "1.37",
+  "state": "active", "state_reason": null,
+  "endpoint": "https://api.orders.default:6443",
+  "vpc_id": "vpc-…", "subnet_id": "subnet-…",
+  "pod_cidr": "100.64.0.0/16", "service_cidr": "100.96.0.0/16",
+  "control_plane_type": "kumo.medium", "ca_certificate": "-----BEGIN CERTIFICATE-----…",
+  "node_groups": [{ "id": "ng-…", "name": "default", "instance_type": "kumo.medium",
+                    "root_disk_gb": 8, "desired_size": 2 }],
+  "nodes": [{ "name": "orders-cp-1", "instance_id": "i-…", "role": "control-plane",
+              "node_group_id": null, "state": "running", "private_ip": "192.168.100.10", "ready": true }],
+  "created_at": "…", "updated_at": "…" }
+```
+
+Create body: `{ "name": "orders", "kubernetes_version": "1.37", "subnet_id": "subnet-…", "control_plane_type": "kumo.medium", "node_type": "kumo.medium", "node_count": 2, "node_root_disk_gb": 20 }`; only `name` is required.
+
+- **Validation:** `name` is a DNS label of 1–40 characters; the nodes are `<name>-cp-1` and `<name>-default-<n>`, so it must not collide with a live instance name (`409 already_exists`). `node_count` is 1–10 (default 2). `control_plane_type` needs at least 2 vCPU and `node_type` at least 2048 MiB, kubeadm's minimums; both default to `kumo.medium`. `node_root_disk_gb` is between the image's `min_disk_gb` (the default) and 500. Pod and service ranges are fixed: `100.64.0.0/16` and `100.96.0.0/16` (K9).
+- **All or nothing.** The control plane and every worker are reserved in one transaction: a cluster the node cannot hold is `429 quota_exceeded` with nothing written, and the PKI generated for it is removed.
+- **`409 no_engine_image`**, as for databases, means no `kubernetes` engine image is available.
+- **States.** `active` once every node is Ready; `degraded` when the control plane answers but a node is not Ready, or after three failed health checks in a row (`state_reason` says which); `failed` when the API server never answered during the create, with the VMs kept for their console logs. Delete is the way out of both.
+- **The endpoint** is `https://api.<name>.<vpc>:6443`, served by the VPC's dnsmasq as a DNS record kumod adds (K6): a kubeconfig works from an instance in the cluster's VPC, and nowhere else (K7).
+- **No key in any response** but the kubeconfig's own client key, which is minted per call and never stored. `ca_certificate` is the public CA.
+
 ## Tasks
 
 | Method | Path | Description |
@@ -459,4 +495,4 @@ Create body:
 | `admin` | ✅ | ✅ |
 | `viewer` | ✅ (no `user_data`) | ❌ (`403`) |
 
-Object storage follows the same matrix: both roles list and read buckets; every write is admin only. So does the databases module: both roles list and read DB instances, and creating, stopping, starting, rebooting and deleting one is admin only, because a DB instance claims the vCPUs, memory and disk of the node exactly as a launch does.
+Object storage follows the same matrix: both roles list and read buckets; every write is admin only. So does the databases module: both roles list and read DB instances, and creating, stopping, starting, rebooting and deleting one is admin only, because a DB instance claims the vCPUs, memory and disk of the node exactly as a launch does. And the Kubernetes module: both roles read clusters, creating and deleting one is admin only, and both roles may mint a kubeconfig -- a viewer's is in `kumo:viewers`, bound to `view`.

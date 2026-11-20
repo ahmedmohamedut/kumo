@@ -475,6 +475,39 @@ func TestDoctorDoesNotCountAKubernetesImageAsADatabase(t *testing.T) {
 	}
 }
 
+// The Kubernetes module warns with no image and reports its versions with one
+// (docs/design/08-kubernetes.md section 2).
+func TestDoctorReportsTheKubernetesModule(t *testing.T) {
+	dir := testDir(t)
+
+	_, stdout, _ := runCLI(t, "", "doctor")
+	if !strings.Contains(stdout, "warn  kubernetes") || !strings.Contains(stdout, "no Kubernetes image") {
+		t.Errorf("stdout = %q, want the kubernetes line to warn", stdout)
+	}
+
+	db := openDB(t, dir)
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := db.CreateImage(t.Context(), sqlc.CreateImageParams{
+		ID: "img-0123456789abcdef1", Name: "kubernetes-1.37", Architecture: "x86_64",
+		Format: "qcow2", State: "available", Progress: 100, MinDiskGb: 8,
+		CreatedAt: now, UpdatedAt: now, Kind: "engine",
+		Engine:        sql.NullString{String: "kubernetes", Valid: true},
+		EngineVersion: sql.NullString{String: "1.37", Valid: true},
+	}); err != nil {
+		t.Fatalf("CreateImage(): %v", err)
+	}
+	_, stdout, _ = runCLI(t, "", "doctor")
+	if !strings.Contains(stdout, "ok    kubernetes") || !strings.Contains(stdout, "Kubernetes 1.37") {
+		t.Errorf("stdout = %q, want the kubernetes line to name 1.37", stdout)
+	}
+
+	t.Setenv("KUMO_KUBERNETES", "off")
+	_, stdout, _ = runCLI(t, "", "doctor")
+	if !strings.Contains(stdout, "ok    kubernetes         off") {
+		t.Errorf("stdout = %q, want the kubernetes line to report it off", stdout)
+	}
+}
+
 func TestDoctorReportsTheDatabasesModuleOff(t *testing.T) {
 	testDir(t)
 	t.Setenv("KUMO_DATABASES", "off")

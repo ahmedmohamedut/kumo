@@ -145,7 +145,8 @@ func TestSystemInfo(t *testing.T) {
 			ObjectStorage: system.ObjectStorageInfo{Backend: "none", OK: false},
 			// A router built without an image service reports the module off
 			// with no engines, and never a null list.
-			Databases: system.DatabasesInfo{Enabled: false, Engines: []system.DatabaseEngineInfo{}},
+			Databases:  system.DatabasesInfo{Enabled: false, Engines: []system.DatabaseEngineInfo{}},
+			Kubernetes: system.KubernetesInfo{Enabled: false, Versions: []string{}},
 		}
 		if !reflect.DeepEqual(body, want) {
 			t.Errorf("body = %+v, want %+v", body, want)

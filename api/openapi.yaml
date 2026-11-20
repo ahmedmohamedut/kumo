@@ -38,6 +38,12 @@ tags:
       Managed Postgres servers (07-databases.md). The virtual machine behind
       each one belongs to Kumo and is not on the Instances pages. Every route
       answers 503 when the module is off.
+  - name: Kubernetes
+    description: >-
+      Kubernetes clusters (08-kubernetes.md): a control plane and one worker
+      node group, built with kubeadm on Kumo's engine image. The nodes belong
+      to Kumo and are not on the Instances pages. Every route answers 503 when
+      the module is off.
 security:
   - bearerAuth: []
 paths:
@@ -1397,6 +1403,215 @@ paths:
           $ref: '#/components/responses/Conflict'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /eks/clusters:
+    get:
+      tags: [Kubernetes]
+      operationId: listClusters
+      summary: List Kubernetes clusters
+      description: Newest first, keyset-paged like every collection.
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+        - $ref: '#/components/parameters/Query'
+        - name: state
+          in: query
+          description: Restrict the page to one cluster state.
+          schema:
+            $ref: '#/components/schemas/ClusterState'
+      responses:
+        '200':
+          description: A page of clusters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClusterList'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      tags: [Kubernetes]
+      operationId: createCluster
+      summary: Create a Kubernetes cluster
+      description: |
+        Runs as a task and answers `202` with the cluster `creating`: kumod
+        generates the cluster's PKI, reserves the control plane and every
+        worker in one transaction (a cluster the node cannot hold is refused
+        whole, `429`), then builds them. The cluster ends `active` once every
+        node is Ready, `degraded` if the control plane works but a node never
+        became Ready, or `failed` if the API server never answered; delete is
+        the way out of either (08-kubernetes.md section 4).
+
+        Validation: `name` is a DNS label of 1-40 characters; the nodes are
+        named `<name>-cp-1` and `<name>-default-<n>`, so the name must not
+        collide with a live instance's. `node_count` is 1-10 (default 2).
+        `control_plane_type` needs at least 2 vCPU and `node_type` at least
+        2048 MiB (both default `kumo.medium`). `node_root_disk_gb` is between
+        the image's `min_disk_gb` (the default) and 500.
+        `kubernetes_version` may be omitted, which takes the newest available
+        minor; `subnet_id` may be omitted, which uses the default subnet. Pod
+        and service ranges are fixed in this version: `100.64.0.0/16` and
+        `100.96.0.0/16`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateClusterRequest'
+      responses:
+        '202':
+          description: The create was accepted.
+          headers:
+            Location:
+              description: The task that tracks the create.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cluster'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '409':
+          description: >-
+            A cluster or instance of that name exists (`already_exists`), or
+            no Kubernetes engine image is available (`no_engine_image`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /eks/clusters/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ClusterID'
+    get:
+      tags: [Kubernetes]
+      operationId: getCluster
+      summary: Cluster detail
+      description: >-
+        The cluster with its node group and its nodes. A node's `ready` is
+        its Kubernetes Ready condition as kumod last saw it, null before the
+        first look. `ca_certificate` is the cluster CA, which is public; no
+        key is ever returned here.
+      responses:
+        '200':
+          description: The cluster.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cluster'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      tags: [Kubernetes]
+      operationId: deleteCluster
+      summary: Delete a Kubernetes cluster
+      description: >-
+        Runs as a task and answers `202` with the cluster `deleting`. Allowed
+        from every state but `deleting`. Every node's VM, the endpoint's DNS
+        record, the rows and the cluster's PKI are removed; workloads and
+        `local-path` volumes go with the nodes, with no drain.
+      responses:
+        '202':
+          description: The delete was accepted.
+          headers:
+            Location:
+              description: The task that tracks the delete.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cluster'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /eks/clusters/{id}/node-groups:
+    parameters:
+      - $ref: '#/components/parameters/ClusterID'
+    get:
+      tags: [Kubernetes]
+      operationId: listNodeGroups
+      summary: A cluster's node groups
+      description: One, `default`, in this version.
+      responses:
+        '200':
+          description: The node groups.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/NodeGroup'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /eks/clusters/{id}/kubeconfig:
+    parameters:
+      - $ref: '#/components/parameters/ClusterID'
+    post:
+      tags: [Kubernetes]
+      operationId: mintKubeconfig
+      summary: Mint a kubeconfig for the caller
+      description: |
+        Signs a fresh client certificate with the cluster CA for the calling
+        user -- common name the Kumo username, group `kumo:admins` for an admin
+        and `kumo:viewers` for a viewer, bound to `cluster-admin` and `view`
+        -- valid 30 days, and returns the kubeconfig once. Nothing is stored:
+        revoking is replacing the group's binding (08-kubernetes.md section 5).
+        A POST, and `Cache-Control: no-store`, because every call signs a new
+        certificate and the body carries its private key. `409` until the
+        cluster is active (or degraded or updating).
+
+        The server is `https://api.<cluster>.<vpc>:6443`, which the VPC's DNS
+        serves: the kubeconfig works from an instance in the cluster's VPC.
+      responses:
+        '200':
+          description: The kubeconfig.
+          headers:
+            Cache-Control:
+              description: Always `no-store`.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Kubeconfig'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /tasks:
     get:
       tags: [Tasks]
@@ -1987,6 +2202,14 @@ components:
       schema:
         type: string
         pattern: '^db-[0-9a-f]{17}$'
+    ClusterID:
+      name: id
+      in: path
+      description: Kubernetes cluster id.
+      required: true
+      schema:
+        type: string
+        pattern: '^eks-[0-9a-f]{17}$'
     TaskID:
       name: id
       in: path
@@ -2190,7 +2413,7 @@ components:
           type: integer
     SystemInfo:
       type: object
-      required: [version, needs_setup, hypervisor, object_storage, databases]
+      required: [version, needs_setup, hypervisor, object_storage, databases, kubernetes]
       properties:
         version:
           type: string
@@ -2257,6 +2480,22 @@ components:
                   version:
                     type: string
                     example: '18'
+        kubernetes:
+          type: object
+          description: >-
+            The Kubernetes module (08-kubernetes.md section 2). `enabled` is
+            KUMO_KUBERNETES; `versions` is every Kubernetes minor with an
+            available engine image, newest first, and is empty -- never null --
+            until one is imported.
+          required: [enabled, versions]
+          properties:
+            enabled:
+              type: boolean
+            versions:
+              type: array
+              items:
+                type: string
+                example: '1.37'
     SystemCapacity:
       type: object
       description: >-
@@ -3042,6 +3281,161 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/DBInstance'
+    ClusterState:
+      type: string
+      description: >-
+        `degraded` is a cluster whose control plane answers while something
+        is wrong -- a node not Ready, or three health checks in a row failed --
+        with the reason in `state_reason`. `updating` is a scale in progress
+        (M8.6).
+      enum: [creating, active, updating, degraded, deleting, failed]
+    NodeGroup:
+      type: object
+      required: [id, name, instance_type, root_disk_gb, desired_size]
+      properties:
+        id:
+          type: string
+          example: ng-0a1b2c3d4e5f60718
+        name:
+          type: string
+          example: default
+        instance_type:
+          type: string
+        root_disk_gb:
+          type: integer
+        desired_size:
+          type: integer
+          minimum: 1
+          maximum: 10
+    ClusterNode:
+      type: object
+      required: [name, instance_id, role, node_group_id, state, private_ip, ready]
+      properties:
+        name:
+          type: string
+          example: orders-default-1
+        instance_id:
+          type: string
+          description: The hidden VM, for reading its console log.
+        role:
+          type: string
+          enum: [control-plane, worker]
+        node_group_id:
+          type: string
+          nullable: true
+        state:
+          $ref: '#/components/schemas/InstanceState'
+        private_ip:
+          type: string
+        ready:
+          type: boolean
+          nullable: true
+          description: The Kubernetes Ready condition as last seen; null before the first look.
+    Cluster:
+      type: object
+      required: [id, name, kubernetes_version, state, state_reason, endpoint, vpc_id, subnet_id,
+        pod_cidr, service_cidr, control_plane_type, ca_certificate, node_groups, nodes,
+        created_at, updated_at]
+      properties:
+        id:
+          type: string
+          example: eks-0a1b2c3d4e5f60718
+        name:
+          type: string
+        kubernetes_version:
+          type: string
+          example: '1.37'
+        state:
+          $ref: '#/components/schemas/ClusterState'
+        state_reason:
+          type: string
+          nullable: true
+        endpoint:
+          type: string
+          nullable: true
+          description: https://api.<name>.<vpc>:6443, set once the cluster is active.
+        vpc_id:
+          type: string
+        subnet_id:
+          type: string
+        pod_cidr:
+          type: string
+          example: 100.64.0.0/16
+        service_cidr:
+          type: string
+          example: 100.96.0.0/16
+        control_plane_type:
+          type: string
+        ca_certificate:
+          type: string
+          description: The cluster CA certificate, PEM. Public.
+        node_groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/NodeGroup'
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClusterNode'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        task_id:
+          type: string
+          description: The task a create or a delete queued; absent otherwise.
+    ClusterList:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Cluster'
+    CreateClusterRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          pattern: '^[a-z]([a-z0-9-]*[a-z0-9])?$'
+          maxLength: 40
+        kubernetes_version:
+          type: string
+          example: '1.37'
+        subnet_id:
+          type: string
+        control_plane_type:
+          type: string
+          default: kumo.medium
+        node_type:
+          type: string
+          default: kumo.medium
+        node_count:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 2
+        node_root_disk_gb:
+          type: integer
+          maximum: 500
+    Kubeconfig:
+      type: object
+      required: [kubeconfig, group, expires_at]
+      properties:
+        kubeconfig:
+          type: string
+          description: The kubeconfig file, YAML. It holds a private key; it is returned once.
+        group:
+          type: string
+          enum: ['kumo:admins', 'kumo:viewers']
+        expires_at:
+          type: string
+          format: date-time
     ConsoleOutput:
       type: object
       required: [instance_id, output]

@@ -32,6 +32,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/service/instance"
 	"github.com/ahmedmohamedut/kumo/internal/service/instancetype"
 	"github.com/ahmedmohamedut/kumo/internal/service/keypair"
+	"github.com/ahmedmohamedut/kumo/internal/service/kubernetes"
 	"github.com/ahmedmohamedut/kumo/internal/service/subnet"
 	"github.com/ahmedmohamedut/kumo/internal/service/system"
 	"github.com/ahmedmohamedut/kumo/internal/service/task"
@@ -303,6 +304,45 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		}
 	}
 
+	// The Kubernetes module is wired only when it is on; a nil service makes
+	// every /eks route answer 503 (docs/design/08-kubernetes.md section 2). On
+	// the fake hypervisor no guest runs, so no API server could ever answer:
+	// the module gets a cluster API that does, the way databases get a probe.
+	var clusters *kubernetes.Service
+	if cfg.Kubernetes {
+		apiFactory := kubernetes.RealAPI
+		if cfg.Hypervisor == config.HypervisorFake {
+			apiFactory = kubernetes.FakeAPI
+		}
+		clusters, err = kubernetes.New(kubernetes.Options{
+			Logger:        logger,
+			Store:         db,
+			Hypervisor:    hv,
+			Instances:     instances,
+			Tasks:         tasks,
+			DataDir:       cfg.DataDir,
+			API:           apiFactory,
+			ReadyTimeout:  cfg.K8sReadyTimeout,
+			ProbeInterval: cfg.K8sProbeInterval,
+		})
+		if err != nil {
+			return fmt.Errorf("build the Kubernetes service: %w", err)
+		}
+	}
+	systemService.SetKubernetes(cfg.Kubernetes, func(ctx context.Context) ([]string, error) {
+		available, err := images.AvailableEngines(ctx)
+		if err != nil {
+			return nil, err
+		}
+		var versions []string
+		for _, engine := range available {
+			if engine.Engine == image.EngineKubernetes {
+				versions = append(versions, engine.Version)
+			}
+		}
+		return versions, nil
+	})
+
 	// Object storage is wired only when the module is on; a nil service makes
 	// every /s3 route answer 503.
 	var buckets *bucket.Service
@@ -334,6 +374,9 @@ func serve(ctx context.Context, stdout io.Writer) error {
 	}
 	if dbInstances != nil {
 		handlers = append(handlers, dbInstances.Handler())
+	}
+	if clusters != nil {
+		handlers = append(handlers, clusters.Handler())
 	}
 
 	// The worker drains the tasks table. Recover runs before the first claim, so
@@ -378,17 +421,28 @@ func serve(ctx context.Context, stdout io.Writer) error {
 			// same tick, so a guest an operator destroyed is already recorded
 			// as such by the time the database on top of it is judged
 			// (docs/design/07-databases.md section 6).
-			if dbInstances == nil {
-				return nil
+			if dbInstances != nil {
+				databases, err := dbInstances.Reconcile(ctx)
+				if err != nil {
+					return err
+				}
+				if databases.Updated > 0 {
+					logger.InfoContext(ctx, "reconciled the databases",
+						"rows", databases.Rows, "probed", databases.Probed,
+						"updated", databases.Updated, "skipped", databases.Skipped)
+				}
 			}
-			databases, err := dbInstances.Reconcile(ctx)
-			if err != nil {
-				return err
-			}
-			if databases.Updated > 0 {
-				logger.InfoContext(ctx, "reconciled the databases",
-					"rows", databases.Rows, "probed", databases.Probed,
-					"updated", databases.Updated, "skipped", databases.Skipped)
+			// The cluster health pass, last: a node an operator destroyed is
+			// recorded by the instance pass first (08-kubernetes.md section 6).
+			if clusters != nil {
+				health, err := clusters.Reconcile(ctx)
+				if err != nil {
+					return err
+				}
+				if health.Updated > 0 {
+					logger.InfoContext(ctx, "checked the Kubernetes clusters",
+						"clusters", health.Clusters, "probed", health.Probed, "updated", health.Updated)
+				}
 			}
 			return nil
 		},
@@ -433,6 +487,7 @@ func serve(ctx context.Context, stdout io.Writer) error {
 		Buckets:       buckets,
 		AccessKeys:    accessKeys,
 		DBInstances:   dbInstances,
+		Clusters:      clusters,
 		Tasks:         tasks,
 		Signer:        signer,
 		ReadyChecks: []api.Check{

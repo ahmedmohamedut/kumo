@@ -163,36 +163,39 @@ The handler validates, resolves and reserves synchronously, then returns `202`
 with the cluster `creating`.
 
 ```
-validate  name, version, node group size and types (control plane >= 2 vCPU / 2 GiB,
-          kubeadm's preflight minimum), pod/service CIDRs vs the VPC
+validate  name, version, node count, the types (control plane >= 2 vCPU, every
+          node >= 2048 MiB, kubeadm's preflight minimums), the node root disk
 resolve   the image: kind='engine', engine='kubernetes', engine_version, available
           -> 409 no_engine_image
-generate  the PKI of section 5 (cluster CA, front-proxy CA, etcd CA, service-account
-          key, kumod's admin client cert) and a bootstrap token; write the keys
-          under $KUMO_DATA_DIR/clusters/<id>/ (0600, kumo-owned)
-reserve   in 1 txn: capacity for 1 + desired_size VMs; the instance rows and their
-          addresses through the managed seam; k8s_clusters, k8s_node_groups,
-          k8s_nodes; the task
-  1. control plane: root overlay, seed (kubeadm init config + the PKI), DHCP host
-     named api.<cluster> so the endpoint resolves, define and start
-  2. wait for https://api.<cluster>.<vpc>:6443/readyz
-  3. apply the add-ons the image carries (Cilium, local-path, the kumo:admins and
-     kumo:viewers bindings) -- by the seed's post-init step on the control plane,
-     not by kumod. Workers are NotReady until Cilium's agent runs on them, which
-     is what step 5 waits out
-  4. workers: one root overlay, seed (kubeadm join: endpoint, token, CA hash) and
-     domain each, all started together
-  5. wait until desired_size worker Nodes report Ready, via the API
-  6. in 1 txn: instances -> running, cluster -> active, endpoint written
-on failure: the instance rollback for every VM the task created, the PKI directory
-  removed, cluster -> failed with the reason (but see "API up, nodes not Ready")
+generate  the PKI of section 5 and write it under $KUMO_DATA_DIR/clusters/<id>/
+          (0600, written once); a create the reservation refuses removes it
+reserve   in 1 txn, instance.WithManagedReservations: capacity for 1 + node_count
+          VMs as one sum, the instance rows and their addresses, k8s_clusters,
+          k8s_node_groups, k8s_nodes, the task
+  1. control plane: root overlay, seed (kubeadm init config + the PKI, a token
+     nobody uses), define and start, through LaunchManaged -- which adopts the
+     seed of an earlier attempt rather than rendering a new one
+  2. a DNS record on the VPC's network: api.<cluster>.<vpc> -> the control
+     plane's address (hypervisor.AddDNSHost; dnsmasq serves it, K6)
+  3. wait for /readyz, dialing the control plane's address with the endpoint as
+     the TLS name. The add-ons (Cilium, local-path, the RBAC) are the seed's
+     post-init step, not kumod's
+  4. mint the workers' bootstrap token through the API (1 h), then each worker:
+     root overlay, seed (kubeadm join: endpoint, that token, the CA hash),
+     domain. The token comes from the running API rather than from step 1's
+     seed, so a requeued create never needs a token it no longer has
+  5. wait until every expected node reports Ready, via the API
+  6. in 1 txn: instances -> running, cluster -> active, endpoint written; and
+     degraded, with the nodes named, if step 5 timed out
+on failure before the API answers: cluster -> failed with the reason, and the
+  VMs kept for their consoles; delete is the way out (as for a database whose
+  engine never answered)
 ```
 
-**The seam needs one extension.** `WithManagedReservation` reserves one VM per
-call. A cluster reserves 1 + N in a single transaction, so either the seam
-accepts a list, or it exposes a variant that runs inside a caller's
-transaction. Either way the capacity check must see all of them at once, or a
-cluster could reserve its control plane and fail halfway through its workers.
+**The seam extension** is `instance.WithManagedReservations` (M8.3): the
+capacity of the whole set is checked as one sum before anything is locked or
+written, and every row commits with the module's own in one transaction, so a
+cluster is reserved whole or not at all.
 
 Two failures are worth naming:
 
