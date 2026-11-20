@@ -96,6 +96,7 @@ export const kumoApi = createApi({
     'BucketObjects',
     'AccessKey',
     'DBInstance',
+    'Cluster',
   ],
   endpoints: () => ({}),
 })

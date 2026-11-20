@@ -32,6 +32,9 @@ import { BucketDetailPage } from '@/features/buckets/BucketDetailPage'
 import { DBInstancesListPage } from '@/features/dbinstances/DBInstancesListPage'
 import { CreateDBInstancePage } from '@/features/dbinstances/CreateDBInstancePage'
 import { DBInstanceDetailPage } from '@/features/dbinstances/DBInstanceDetailPage'
+import { ClustersListPage } from '@/features/kubernetes/ClustersListPage'
+import { CreateClusterPage } from '@/features/kubernetes/CreateClusterPage'
+import { ClusterDetailPage } from '@/features/kubernetes/ClusterDetailPage'
 import { AccessKeysListPage } from '@/features/accesskeys/AccessKeysListPage'
 import { CreateAccessKeyPage, EditAccessKeyPage } from '@/features/accesskeys/AccessKeyFormPage'
 
@@ -76,6 +79,9 @@ export const router = createBrowserRouter([
       { path: 'databases', element: <DBInstancesListPage /> },
       { path: 'databases/create', element: <CreateDBInstancePage /> },
       { path: 'databases/:dbInstanceId', element: <DBInstanceDetailPage /> },
+      { path: 'kubernetes', element: <ClustersListPage /> },
+      { path: 'kubernetes/create', element: <CreateClusterPage /> },
+      { path: 'kubernetes/:clusterId', element: <ClusterDetailPage /> },
       { path: 'access-keys', element: <AccessKeysListPage /> },
       { path: 'access-keys/create', element: <CreateAccessKeyPage /> },
       { path: 'access-keys/:accessKeyId/edit', element: <EditAccessKeyPage /> },

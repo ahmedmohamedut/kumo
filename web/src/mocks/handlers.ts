@@ -17,6 +17,7 @@ type Bucket = components['schemas']['Bucket']
 type BucketDetail = components['schemas']['BucketDetail']
 type AccessKey = components['schemas']['AccessKey']
 type DBInstance = components['schemas']['DBInstance']
+type Cluster = components['schemas']['Cluster']
 
 /**
  * MSW handlers for the auth and system endpoints (03-frontend.md §8). The auth
@@ -293,6 +294,18 @@ function validateAccessKey(
       409,
       'already_exists',
       `already exists: an access key named "${body.name ?? ''}" already exists`,
+    )
+  }
+  return null
+}
+
+/** kubernetesRefusal is the 503 every /eks route answers with the module off. */
+function kubernetesRefusal() {
+  if (!info.kubernetes.enabled) {
+    return apiError(
+      503,
+      'unavailable',
+      'unavailable: the Kubernetes module is off on this node; set KUMO_KUBERNETES=on',
     )
   }
   return null
@@ -830,6 +843,94 @@ function freshDBInstances(): DBInstance[] {
   return INITIAL_DB_INSTANCES.map((dbInstance) => ({ ...dbInstance }))
 }
 
+/** A fixture node of a cluster. */
+function clusterNode(
+  name: string,
+  role: 'control-plane' | 'worker',
+  ip: string,
+  ready: boolean | null,
+): Cluster['nodes'][number] {
+  return {
+    name,
+    instance_id: `i-0c1d2e3f4a5b6c${ip.slice(-3).padStart(3, '0')}`,
+    role,
+    node_group_id: role === 'worker' ? 'ng-0a1b2c3d4e5f60718' : null,
+    state: ready === null ? 'pending' : 'running',
+    private_ip: ip,
+    ready,
+  }
+}
+
+/**
+ * Cluster fixtures: `orders` is active with a control plane and two Ready
+ * workers, and `billing` is still being created.
+ */
+const INITIAL_CLUSTERS: Cluster[] = [
+  {
+    id: 'eks-0a1b2c3d4e5f60718',
+    name: 'orders',
+    kubernetes_version: '1.37',
+    state: 'active',
+    state_reason: null,
+    endpoint: 'https://api.orders.default:6443',
+    vpc_id: 'vpc-0a1b2c3d4e5f60718',
+    subnet_id: 'subnet-0a1b2c3d4e5f60718',
+    pod_cidr: '100.64.0.0/16',
+    service_cidr: '100.96.0.0/16',
+    control_plane_type: 'kumo.medium',
+    ca_certificate: '-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n',
+    node_groups: [
+      {
+        id: 'ng-0a1b2c3d4e5f60718',
+        name: 'default',
+        instance_type: 'kumo.medium',
+        root_disk_gb: 8,
+        desired_size: 2,
+      },
+    ],
+    nodes: [
+      clusterNode('orders-cp-1', 'control-plane', '192.168.100.20', true),
+      clusterNode('orders-default-1', 'worker', '192.168.100.21', true),
+      clusterNode('orders-default-2', 'worker', '192.168.100.22', true),
+    ],
+    created_at: '2026-01-05T09:00:00Z',
+    updated_at: '2026-01-05T09:05:00Z',
+  },
+  {
+    id: 'eks-0b1c2d3e4f5a60718',
+    name: 'billing',
+    kubernetes_version: '1.37',
+    state: 'creating',
+    state_reason: null,
+    endpoint: null,
+    vpc_id: 'vpc-0a1b2c3d4e5f60718',
+    subnet_id: 'subnet-0a1b2c3d4e5f60718',
+    pod_cidr: '100.64.0.0/16',
+    service_cidr: '100.96.0.0/16',
+    control_plane_type: 'kumo.medium',
+    ca_certificate: '-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n',
+    node_groups: [
+      {
+        id: 'ng-0b1c2d3e4f5a60718',
+        name: 'default',
+        instance_type: 'kumo.medium',
+        root_disk_gb: 8,
+        desired_size: 1,
+      },
+    ],
+    nodes: [
+      clusterNode('billing-cp-1', 'control-plane', '192.168.100.30', null),
+      clusterNode('billing-default-1', 'worker', '192.168.100.31', null),
+    ],
+    created_at: '2026-01-06T09:00:00Z',
+    updated_at: '2026-01-06T09:00:00Z',
+  },
+]
+
+function freshClusters(): Cluster[] {
+  return INITIAL_CLUSTERS.map((cluster) => structuredClone(cluster))
+}
+
 /**
  * VPC and subnet fixtures. The default VPC and its default subnet are what the
  * backend bootstraps on first start, and web-1/web-2 hold addresses from the
@@ -950,6 +1051,7 @@ export function setMockInstanceTypes(next: InstanceType[]): void {
 let tasks: Task[] = freshTasks()
 let instances: Instance[] = freshInstances()
 let dbInstances: DBInstance[] = freshDBInstances()
+let clusters: Cluster[] = freshClusters()
 let vpcs: VPC[] = freshVPCs()
 let subnets: Subnet[] = freshSubnets()
 
@@ -985,7 +1087,9 @@ export function addMockImageReference(id: string, instanceID: string): void {
  * plus 17 hex characters), derived from the shared counter so two fixtures minted
  * in the same test cannot collide.
  */
-function nextResourceID(prefix: 'img' | 'task' | 'i' | 'eni' | 'vpc' | 'subnet' | 'db'): string {
+function nextResourceID(
+  prefix: 'img' | 'task' | 'i' | 'eni' | 'vpc' | 'subnet' | 'db' | 'eks' | 'ng',
+): string {
   return `${prefix}-0f1e2d3c4b5a6${String((counter += 1)).padStart(5, '0')}`
 }
 
@@ -1040,11 +1144,28 @@ export function resetMockState(): void {
   listPageSize = 200
   accessKeys = freshAccessKeys()
   dbInstances = freshDBInstances()
+  clusters = freshClusters()
   info = {
     ...info,
     object_storage: { backend: 'fake', ok: true },
     databases: { enabled: true, engines: MOCK_ENGINES },
+    kubernetes: { enabled: true, versions: ['1.37'] },
   }
+}
+
+/** mockClusters reads the cluster fixtures. */
+export function mockClusters(): Cluster[] {
+  return clusters
+}
+
+/** setMockClusters replaces the cluster fixtures. */
+export function setMockClusters(next: Cluster[]): void {
+  clusters = next
+}
+
+/** setMockKubernetes switches the Kubernetes module: off, or on with no image. */
+export function setMockKubernetes(kubernetes: SystemInfo['kubernetes']): void {
+  info = { ...info, kubernetes }
 }
 
 /** mockDBInstances reads the DB instance fixtures, e.g. to assert a delete. */
@@ -2405,6 +2526,206 @@ export const handlers = [
     }
     accessKeys = accessKeys.filter((candidate) => candidate.access_key !== String(params.id))
     return new HttpResponse(null, { status: 204 })
+  }),
+
+  // -------------------------------------------------------------- clusters ---
+
+  http.get('/api/v1/eks/clusters', ({ request }) => {
+    if (requireUser(request) === undefined) {
+      return unauthenticated()
+    }
+    const refusal = kubernetesRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const items = [...clusters].sort((a, b) => b.created_at.localeCompare(a.created_at))
+    return HttpResponse.json({ items, next_page_token: null })
+  }),
+
+  http.get('/api/v1/eks/clusters/:id', ({ request, params }) => {
+    if (requireUser(request) === undefined) {
+      return unauthenticated()
+    }
+    const refusal = kubernetesRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const found = clusters.find((candidate) => candidate.id === String(params.id))
+    if (found === undefined) {
+      return apiError(404, 'not_found', `not found: no cluster "${String(params.id)}"`)
+    }
+    return HttpResponse.json(found)
+  }),
+
+  http.post('/api/v1/eks/clusters', async ({ request }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const refusal = kubernetesRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    if (info.kubernetes.versions.length === 0) {
+      return apiError(409, 'no_engine_image', 'conflict: no available Kubernetes engine image')
+    }
+    const body = (await request.json()) as Partial<{
+      name: string
+      kubernetes_version: string
+      control_plane_type: string
+      node_type: string
+      node_count: number
+    }>
+    const name = body.name ?? ''
+    if (!/^[a-z]([-a-z0-9]*[a-z0-9])?$/.test(name)) {
+      return invalidArgument('name', 'must be a DNS label of 1-40 characters')
+    }
+    if (clusters.some((candidate) => candidate.name === name)) {
+      return apiError(
+        409,
+        'already_exists',
+        `already exists: a cluster named "${name}" already exists`,
+      )
+    }
+    const count = body.node_count ?? 2
+    const groupID = nextResourceID('ng')
+    const created: Cluster = {
+      id: nextResourceID('eks'),
+      name,
+      kubernetes_version: body.kubernetes_version ?? '1.37',
+      state: 'creating',
+      state_reason: null,
+      endpoint: null,
+      vpc_id: 'vpc-0a1b2c3d4e5f60718',
+      subnet_id: 'subnet-0a1b2c3d4e5f60718',
+      pod_cidr: '100.64.0.0/16',
+      service_cidr: '100.96.0.0/16',
+      control_plane_type: body.control_plane_type ?? 'kumo.medium',
+      ca_certificate: '-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n',
+      node_groups: [
+        {
+          id: groupID,
+          name: 'default',
+          instance_type: body.node_type ?? 'kumo.medium',
+          root_disk_gb: 8,
+          desired_size: count,
+        },
+      ],
+      nodes: [
+        clusterNode(`${name}-cp-1`, 'control-plane', '192.168.100.40', null),
+        ...Array.from({ length: count }, (_, i) =>
+          clusterNode(`${name}-default-${i + 1}`, 'worker', `192.168.100.${41 + i}`, null),
+        ),
+      ],
+      task_id: nextResourceID('task'),
+      created_at: '2026-01-07T10:00:00Z',
+      updated_at: '2026-01-07T10:00:00Z',
+    }
+    clusters = [created, ...clusters]
+    return HttpResponse.json(created, {
+      status: 202,
+      headers: { Location: `/api/v1/tasks/${String(created.task_id)}` },
+    })
+  }),
+
+  http.patch('/api/v1/eks/clusters/:id/node-groups/:ng', async ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const refusal = kubernetesRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const found = clusters.find((candidate) => candidate.id === String(params.id))
+    const group = found?.node_groups.find((candidate) => candidate.id === String(params.ng))
+    if (found === undefined || group === undefined) {
+      return apiError(404, 'not_found', `not found: no node group "${String(params.ng)}"`)
+    }
+    const body = (await request.json()) as { desired_size?: number }
+    const size = body.desired_size ?? 0
+    if (!Number.isInteger(size) || size < 1 || size > 10) {
+      return invalidArgument('desired_size', 'must be between 1 and 10')
+    }
+    if (found.state !== 'active' && found.state !== 'degraded') {
+      return apiError(409, 'conflict', `conflict: cluster "${found.id}" is ${found.state}`)
+    }
+    if (size === group.desired_size) {
+      return HttpResponse.json(found)
+    }
+    const moved: Cluster = {
+      ...found,
+      state: 'updating',
+      node_groups: found.node_groups.map((candidate) =>
+        candidate.id === group.id ? { ...candidate, desired_size: size } : candidate,
+      ),
+      task_id: nextResourceID('task'),
+    }
+    clusters = clusters.map((candidate) => (candidate.id === found.id ? moved : candidate))
+    return HttpResponse.json(moved, {
+      status: 202,
+      headers: { Location: `/api/v1/tasks/${String(moved.task_id)}` },
+    })
+  }),
+
+  http.post('/api/v1/eks/clusters/:id/kubeconfig', ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    const refusal = kubernetesRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const found = clusters.find((candidate) => candidate.id === String(params.id))
+    if (found === undefined) {
+      return apiError(404, 'not_found', `not found: no cluster "${String(params.id)}"`)
+    }
+    if (found.endpoint === null || found.endpoint === undefined) {
+      return apiError(409, 'conflict', `conflict: cluster "${found.id}" is ${found.state}`)
+    }
+    const group = user.role === 'admin' ? 'kumo:admins' : 'kumo:viewers'
+    return HttpResponse.json(
+      {
+        kubeconfig: `apiVersion: v1\nkind: Config\nclusters:\n- name: ${found.name}\n  cluster:\n    server: ${found.endpoint}\nusers:\n- name: ${user.username}\n`,
+        group,
+        expires_at: '2026-02-06T10:00:00Z',
+      },
+      { headers: { 'Cache-Control': 'no-store' } },
+    )
+  }),
+
+  http.delete('/api/v1/eks/clusters/:id', ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const refusal = kubernetesRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const found = clusters.find((candidate) => candidate.id === String(params.id))
+    if (found === undefined) {
+      return apiError(404, 'not_found', `not found: no cluster "${String(params.id)}"`)
+    }
+    if (found.state === 'deleting') {
+      return apiError(409, 'conflict', `conflict: cluster "${found.id}" is already being deleted`)
+    }
+    const deleting: Cluster = { ...found, state: 'deleting', task_id: nextResourceID('task') }
+    clusters = clusters.map((candidate) => (candidate.id === found.id ? deleting : candidate))
+    return HttpResponse.json(deleting, {
+      status: 202,
+      headers: { Location: `/api/v1/tasks/${String(deleting.task_id)}` },
+    })
   }),
 
   // ---------------------------------------------------------- db instances ---

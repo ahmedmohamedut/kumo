@@ -30,7 +30,7 @@ Stack: React 18, TypeScript (strict), Vite, Redux Toolkit + RTK Query, React Rou
 
 - `AppLayout` (navigation = `SideNavigation`, breadcrumbs, notifications = `Flashbar`, `toolsHide` for now, `headerSelector="#h"`, content type per page: `table`, `form`, `wizard`, `default`).
 - `TopNavigation`: logo + "Kumo", a **Services** utility menu listing the service groups, each opening its first page. Storage is disabled and marked "Not configured" on a node without object storage. User menu: profile, theme toggle, sign out.
-- Side navigation items: **Dashboard**, **Compute** (Instances, Instance types, Images, Key pairs), **Networking** (VPCs, Subnets), **Storage** (Buckets, Access keys) and **Databases**. Storage appears only when `/system/info` reports `object_storage.backend` other than `none`, and Databases only when it reports `databases.enabled` (`navigationFor`). An info payload that has not arrived yet keeps Databases: the module is on by default, so hiding it while loading would flicker it away on most nodes. Active item follows the route.
+- Side navigation items: **Dashboard**, **Compute** (Instances, Instance types, Images, Key pairs), **Networking** (VPCs, Subnets), **Storage** (Buckets, Access keys), **Databases** and **Kubernetes** (Clusters). Storage appears only when `/system/info` reports `object_storage.backend` other than `none`, Databases only when it reports `databases.enabled`, and Kubernetes only when it reports `kubernetes.enabled` (`navigationFor`). An info payload that has not arrived yet keeps Databases and Kubernetes: both modules are on by default, so hiding them while loading would flicker them away on most nodes. Active item follows the route.
 - Layout component: `components/layout/ConsoleLayout.tsx`; routes render inside via `<Outlet />`. Pages set breadcrumbs through a small context/hook (`usePageMeta({breadcrumbs})`).
 
 ## 3. Routes
@@ -246,6 +246,25 @@ Every Databases page renders inside `DatabasesGate` (`features/dbinstances`). It
 - A database that is gone (`404`) gets an info alert and a way back.
 
 **Delete** is `DeleteDBInstanceModal`, shared by the list and the detail page. The data disk goes with the server and there is no snapshot, so it says so in as many words and the confirm button stays disabled until the identifier is typed exactly.
+
+### 6.10 Kubernetes clusters
+Every Kubernetes page renders inside `KubernetesGate` (`features/kubernetes`), the Databases gate's twin: `kubernetes.enabled: false` is an info alert explaining `KUMO_KUBERNETES=on`; the module on with `kubernetes.versions` empty keeps the pages, disables **Create cluster** and explains the import of the `kubernetes-1.37-<date>` release (or the recipe in `packaging/images/kubernetes-1.37/`).
+
+**Status mapping** (`CLUSTER_INDICATOR`): `creating`, `updating`, `deleting` → in-progress; `active` → success; `degraded` → **warning**, not error -- the control plane answers and `state_reason` says what is wrong; `failed` → error.
+
+**List.** Columns: Name (link), Status, Kubernetes (version), Nodes Ready (`ready / total` from the last health look), Endpoint (a dash until published), Created. Single selection, admin only; Delete and **Create cluster** in the header. It polls at 5 s while anything is transitional **or degraded** (the health pass brings a degraded cluster back on its own) and 30 s otherwise.
+
+**Create.** Name, Kubernetes version (from `kubernetes.versions`), control plane size, worker size and worker count. The size pickers offer **only what kubeadm accepts** -- 2 vCPU for the control plane, 2048 MiB for every node -- so that refusal never comes from the server. An info alert says the cluster is reachable from inside its VPC only and that volumes use `local-path` on the nodes' disks. `202` lands on the detail page, which explains what is happening.
+
+**Detail** has three tabs:
+- **Overview**: status, version, Nodes Ready, control plane size, pod and service ranges, created, id; the node group table with an admin-only **Resize** (enabled from `active` or `degraded`); the cluster's tasks.
+- **Nodes**: each VM with its role, Kubernetes readiness (`Ready`, `Not Ready`, or `Not yet seen` before the first look), VM state, address and instance id.
+- **Connect**: **Download kubeconfig** (a POST: every click signs a new 30-day certificate, saved as `<name>.kubeconfig`; enabled once the cluster is up), the group it lands in (`kumo:admins` for an admin, `kumo:viewers` for a viewer -- a viewer downloads one too), the endpoint and a `kubectl` example, and an alert that pods do not get `NET_RAW` under CRI-O, so `ping` needs the capability added.
+- `failed` gets an alert with the reason and where the nodes' console logs are; `degraded` one with the reason and that it recovers on its own; `creating` one saying the control plane boots first.
+
+**Resize** is `ResizeNodeGroupModal`: 1-10 workers; shrinking adds an alert that the newest workers are drained first and that a PodDisruptionBudget holding a pod for 5 minutes stops the resize with the cluster degraded.
+
+**Delete** is `DeleteClusterModal`: every node and everything on them goes, `local-path` volumes included, and the confirm button stays disabled until the name is typed exactly.
 
 ## 7. UX details
 
