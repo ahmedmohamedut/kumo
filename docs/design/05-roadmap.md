@@ -275,6 +275,28 @@ Design: `08-kubernetes.md`. **Approved and built 2026-11-20**: M8.1 to M8.8 are 
 - [ ] **Renew the Kubernetes apt key before 2026-12-29**: `pkgs.k8s.io`'s signing key pinned in `packaging/images/kubernetes-1.37/` expires then, and every image build after that date fails until the recipe carries the new one.
 - Known by design, not a bug: a cluster created before PR #19 keeps the RBAC it was created with, so its viewers cannot list nodes; a new cluster's can.
 
+## M9 — Spark clusters (EMR-like, standalone)
+
+Design: `09-spark.md`. **Proposed 2026-11-20; awaiting approval, not started.** Decisions from the owner (§11): Spark standalone on VMs from a golden image; Spark 4.3; integrated with Kumo object storage through a per-cluster access key; job submission from inside the VPC only (the REST submission server off); a history server on the master with event logs in a bucket; IDs `spk-`, API `/api/v1/spark`; the cluster machinery shared with M8 extracted first. Two points to approve (§11): Kumo keeps each cluster's access key secret (S12), and scale-down decommissions through the VM's ACPI shutdown (S13).
+
+- [ ] **M9.0 Extract the managed-cluster machinery**: `internal/service/managedcluster` takes the multi-VM create skeleton, the endpoint DNS record, the bounded wait, node-group arithmetic, the tolerant teardown and the health strikes out of `internal/service/kubernetes` (`09-spark.md` §10).
+  AC: no behavior change in Kubernetes: its unit tests pass unchanged and `make test-k8s-journey` passes on a real node.
+- [ ] **M9.1 Golden image**: `packaging/images/spark-4.3/` — Ubuntu 26.04, OpenJDK 21, Spark 4.3.0 and PySpark, `hadoop-aws` and the AWS SDK bundle pinned by checksum, systemd units for master, worker and history server; in `engine-images.yml`, published gzipped as `spark-4.3-<date>`.
+  AC: `verify.sh` runs SparkPi and a PySpark job with authentication and encryption on and sees both in the history server; the gzipped image is under 2 GiB.
+- [ ] **M9.2 Seeds and secrets**: `internal/service/sparkcloudinit` renders the master and worker seeds (spark-env, spark-defaults with the secret, S3 settings, event log location, units per role, the shred step).
+  AC: table-driven tests on the rendered seeds (every value quoted, no secret outside the files that need it); **verified by booting the M9.1 image** as a master and a worker (`sparkimage` tag): the worker registers, a job runs, a submit without the secret is refused, and `SIGPWR` decommissions a worker holding blocks.
+- [ ] **M9.3 Data model**: migration `0009_spark.sql` (`spk_clusters`, `spk_cluster_buckets`, `spk_node_groups`, `spk_nodes`), `managed_by='spk'`, `spk-` in `internal/id`; `02-data-model.md` updated.
+- [ ] **M9.4 Master client**: `internal/sparkapi` reads the master's `/json` (status, workers and their state) with the standard library.
+  AC: tested against `httptest` servers answering like a Spark 4.3 master: alive, a worker lost, a master that never answers (back within the timeout), a malformed body.
+- [ ] **M9.5 Clusters API and tasks**: `/api/v1/spark/clusters` (list, create, detail, delete, secret), tasks `spark.create` and `spark.delete`, the access key lifecycle, the health pass; `/system/info` gains `spark`; `kumod doctor` warns with no image or an unroutable guest S3 endpoint; `openapi.yaml` and `01-api.md`.
+  AC: service and handler tests on the fake, including a failed create leaving its VMs, a requeued create adopting its work, a delete removing the access key while keeping the buckets, and no secret in a log line or task payload.
+- [ ] **M9.6 Scale**: `PATCH /spark/clusters/{id}/node-groups/{ng}` and `spark.scale`: up with the stored secrets, down newest-first by ACPI shutdown.
+  AC: on the fake: 2 to 4 and 3 to 1 in order; a worker that will not power off within the drain timeout is forced off and leaves the cluster degraded; refusals as M8.6.
+- [ ] **M9.7 Console**: `web/src/features/spark` — nav section, clusters table, create form (buckets and event-log bucket when object storage is on), detail with Overview, Nodes and Connect (master URL, UI addresses, the secret on demand for admins, a `spark-submit` example, the VPC-only note), resize and delete modals. `StatusIndicator` mapping in `03-frontend.md`.
+  AC: component tests with MSW for each page and the error paths.
+- [ ] **M9.8 End to end**: a real node with RustFS — create a cluster with a bucket; from the VPC, a PySpark job reads from and writes to it; the history server lists it; scale 2 → 3 → 1 with a job running; delete. Playwright on `KUMO_HYPERVISOR=fake` for the console journey.
+  AC: all of the above on one node; the job survives the scale-down; after the delete every VM, volume, the DNS record, the access key and the secrets are gone and the bucket and its event logs remain; no secret in `kumod`'s log.
+
 ## Post-v0.1 backlog (do not start without approval)
 
 Volumes & snapshots · security groups (nwfilter) · bridged/VLAN networks · SSH-key rotation · instance resize · multi-host · ~~S3 (RustFS)~~ (now M6) · ~~RDS-like (Postgres/MySQL)~~ (now M7, Postgres only) · Redis · NATS/ActiveMQ · OpenBao secrets · ~~Kubernetes clusters~~ (now M8) · metrics (Prometheus) · audit log · OIDC login.
