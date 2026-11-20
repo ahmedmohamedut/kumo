@@ -22,6 +22,8 @@ const (
 	PrefixSubnet           = "subnet"
 	PrefixNetworkInterface = "eni"
 	PrefixDBInstance       = "db"
+	PrefixK8sCluster       = "eks"
+	PrefixNodeGroup        = "ng"
 )
 
 // Resource returns "<prefix>-<17 random hex chars>". It panics only if the
@@ -51,6 +53,14 @@ func NetworkInterface() string { return Resource(PrefixNetworkInterface) }
 // well, which is why it is minted once and never derived from the backing
 // instance (docs/design/07-databases.md §3).
 func DBInstance() string { return Resource(PrefixDBInstance) }
+
+// K8sCluster returns a Kubernetes cluster ID (eks-...). It names the
+// cluster's PKI directory, $KUMO_DATA_DIR/clusters/<id>/
+// (docs/design/08-kubernetes.md section 5).
+func K8sCluster() string { return Resource(PrefixK8sCluster) }
+
+// NodeGroup returns a node group ID (ng-...).
+func NodeGroup() string { return Resource(PrefixNodeGroup) }
 
 // HasResourceShape reports whether value looks like a resource ID with the
 // given prefix. It is a cheap guard for path parameters, not a check that the

@@ -40,6 +40,9 @@ const (
 	ManagedByNone ManagedBy = ""
 	// ManagedByDatabases is the VM behind a DB instance.
 	ManagedByDatabases ManagedBy = "rds"
+	// ManagedByKubernetes is a node of a Kubernetes cluster
+	// (docs/design/08-kubernetes.md K8).
+	ManagedByKubernetes ManagedBy = "eks"
 )
 
 // State is the lifecycle of an instance. The values mirror the CHECK constraint
