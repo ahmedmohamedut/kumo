@@ -90,7 +90,9 @@ Run it as the `kumo` user, not as root: it creates the database, the signing
 key and the pool directories, and files root creates there are files the service
 cannot write. (Symptom: `attempt to write a readonly database` on every start;
 fix with `sudo chown -R kumo:kumo /var/lib/kumo`.) The same goes for
-`kumod admin` below.
+`kumod admin` below. Run as any account other than `kumo`, `doctor` says so on a
+`note  account` line before the results; the `data directory` and
+`jwt signing key` failures that follow are that account's, not the install's.
 
 `doctor` is the five minutes you save later. It checks `/dev/kvm`, that the
 `kumo` user can reach the libvirt socket, that QEMU is installed, that the pools

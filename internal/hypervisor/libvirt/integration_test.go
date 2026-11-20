@@ -96,6 +96,35 @@ func TestEnsureInfraIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestHasKVMAsksLibvirt pins what /system/info reports as `kvm` against a real
+// daemon. The oracle is a second libvirt question, the domain capabilities for
+// virttype kvm, which libvirt refuses outright when it cannot run kvm domains.
+// It also pins the regression this replaced: on a host with /dev/kvm the
+// answer is true, where the old check (a stat from inside kumod's
+// PrivateDevices sandbox) answered false on every packaged node. Read-only.
+func TestHasKVMAsksLibvirt(t *testing.T) {
+	conn := dial(t)
+
+	client, err := kumolibvirt.New(slog.New(slog.DiscardHandler), "unix://"+socketPath())
+	if err != nil {
+		t.Fatalf("libvirt.New(): %v", err)
+	}
+	defer client.Close()
+
+	got, err := client.HasKVM(t.Context())
+	if err != nil {
+		t.Fatalf("HasKVM(): %v", err)
+	}
+
+	_, domErr := conn.ConnectGetDomainCapabilities(nil, nil, nil, golibvirt.OptString{"kvm"}, 0)
+	if want := domErr == nil; got != want {
+		t.Fatalf("HasKVM() = %v, but libvirt's kvm domain capabilities answered err=%v", got, domErr)
+	}
+	if kumolibvirt.DevKVMPresent() && !got {
+		t.Fatalf("HasKVM() = false on a host whose /dev/kvm is present")
+	}
+}
+
 // infraConfig names pools and a network that are unique to this run, so a test
 // never collides with a real Kumo installation on the same host.
 func infraConfig(dataDir, images, instances, network string) hypervisor.InfraConfig {
