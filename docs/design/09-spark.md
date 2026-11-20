@@ -161,17 +161,25 @@ so a requeued task completes rather than duplicates.
 - **Up** launches workers with the same seed recipe; the secret comes from
   the cluster's directory.
 - **Down**, newest first, one worker at a time (S13):
-  1. a graceful ACPI shutdown of the worker's VM;
-  2. systemd stops `spark-worker` with `KillSignal=SIGPWR` and a stop timeout
-     of `KUMO_SPARK_DRAIN_TIMEOUT` (default 10 m): Spark decommissions the
-     worker, moving its cached and shuffle blocks
-     (`spark.storage.decommission.*`) and letting running tasks finish;
+  1. a graceful ACPI shutdown of the worker's VM, through the hypervisor
+     (not an instance stop task, whose own timeout would cut a drain short);
+  2. systemd stops `spark-worker`, and its `ExecStop`
+     (`/usr/lib/kumo/spark-worker-drain`, packaging/images/spark-4.3) sends the
+     worker `SIGPWR`: Spark decommissions it, moving its cached and shuffle
+     blocks (`spark.storage.decommission.*`) and letting running tasks
+     finish. The script returns as soon as the worker's own status shows no
+     executor and no driver left, or at `KUMO_SPARK_DRAIN_TIMEOUT` (default
+     10 m): a decommissioned worker does not exit by itself, so the signal
+     alone would always wait out the timeout;
   3. the VM powers off; kumod tears it down and deletes its rows;
-  4. a VM still running at the timeout plus a margin is forced off, the
-     cluster is marked `degraded` with the worker named, and the scale stops.
+  4. a VM still running at the drain timeout plus a minute is forced off and
+     removed all the same -- the size asked for is reached -- and the cluster
+     ends `degraded`, naming every worker that was forced, because the work
+     on it was lost and re-run elsewhere.
 
-This is the one place where Spark's behavior is load-bearing: M9.2 verifies on
-the image that `SIGPWR` decommissions a worker that holds blocks.
+M9.2's boot test showed this on the image: an ACPI shutdown of a worker
+holding a job's cached data decommissions it, the driver logs it so, and the
+VM is off in seconds with the job's result unchanged.
 
 ### Delete (task `spark.delete`)
 

@@ -330,3 +330,53 @@ func TestSparkOff(t *testing.T) {
 		}
 	}
 }
+
+// A node group is resized through PATCH: 202 and a task that ends active,
+// 200 unchanged for the same size, 400 out of range, 403 for a viewer.
+func TestScaleSparkNodeGroup(t *testing.T) {
+	t.Parallel()
+	sr := newSparkRouter(t, true)
+	c := createActiveSparkCluster(t, sr)
+	got := doWithToken(t, sr.router, http.MethodGet, "/api/v1/spark/clusters/"+c.ID, "", sr.tokens.access)
+	var detail struct {
+		NodeGroups []struct {
+			ID string `json:"id"`
+		} `json:"node_groups"`
+	}
+	decode(t, got, &detail)
+	path := "/api/v1/spark/clusters/" + c.ID + "/node-groups/" + detail.NodeGroups[0].ID
+
+	r := doWithToken(t, sr.router, http.MethodPatch, path, `{"desired_size":3}`, sr.tokens.access)
+	if r.Code != http.StatusAccepted {
+		t.Fatalf("PATCH = %d (%s)", r.Code, r.Body)
+	}
+	var queued sparkClusterBody
+	decode(t, r, &queued)
+	if queued.State != string(spark.StateUpdating) || queued.TaskID == nil {
+		t.Fatalf("queued = %+v", queued)
+	}
+	waitForTaskState(t, sr.router, sr.tokens.access, *queued.TaskID, "succeeded")
+	after := createdCluster(t, sr, c.ID)
+	if after.State != string(spark.StateActive) || len(after.NodeGroups) != 1 || after.NodeGroups[0].DesiredSize != 3 || len(after.Nodes) != 4 {
+		t.Errorf("after the scale = %+v", after)
+	}
+	if same := doWithToken(t, sr.router, http.MethodPatch, path, `{"desired_size":3}`, sr.tokens.access); same.Code != http.StatusOK {
+		t.Errorf("PATCH to the same size = %d, want 200", same.Code)
+	}
+	for _, body := range []string{`{}`, `{"desired_size":0}`, `{"desired_size":11}`, `not json`} {
+		if bad := doWithToken(t, sr.router, http.MethodPatch, path, body, sr.tokens.access); bad.Code != http.StatusBadRequest {
+			t.Errorf("PATCH %s = %d, want 400", body, bad.Code)
+		}
+	}
+	viewer, _ := sr.signer.IssueAccessToken("01J00000000000000000000000", auth.RoleViewer)
+	if v := doWithToken(t, sr.router, http.MethodPatch, path, `{"desired_size":1}`, viewer.Token); v.Code != http.StatusForbidden {
+		t.Errorf("PATCH as a viewer = %d, want 403", v.Code)
+	}
+}
+
+func createdCluster(t *testing.T, sr sparkRouter, id string) sparkClusterBody {
+	t.Helper()
+	var body sparkClusterBody
+	decode(t, doWithToken(t, sr.router, http.MethodGet, "/api/v1/spark/clusters/"+id, "", sr.tokens.access), &body)
+	return body
+}

@@ -71,6 +71,10 @@ const (
 	// TypeSparkClusterDelete removes every node, the endpoint record, the
 	// cluster's access key, the rows and the cluster's secrets.
 	TypeSparkClusterDelete = "spark.delete"
+	// TypeSparkClusterScale resizes a node group: new workers built and
+	// registered, surplus ones decommissioned through their shutdown and
+	// removed (docs/design/09-spark.md section 4).
+	TypeSparkClusterScale = "spark.scale"
 )
 
 // State is the lifecycle of a task. The values mirror the CHECK constraint on
