@@ -162,6 +162,6 @@ Domain errors in `service` map to HTTP: `ErrInvalid→400/422`, `ErrUnauthorized
 ## 10. Future-proofing (don't build now, don't preclude)
 
 - Multi-host: `hosts` table, `Hypervisor` per host, scheduler picks host.
-- Other services (S3, RDS, …) as modules registered under `/api/v1/<service>` and nav groups in the console. Object storage is the first (`06-object-storage.md`, shipped in v0.2.0); managed Postgres is designed as the second (`07-databases.md`, M7).
+- Other services (S3, RDS, …) as modules registered under `/api/v1/<service>` and nav groups in the console. Object storage is the first (`06-object-storage.md`, shipped in v0.2.0); managed Postgres is the second (`07-databases.md`, M7, built); Kubernetes clusters are designed as the third (`08-kubernetes.md`, M8).
 - A module may depend on a server Kumo does not ship, as object storage depends on RustFS. Such a module is off by default, so the single-binary, zero-external-services install stays true for anyone who does not turn it on. A server that is down never stops kumod or fails `/readyz`; it is reported in `/system/info` and by `kumod doctor`.
 - Tags on every resource, via the generic `tags` table.
