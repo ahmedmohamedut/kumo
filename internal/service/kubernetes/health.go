@@ -8,6 +8,7 @@ import (
 
 	"github.com/ahmedmohamedut/kumo/internal/k8sapi"
 	"github.com/ahmedmohamedut/kumo/internal/service/k8spki"
+	"github.com/ahmedmohamedut/kumo/internal/service/managedcluster"
 	"github.com/ahmedmohamedut/kumo/internal/store/sqlc"
 )
 
@@ -32,7 +33,7 @@ func (s *Service) Reconcile(ctx context.Context) (HealthReport, error) {
 		}
 		for _, row := range rows {
 			report.Clusters++
-			if !s.due(row.ID) {
+			if !s.health.Due(row.ID) {
 				continue
 			}
 			report.Probed++
@@ -72,65 +73,19 @@ func (s *Service) check(ctx context.Context, row sqlc.K8sCluster) (bool, error) 
 		reason = "nodes not Ready: " + strings.Join(missing, ", ")
 	}
 
-	s.mu.Lock()
-	if reason == "" {
-		s.failures[row.ID] = 0
-	} else {
-		s.failures[row.ID]++
-	}
-	failures := s.failures[row.ID]
-	s.mu.Unlock()
-
-	switch {
-	case reason == "" && State(row.State) == StateDegraded:
+	failures := s.health.Record(row.ID, reason == "")
+	switch managedcluster.Judge(State(row.State) == StateDegraded, reason, row.StateReason.String, failures, unhealthyPasses) {
+	case managedcluster.Recover:
 		s.setState(ctx, row.ID, StateActive, "")
 		return true, nil
-	case reason != "" && State(row.State) == StateActive && failures >= unhealthyPasses:
+	case managedcluster.Degrade, managedcluster.Refresh:
+		// Refresh: still degraded, for a reason that changed, kept current so
+		// the console says what is wrong now rather than at the create.
 		s.setState(ctx, row.ID, StateDegraded, reason)
 		return true, nil
-	case reason != "" && State(row.State) == StateDegraded && (!row.StateReason.Valid || row.StateReason.String != reason):
-		// Still degraded, for a reason that changed: keep it current, so the
-		// console says what is wrong now rather than at the create.
-		s.setState(ctx, row.ID, StateDegraded, reason)
-		return true, nil
+	case managedcluster.Keep:
 	}
 	return false, nil
-}
-
-func (s *Service) due(clusterID string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := s.now()
-	if last, ok := s.probedAt[clusterID]; ok && now.Sub(last) < s.probeInterval {
-		return false
-	}
-	s.probedAt[clusterID] = now
-	return true
-}
-
-// lastReady is the Ready condition of each node as last seen.
-func (s *Service) lastReady(clusterID string) map[string]bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := map[string]bool{}
-	for name, ready := range s.ready[clusterID] {
-		out[name] = ready
-	}
-	return out
-}
-
-func (s *Service) recordReady(clusterID string, ready map[string]bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.ready[clusterID] = ready
-}
-
-func (s *Service) forget(clusterID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.ready, clusterID)
-	delete(s.failures, clusterID)
-	delete(s.probedAt, clusterID)
 }
 
 // FakeAPI is the ClusterAPI of a node on the fake hypervisor, where no guest

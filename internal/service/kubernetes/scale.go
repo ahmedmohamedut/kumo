@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/service/instance"
 	"github.com/ahmedmohamedut/kumo/internal/service/k8scloudinit"
 	"github.com/ahmedmohamedut/kumo/internal/service/k8spki"
+	"github.com/ahmedmohamedut/kumo/internal/service/managedcluster"
 	"github.com/ahmedmohamedut/kumo/internal/service/task"
 	"github.com/ahmedmohamedut/kumo/internal/store"
 	"github.com/ahmedmohamedut/kumo/internal/store/sqlc"
@@ -66,10 +66,10 @@ func (s *Service) Scale(ctx context.Context, clusterID, groupID string, desired 
 
 	var adds []instance.ManagedReservation
 	if desired > len(l.workers) {
-		next := highestIndex(l.workers) + 1
+		next := managedcluster.HighestIndex(l.workers) + 1
 		for i := 0; i < desired-len(l.workers); i++ {
 			adds = append(adds, instance.ManagedReservation{
-				Name: workerName(row.Name, group.Name, next+i), Owner: instance.ManagedByKubernetes,
+				Name: managedcluster.WorkerName(row.Name, group.Name, next+i), Owner: instance.ManagedByKubernetes,
 				ImageID: row.ImageID, InstanceType: group.InstanceType, SubnetID: row.SubnetID,
 				RootDiskGB: int(group.RootDiskGb),
 			})
@@ -98,7 +98,7 @@ func (s *Service) Scale(ctx context.Context, clusterID, groupID string, desired 
 			return fmt.Errorf("mark cluster %q updating: %w", clusterID, err)
 		}
 		queued, err := s.tasks.CreateInTx(ctx, tx, task.TypeK8sClusterScale, clusterID,
-			clusterPayload{ClusterID: clusterID})
+			managedcluster.Payload{ClusterID: clusterID})
 		if err != nil {
 			return err
 		}
@@ -193,11 +193,11 @@ func (s *Service) scale(ctx context.Context, row sqlc.K8sCluster) (string, error
 		return "", fmt.Errorf("the API server: %w", err)
 	}
 
-	workers := sortedByIndex(l.workers)
+	workers := managedcluster.SortedByIndex(l.workers)
 
 	// Down: the newest first, each drained before its VM goes.
-	if len(workers) > desired {
-		for _, w := range reverse(workers[desired:]) {
+	if surplus := managedcluster.Surplus(workers, desired); len(surplus) > 0 {
+		for _, w := range surplus {
 			if blocked, err := s.drain(ctx, api, w); err != nil {
 				return "", err
 			} else if blocked != "" {
@@ -211,7 +211,7 @@ func (s *Service) scale(ctx context.Context, row sqlc.K8sCluster) (string, error
 	}
 
 	// Up: the workers reserved by Scale that have no running VM yet.
-	var pending []clusterNode
+	var pending []managedcluster.Node
 	states := map[string]string{}
 	nodes, err := s.store.ListK8sNodes(ctx, sqlc.ListK8sNodesParams{ClusterID: row.ID})
 	if err != nil {
@@ -221,7 +221,7 @@ func (s *Service) scale(ctx context.Context, row sqlc.K8sCluster) (string, error
 		states[n.InstanceID] = n.State
 	}
 	for _, w := range workers {
-		if states[w.instanceID] == string(instance.StatePending) {
+		if states[w.InstanceID] == string(instance.StatePending) {
 			pending = append(pending, w)
 		}
 	}
@@ -241,22 +241,22 @@ func (s *Service) scale(ctx context.Context, row sqlc.K8sCluster) (string, error
 	}
 	launched := map[string]instance.ManagedLaunched{}
 	for _, w := range pending {
-		got, err := s.instances.LaunchManaged(ctx, w.instanceID, instance.ManagedLaunch{
+		got, err := s.instances.LaunchManaged(ctx, w.InstanceID, instance.ManagedLaunch{
 			Seed: func(ctx context.Context) (hypervisor.CloudInit, error) {
 				userData, err := k8scloudinit.WorkerUserData(k8scloudinit.WorkerRequest{
-					NodeName: w.name, Endpoint: l.endpoint, ControlPlaneIP: l.controlPlane.privateIP,
-					NodeIP: w.privateIP, Token: token, CAHash: hash,
+					NodeName: w.Name, Endpoint: l.endpoint, ControlPlaneIP: l.controlPlane.PrivateIP,
+					NodeIP: w.PrivateIP, Token: token, CAHash: hash,
 				})
 				if err != nil {
 					return hypervisor.CloudInit{}, err
 				}
-				return seed(w, userData), nil
+				return managedcluster.Seed(w, userData), nil
 			},
 		})
 		if err != nil {
-			return "", fmt.Errorf("launch worker %s: %w", w.name, err)
+			return "", fmt.Errorf("launch worker %s: %w", w.Name, err)
 		}
-		launched[w.instanceID] = got
+		launched[w.InstanceID] = got
 	}
 	if err := s.store.WithTx(ctx, func(ctx context.Context, tx *store.Tx) error {
 		for id, got := range launched {
@@ -277,7 +277,7 @@ func (s *Service) scale(ctx context.Context, row sqlc.K8sCluster) (string, error
 	switch {
 	case err == nil:
 		return "", nil
-	case errors.Is(err, errTimedOut):
+	case errors.Is(err, managedcluster.ErrTimedOut):
 		return "nodes not Ready after the scale: " + strings.Join(notReady, ", "), nil
 	default:
 		return "", err
@@ -288,15 +288,15 @@ func (s *Service) scale(ctx context.Context, row sqlc.K8sCluster) (string, error
 // DaemonSet and mirror pods, which go with the node. An eviction a disruption
 // budget refuses is retried until the drain limit; past it the drain stops and
 // names the pods, and the node is kept -- a scale never deletes past a PDB.
-func (s *Service) drain(ctx context.Context, api ClusterAPI, w clusterNode) (string, error) {
-	if err := api.Cordon(ctx, w.name); err != nil && !errors.Is(err, k8sapi.ErrNotFound) {
-		return "", fmt.Errorf("cordon %s: %w", w.name, err)
+func (s *Service) drain(ctx context.Context, api ClusterAPI, w managedcluster.Node) (string, error) {
+	if err := api.Cordon(ctx, w.Name); err != nil && !errors.Is(err, k8sapi.ErrNotFound) {
+		return "", fmt.Errorf("cordon %s: %w", w.Name, err)
 	}
 	deadline := time.Now().Add(s.drainTimeout)
 	for {
-		pods, err := api.PodsOnNode(ctx, w.name)
+		pods, err := api.PodsOnNode(ctx, w.Name)
 		if err != nil {
-			return "", fmt.Errorf("list the pods on %s: %w", w.name, err)
+			return "", fmt.Errorf("list the pods on %s: %w", w.Name, err)
 		}
 		var blocked []string
 		for _, p := range pods {
@@ -308,7 +308,7 @@ func (s *Service) drain(ctx context.Context, api ClusterAPI, w clusterNode) (str
 					blocked = append(blocked, p.Namespace+"/"+p.Name)
 					continue
 				}
-				return "", fmt.Errorf("evict %s/%s from %s: %w", p.Namespace, p.Name, w.name, err)
+				return "", fmt.Errorf("evict %s/%s from %s: %w", p.Namespace, p.Name, w.Name, err)
 			}
 		}
 		if len(blocked) == 0 {
@@ -317,7 +317,7 @@ func (s *Service) drain(ctx context.Context, api ClusterAPI, w clusterNode) (str
 		if time.Now().After(deadline) {
 			sort.Strings(blocked)
 			return fmt.Sprintf("the drain of %s stopped after %s: a disruption budget would not let %s move",
-				w.name, s.drainTimeout, strings.Join(blocked, ", ")), nil
+				w.Name, s.drainTimeout, strings.Join(blocked, ", ")), nil
 		}
 		select {
 		case <-ctx.Done():
@@ -328,48 +328,17 @@ func (s *Service) drain(ctx context.Context, api ClusterAPI, w clusterNode) (str
 }
 
 // removeWorker deletes the Node, then the VM, then the rows.
-func (s *Service) removeWorker(ctx context.Context, api ClusterAPI, w clusterNode) error {
-	if err := api.DeleteNode(ctx, w.name); err != nil {
-		return fmt.Errorf("delete node %s: %w", w.name, err)
+func (s *Service) removeWorker(ctx context.Context, api ClusterAPI, w managedcluster.Node) error {
+	if err := api.DeleteNode(ctx, w.Name); err != nil {
+		return fmt.Errorf("delete node %s: %w", w.Name, err)
 	}
-	if err := s.instances.TeardownManaged(ctx, w.instanceID, instance.ManagedByKubernetes); err != nil {
-		return fmt.Errorf("tear down %s: %w", w.name, err)
+	if err := s.tear(ctx, w.InstanceID); err != nil {
+		return fmt.Errorf("tear down %s: %w", w.Name, err)
 	}
 	return s.store.WithTx(ctx, func(ctx context.Context, tx *store.Tx) error {
-		if err := tx.DeleteK8sNode(ctx, sqlc.DeleteK8sNodeParams{InstanceID: w.instanceID}); err != nil {
+		if err := tx.DeleteK8sNode(ctx, sqlc.DeleteK8sNodeParams{InstanceID: w.InstanceID}); err != nil {
 			return err
 		}
-		return s.instances.DeleteManagedInTx(ctx, tx, w.instanceID)
+		return s.instances.DeleteManagedInTx(ctx, tx, w.InstanceID)
 	})
-}
-
-// workerIndex is a worker's number, the suffix of <cluster>-<group>-<n>.
-func workerIndex(name string) int {
-	n, err := strconv.Atoi(name[strings.LastIndex(name, "-")+1:])
-	if err != nil {
-		return 0
-	}
-	return n
-}
-
-func highestIndex(workers []clusterNode) int {
-	highest := 0
-	for _, w := range workers {
-		highest = max(highest, workerIndex(w.name))
-	}
-	return highest
-}
-
-func sortedByIndex(workers []clusterNode) []clusterNode {
-	out := append([]clusterNode(nil), workers...)
-	sort.Slice(out, func(i, j int) bool { return workerIndex(out[i].name) < workerIndex(out[j].name) })
-	return out
-}
-
-func reverse(in []clusterNode) []clusterNode {
-	out := make([]clusterNode, len(in))
-	for i, n := range in {
-		out[len(in)-1-i] = n
-	}
-	return out
 }

@@ -3,7 +3,6 @@ package kubernetes
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -15,10 +14,10 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/hypervisor"
 	"github.com/ahmedmohamedut/kumo/internal/k8sapi"
 	"github.com/ahmedmohamedut/kumo/internal/service"
-	"github.com/ahmedmohamedut/kumo/internal/service/cloudinit"
 	"github.com/ahmedmohamedut/kumo/internal/service/instance"
 	"github.com/ahmedmohamedut/kumo/internal/service/k8scloudinit"
 	"github.com/ahmedmohamedut/kumo/internal/service/k8spki"
+	"github.com/ahmedmohamedut/kumo/internal/service/managedcluster"
 	"github.com/ahmedmohamedut/kumo/internal/service/task"
 	"github.com/ahmedmohamedut/kumo/internal/store"
 	"github.com/ahmedmohamedut/kumo/internal/store/sqlc"
@@ -30,34 +29,16 @@ import (
 // boot.
 const workerTokenTTL = time.Hour
 
-// clusterPayload is the input of both tasks: only the cluster's id. Everything
-// else lives on the rows, and nothing secret goes into a payload.
-type clusterPayload struct {
-	ClusterID string `json:"cluster_id"`
-}
-
 func decodePayload(t worker.Task) (string, error) {
-	var p clusterPayload
-	if err := json.Unmarshal(t.Payload, &p); err != nil || p.ClusterID == "" {
-		return "", fmt.Errorf("%w: task %s", ErrBadTaskPayload, t.ID)
-	}
-	return p.ClusterID, nil
-}
-
-// clusterNode is a node row with the instance it is.
-type clusterNode struct {
-	instanceID string
-	name       string
-	role       string
-	privateIP  string
+	return managedcluster.DecodePayload(t, ErrBadTaskPayload)
 }
 
 // layout is what both tasks read before they act.
 type layout struct {
 	row          sqlc.K8sCluster
 	vpc          sqlc.Vpc
-	controlPlane clusterNode
-	workers      []clusterNode
+	controlPlane managedcluster.Node
+	workers      []managedcluster.Node
 	endpoint     string
 }
 
@@ -72,7 +53,7 @@ func (s *Service) layout(ctx context.Context, row sqlc.K8sCluster) (layout, erro
 	}
 	out := layout{row: row, vpc: vpc, endpoint: endpointName(row.Name, vpc.Name)}
 	for _, n := range nodes {
-		node := clusterNode{instanceID: n.InstanceID, name: n.Name, role: n.Role, privateIP: n.PrivateIp.String}
+		node := managedcluster.Node{InstanceID: n.InstanceID, Name: n.Name, Role: n.Role, PrivateIP: n.PrivateIp.String}
 		if n.Role == RoleControlPlane {
 			out.controlPlane = node
 		} else {
@@ -83,9 +64,9 @@ func (s *Service) layout(ctx context.Context, row sqlc.K8sCluster) (layout, erro
 }
 
 func (l layout) nodeNames() []string {
-	names := []string{l.controlPlane.name}
+	names := []string{l.controlPlane.Name}
 	for _, w := range l.workers {
-		names = append(names, w.name)
+		names = append(names, w.Name)
 	}
 	return names
 }
@@ -148,33 +129,31 @@ func (s *Service) create(ctx context.Context, row sqlc.K8sCluster) error {
 	//    wrote one: LaunchManaged adopts an existing seed volume, so the
 	//    token generated here is never needed twice.
 	launched := map[string]instance.ManagedLaunched{}
-	cp, err := s.instances.LaunchManaged(ctx, l.controlPlane.instanceID, instance.ManagedLaunch{
+	cp, err := s.instances.LaunchManaged(ctx, l.controlPlane.InstanceID, instance.ManagedLaunch{
 		Seed: func(ctx context.Context) (hypervisor.CloudInit, error) {
 			token, err := k8spki.NewBootstrapToken(nil)
 			if err != nil {
 				return hypervisor.CloudInit{}, err
 			}
 			userData, err := k8scloudinit.ControlPlaneUserData(k8scloudinit.ControlPlaneRequest{
-				ClusterName: row.Name, NodeName: l.controlPlane.name, Endpoint: l.endpoint,
-				NodeIP: l.controlPlane.privateIP, PodCIDR: row.PodCidr, ServiceCIDR: row.ServiceCidr,
+				ClusterName: row.Name, NodeName: l.controlPlane.Name, Endpoint: l.endpoint,
+				NodeIP: l.controlPlane.PrivateIP, PodCIDR: row.PodCidr, ServiceCIDR: row.ServiceCidr,
 				Token: token, PKI: pki,
 			})
 			if err != nil {
 				return hypervisor.CloudInit{}, fmt.Errorf("render the control plane's seed: %w", err)
 			}
-			return seed(l.controlPlane, userData), nil
+			return managedcluster.Seed(l.controlPlane, userData), nil
 		},
 	})
 	if err != nil {
 		return fmt.Errorf("launch the control plane: %w", err)
 	}
-	launched[l.controlPlane.instanceID] = cp
+	launched[l.controlPlane.InstanceID] = cp
 
 	// 2. The endpoint record, so api.<cluster>.<vpc> resolves on the VPC (K6).
-	if err := s.hv.AddDNSHost(ctx, l.vpc.LibvirtNetwork, hypervisor.DNSHost{
-		IP: l.controlPlane.privateIP, Hostnames: []string{l.endpoint},
-	}); err != nil && !errors.Is(err, hypervisor.ErrAlreadyExists) {
-		return fmt.Errorf("publish the endpoint %s: %w", l.endpoint, err)
+	if err := managedcluster.PublishEndpoint(ctx, s.hv, l.vpc.LibvirtNetwork, l.controlPlane.PrivateIP, l.endpoint); err != nil {
+		return err
 	}
 
 	// 3. The API server.
@@ -234,22 +213,22 @@ func (s *Service) create(ctx context.Context, row sqlc.K8sCluster) error {
 			return err
 		}
 		for _, w := range l.workers {
-			got, err := s.instances.LaunchManaged(ctx, w.instanceID, instance.ManagedLaunch{
+			got, err := s.instances.LaunchManaged(ctx, w.InstanceID, instance.ManagedLaunch{
 				Seed: func(ctx context.Context) (hypervisor.CloudInit, error) {
 					userData, err := k8scloudinit.WorkerUserData(k8scloudinit.WorkerRequest{
-						NodeName: w.name, Endpoint: l.endpoint, ControlPlaneIP: l.controlPlane.privateIP,
-						NodeIP: w.privateIP, Token: token, CAHash: hash,
+						NodeName: w.Name, Endpoint: l.endpoint, ControlPlaneIP: l.controlPlane.PrivateIP,
+						NodeIP: w.PrivateIP, Token: token, CAHash: hash,
 					})
 					if err != nil {
-						return hypervisor.CloudInit{}, fmt.Errorf("render the seed of %s: %w", w.name, err)
+						return hypervisor.CloudInit{}, fmt.Errorf("render the seed of %s: %w", w.Name, err)
 					}
-					return seed(w, userData), nil
+					return managedcluster.Seed(w, userData), nil
 				},
 			})
 			if err != nil {
-				return fmt.Errorf("launch worker %s: %w", w.name, err)
+				return fmt.Errorf("launch worker %s: %w", w.Name, err)
 			}
-			launched[w.instanceID] = got
+			launched[w.InstanceID] = got
 		}
 	}
 
@@ -260,7 +239,7 @@ func (s *Service) create(ctx context.Context, row sqlc.K8sCluster) error {
 		notReady = s.unreadyNodes(ctx, row.ID, api, l.nodeNames())
 		return len(notReady) == 0
 	})
-	if waitErr != nil && !errors.Is(waitErr, errTimedOut) {
+	if waitErr != nil && !errors.Is(waitErr, managedcluster.ErrTimedOut) {
 		return waitErr
 	}
 
@@ -293,17 +272,9 @@ func (s *Service) create(ctx context.Context, row sqlc.K8sCluster) error {
 	return nil
 }
 
-func seed(n clusterNode, userData string) hypervisor.CloudInit {
-	return hypervisor.CloudInit{
-		MetaData:      cloudinit.MetaData(n.instanceID, n.name),
-		UserData:      userData,
-		NetworkConfig: cloudinit.NetworkConfig(),
-	}
-}
-
 func (s *Service) connection(l layout, pki *k8spki.ClusterPKI) Connection {
 	return Connection{
-		ClusterID: l.row.ID, Address: net.JoinHostPort(l.controlPlane.privateIP, "6443"),
+		ClusterID: l.row.ID, Address: net.JoinHostPort(l.controlPlane.PrivateIP, "6443"),
 		ServerName: l.endpoint, PKI: pki, Nodes: l.nodeNames(),
 	}
 }
@@ -319,7 +290,7 @@ func (s *Service) unreadyNodes(ctx context.Context, clusterID string, api Cluste
 	for _, n := range nodes {
 		ready[n.Name] = n.Ready
 	}
-	s.recordReady(clusterID, ready)
+	s.health.RecordNodes(clusterID, ready)
 	var missing []string
 	for _, name := range expected {
 		if !ready[name] {
@@ -330,29 +301,16 @@ func (s *Service) unreadyNodes(ctx context.Context, clusterID string, api Cluste
 	return missing
 }
 
-var errTimedOut = errors.New("kubernetes: timed out")
-
 // await polls cond until it holds, the cluster is being deleted, or the ready
 // timeout runs out.
 func (s *Service) await(ctx context.Context, clusterID, what string, cond func(context.Context) bool) error {
-	deadline := time.Now().Add(s.readyTimeout)
-	for {
-		if cond(ctx) {
-			return nil
-		}
-		if row, err := s.store.GetK8sCluster(ctx, sqlc.GetK8sClusterParams{ID: clusterID}); err == nil &&
-			State(row.State) == StateDeleting {
-			return fmt.Errorf("%w (cluster %s)", ErrCreateCancelled, clusterID)
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("%w waiting for %s after %s", errTimedOut, what, s.readyTimeout)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(s.pollInterval):
-		}
-	}
+	return managedcluster.Wait{
+		Timeout: s.readyTimeout, Interval: s.pollInterval, Canceled: ErrCreateCancelled,
+		Deleting: func(ctx context.Context) bool {
+			row, err := s.store.GetK8sCluster(ctx, sqlc.GetK8sClusterParams{ID: clusterID})
+			return err == nil && State(row.State) == StateDeleting
+		},
+	}.For(ctx, clusterID, what, cond)
 }
 
 func (s *Service) setState(ctx context.Context, clusterID string, state State, reason string) {
@@ -384,7 +342,7 @@ func (s *Service) Delete(ctx context.Context, clusterID string) (Cluster, error)
 			return fmt.Errorf("mark cluster %q deleting: %w", clusterID, err)
 		}
 		queued, err := s.tasks.CreateInTx(ctx, tx, task.TypeK8sClusterDelete, clusterID,
-			clusterPayload{ClusterID: clusterID})
+			managedcluster.Payload{ClusterID: clusterID})
 		if err != nil {
 			return err
 		}
@@ -429,31 +387,22 @@ func (s *Service) DeleteHandler(ctx context.Context, t worker.Task) error {
 	if err != nil {
 		return err
 	}
-	nodes := append([]clusterNode{l.controlPlane}, l.workers...)
-	for _, n := range nodes {
-		if n.instanceID == "" {
-			continue
-		}
-		if err := s.instances.TeardownManaged(ctx, n.instanceID, instance.ManagedByKubernetes); err != nil {
-			return fmt.Errorf("tear down node %s: %w", n.name, err)
-		}
+	nodes := append([]managedcluster.Node{l.controlPlane}, l.workers...)
+	if err := managedcluster.Teardown(ctx, s.tear, nodes); err != nil {
+		return err
 	}
-	if l.controlPlane.privateIP != "" {
-		if err := s.hv.DeleteDNSHost(ctx, l.vpc.LibvirtNetwork, hypervisor.DNSHost{
-			IP: l.controlPlane.privateIP, Hostnames: []string{l.endpoint},
-		}); err != nil && !errors.Is(err, hypervisor.ErrNotFound) {
-			return fmt.Errorf("remove the endpoint %s: %w", l.endpoint, err)
-		}
+	if err := managedcluster.RemoveEndpoint(ctx, s.hv, l.vpc.LibvirtNetwork, l.controlPlane.PrivateIP, l.endpoint); err != nil {
+		return err
 	}
 	if err := s.store.WithTx(ctx, func(ctx context.Context, tx *store.Tx) error {
 		for _, n := range nodes {
-			if n.instanceID == "" {
+			if n.InstanceID == "" {
 				continue
 			}
-			if err := tx.DeleteK8sNode(ctx, sqlc.DeleteK8sNodeParams{InstanceID: n.instanceID}); err != nil {
-				return fmt.Errorf("delete the node row of %s: %w", n.name, err)
+			if err := tx.DeleteK8sNode(ctx, sqlc.DeleteK8sNodeParams{InstanceID: n.InstanceID}); err != nil {
+				return fmt.Errorf("delete the node row of %s: %w", n.Name, err)
 			}
-			if err := s.instances.DeleteManagedInTx(ctx, tx, n.instanceID); err != nil {
+			if err := s.instances.DeleteManagedInTx(ctx, tx, n.InstanceID); err != nil {
 				return err
 			}
 		}
@@ -461,12 +410,17 @@ func (s *Service) DeleteHandler(ctx context.Context, t worker.Task) error {
 	}); err != nil {
 		return err
 	}
-	s.forget(clusterID)
+	s.health.Forget(clusterID)
 	if err := s.removePKI(ctx, clusterID); err != nil {
 		return err
 	}
 	s.logger.InfoContext(ctx, "kubernetes: cluster deleted", "cluster_id", clusterID, "nodes", len(nodes))
 	return nil
+}
+
+// tear removes one of the cluster's VMs, tolerating what is already gone.
+func (s *Service) tear(ctx context.Context, instanceID string) error {
+	return s.instances.TeardownManaged(ctx, instanceID, instance.ManagedByKubernetes)
 }
 
 func (s *Service) removePKI(ctx context.Context, clusterID string) error {
