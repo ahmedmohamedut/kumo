@@ -13,6 +13,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/service"
 	"github.com/ahmedmohamedut/kumo/internal/service/instance"
 	"github.com/ahmedmohamedut/kumo/internal/service/k8spki"
+	"github.com/ahmedmohamedut/kumo/internal/service/managedcluster"
 	"github.com/ahmedmohamedut/kumo/internal/service/task"
 	"github.com/ahmedmohamedut/kumo/internal/store"
 	"github.com/ahmedmohamedut/kumo/internal/store/sqlc"
@@ -110,7 +111,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Cluster, error) {
 	}}
 	for i := 1; i <= in.NodeCount; i++ {
 		reservations = append(reservations, instance.ManagedReservation{
-			Name: workerName(in.Name, DefaultNodeGroup, i), Owner: instance.ManagedByKubernetes, ImageID: image.ID,
+			Name: managedcluster.WorkerName(in.Name, DefaultNodeGroup, i), Owner: instance.ManagedByKubernetes, ImageID: image.ID,
 			InstanceType: in.NodeType, SubnetID: in.SubnetID, RootDiskGB: in.NodeRootDiskGB,
 			CreatedBy: in.CreatedBy,
 		})
@@ -162,7 +163,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Cluster, error) {
 			}
 
 			queued, err := s.tasks.CreateInTx(ctx, tx, task.TypeK8sClusterCreate, clusterID,
-				clusterPayload{ClusterID: clusterID})
+				managedcluster.Payload{ClusterID: clusterID})
 			if err != nil {
 				return err
 			}
@@ -273,12 +274,9 @@ func (s *Service) resolveImage(ctx context.Context, version string) (sqlc.Image,
 	return row, nil
 }
 
-// controlPlaneName and workerName name a cluster's VMs, which are their
+// controlPlaneName names the control plane's VM (workers: managedcluster.WorkerName), which are their
 // Kubernetes node names and their hostnames too.
 func controlPlaneName(cluster string, n int) string { return fmt.Sprintf("%s-cp-%d", cluster, n) }
-func workerName(cluster, group string, n int) string {
-	return fmt.Sprintf("%s-%s-%d", cluster, group, n)
-}
 
 func invalid(fields ...service.FieldError) error {
 	return &service.ValidationError{Message: "the cluster request is not acceptable", Fields: fields}

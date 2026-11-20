@@ -130,7 +130,7 @@ func (s *Service) describe(ctx context.Context, row sqlc.K8sCluster) (Cluster, e
 	if err != nil {
 		return Cluster{}, fmt.Errorf("list the nodes of %q: %w", row.ID, err)
 	}
-	ready := s.lastReady(row.ID)
+	ready := s.health.Nodes(row.ID)
 	for _, n := range nodes {
 		node := Node{Name: n.Name, InstanceID: n.InstanceID, Role: n.Role, State: n.State,
 			PrivateIP: n.PrivateIp.String}

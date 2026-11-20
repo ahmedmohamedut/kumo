@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/ahmedmohamedut/kumo/internal/hypervisor"
@@ -24,6 +23,7 @@ import (
 	"github.com/ahmedmohamedut/kumo/internal/service"
 	"github.com/ahmedmohamedut/kumo/internal/service/instance"
 	"github.com/ahmedmohamedut/kumo/internal/service/k8spki"
+	"github.com/ahmedmohamedut/kumo/internal/service/managedcluster"
 	"github.com/ahmedmohamedut/kumo/internal/service/task"
 	"github.com/ahmedmohamedut/kumo/internal/store"
 	"github.com/ahmedmohamedut/kumo/internal/worker"
@@ -170,13 +170,10 @@ type Service struct {
 	locks         *locks.Set
 	now           func() time.Time
 
-	mu sync.Mutex
-	// probedAt and failures are the health pass's memory (section 6): when a
-	// cluster was last asked, and how many passes in a row it failed.
-	probedAt map[string]time.Time
-	failures map[string]int
-	// ready is each node's Ready condition as last seen, by cluster.
-	ready map[string]map[string]bool
+	// health is the health pass's memory (section 6): when a cluster was last
+	// asked, how many passes in a row it failed, and each node's Ready
+	// condition as last seen.
+	health *managedcluster.Health
 }
 
 // Constructor errors.
@@ -240,9 +237,7 @@ func New(opts Options) (*Service, error) {
 		drainTimeout:  opts.DrainTimeout,
 		locks:         opts.Locks,
 		now:           opts.Now,
-		probedAt:      map[string]time.Time{},
-		failures:      map[string]int{},
-		ready:         map[string]map[string]bool{},
+		health:        managedcluster.NewHealth(opts.ProbeInterval, opts.Now),
 	}, nil
 }
 

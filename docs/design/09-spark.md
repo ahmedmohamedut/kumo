@@ -249,22 +249,27 @@ The create body: `name`, `spark_version` (optional, newest), `subnet_id`
 
 ## 10. The extraction (M9.0)
 
-What moves from `internal/service/kubernetes` to
-`internal/service/managedcluster`, with Kubernetes unchanged in behavior:
+**Done.** `internal/service/managedcluster` holds what M8 had written inside
+`internal/service/kubernetes` and does not depend on what runs in the VMs:
 
-- the multi-VM create skeleton: reserve 1 + N through
-  `instance.WithManagedReservations`, launch in order with
-  `LaunchManaged`, keep VMs of a failed create for inspection;
-- the endpoint DNS record and its removal;
-- the bounded wait (`await`) with the deleting check, and `setState`;
-- node-group arithmetic: newest-first removal, worker names and indices;
-- the teardown of a cluster's VMs, tolerant of what is already gone;
-- the health pass's strike counting and probe scheduling.
+- `Node`, `Seed` (a node's cloud-init around the module's user data),
+  `WorkerName`, `WorkerIndex`, `HighestIndex`, `SortedByIndex` and `Surplus`
+  (the workers a scale-down removes, newest first);
+- `Payload` and `DecodePayload`, the task input of every cluster task;
+- `Wait`, the bounded poll that ends with the module's cancellation error when
+  a delete takes the cluster over, or with `ErrTimedOut`;
+- `PublishEndpoint` and `RemoveEndpoint`, the DNS record, idempotent both ways;
+- `Teardown`, every node's VM through the module's tolerant teardown;
+- `Health` (probe scheduling, unhealthy passes in a row, each node's health as
+  last seen) and `Judge`, the active/degraded decision of a pass.
 
-What stays module-specific: tables and queries, seeds, the API client, the
-readiness predicate, the drain. The modules supply those through a small
-interface. The acceptance test of M9.0 is that nothing about Kubernetes
-changes: its unit tests unchanged, `make test-k8s-journey` passing.
+What stays in each module: its tables and queries (so its `layout` and
+`setState`), its seeds and therefore its launch loops (each launch renders the
+module's seed), its API client, its readiness predicate and its drain. The
+reservation of 1 + N VMs was already shared, in `instance.WithManagedReservations`.
+
+Verified as the AC asks: the Kubernetes unit tests pass unchanged, and
+`make test-k8s-journey` passes on a real node with the refactored module.
 
 ## 11. Owner decisions
 
