@@ -24,6 +24,16 @@ import (
 
 const cliPassword = "correct horse battery staple"
 
+// TestMain keeps the host's /etc/kumo/kumod.env out of the tests: on a machine
+// with Kumo installed, doctor and admin would otherwise read its settings.
+// A test that wants a file points KUMO_ENV_FILE at its own.
+func TestMain(m *testing.M) {
+	if err := os.Setenv(config.EnvFileVar, ""); err != nil {
+		panic(err)
+	}
+	os.Exit(m.Run())
+}
+
 // runCLI invokes the command line with a scratch data directory and returns the
 // exit code plus both streams.
 func runCLI(t *testing.T, stdin string, args ...string) (int, string, string) {
@@ -663,5 +673,47 @@ func TestDoctorReportsTheSparkModule(t *testing.T) {
 	_, stdout, _ = runCLI(t, "", "doctor")
 	if !strings.Contains(stdout, "ok    spark") || !strings.Contains(stdout, "off") {
 		t.Errorf("stdout = %q, want the spark line to report it off", stdout)
+	}
+}
+
+func TestDoctorReadsTheEnvFile(t *testing.T) {
+	testDir(t)
+	path := filepath.Join(t.TempDir(), "kumod.env")
+	if err := os.WriteFile(path, []byte("KUMO_SPARK=off\nKUMO_HYPERVISOR=libvirt\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.EnvFileVar, path)
+	// Registered so the variable the file sets is restored after the test.
+	t.Setenv("KUMO_SPARK", "")
+	if err := os.Unsetenv("KUMO_SPARK"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stdout, _ := runCLI(t, "", "doctor")
+	if !strings.Contains(stdout, "note  env file") || !strings.Contains(stdout, path) {
+		t.Errorf("stdout = %q, want a note naming the env file", stdout)
+	}
+	if !strings.Contains(stdout, "off (set KUMO_SPARK=on to enable)") {
+		t.Errorf("stdout = %q, want spark off from the file", stdout)
+	}
+	if !strings.Contains(stdout, "ok    hypervisor") || strings.Contains(stdout, "libvirt-sock") {
+		t.Errorf("stdout = %q, want KUMO_HYPERVISOR=fake from the environment to win over the file", stdout)
+	}
+}
+
+func TestDoctorSaysWhenTheEnvFileIsUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads any file")
+	}
+	testDir(t)
+	path := filepath.Join(t.TempDir(), "kumod.env")
+	if err := os.WriteFile(path, []byte("KUMO_SPARK=off\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.EnvFileVar, path)
+
+	_, stdout, _ := runCLI(t, "", "doctor")
+	if !strings.Contains(stdout, "note  env file") || !strings.Contains(stdout, "not read") {
+		t.Errorf("stdout = %q, want a note that the env file was not read", stdout)
 	}
 }

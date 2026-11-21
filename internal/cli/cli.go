@@ -11,6 +11,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/ahmedmohamedut/kumo/internal/config"
 )
 
 // Exit codes. 0 is success, 1 a runtime failure, 2 a malformed invocation.
@@ -94,7 +96,9 @@ Usage:
   kumod version                 print the build information
 
 Every command reads its configuration from the KUMO_* environment variables
-(docs/design/00-architecture.md §5). Run "kumod <command> -h" for the flags of
+(docs/design/00-architecture.md §5). doctor and admin also read the ones in
+/etc/kumo/kumod.env (KUMO_ENV_FILE, empty for none) that are not already set,
+so they see what the service runs with. Run "kumod <command> -h" for the flags of
 a command.
 
 Passwords are never read from the command line, because arguments are visible to
@@ -142,4 +146,21 @@ func splitCommand(args []string, command string) (string, []string, error) {
 	}
 
 	return args[0], args[1:], nil
+}
+
+// loadEnvFile copies the KUMO_* settings of the env file the systemd unit
+// loads into this process, for the operator commands: run by hand they would
+// otherwise check the defaults rather than the configuration the service runs
+// with. It returns a line for the operator, empty when there is no file.
+func loadEnvFile() string {
+	path := config.EnvFilePath()
+	read, err := config.ApplyEnvFile(path)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("not read, so only this shell's KUMO_* variables count: %v", err)
+	case read:
+		return path + " (variables already set win)"
+	default:
+		return ""
+	}
 }

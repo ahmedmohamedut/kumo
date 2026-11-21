@@ -76,6 +76,7 @@
 | Variable | Default | Description |
 |---|---|---|
 | `KUMO_LISTEN` | `:8080` | HTTP listen address |
+| `KUMO_ENV_FILE` | `/etc/kumo/kumod.env` | read by `kumod doctor` and `kumod admin` only: its `KUMO_*` lines that are not already set are applied, so a hand-run command sees what the systemd unit loads; empty reads none. The server itself takes only the environment |
 | `KUMO_DATA_DIR` | `/var/lib/kumo` | SQLite DB, secrets, uploaded files |
 | `KUMO_DB_PATH` | `$DATA_DIR/kumo.db` | SQLite file |
 | `KUMO_HYPERVISOR` | `libvirt` | `libvirt` or `fake` |
