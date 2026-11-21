@@ -24,6 +24,7 @@ const SERVICE_HOME: Record<string, string> = {
   network: '/vpcs',
   database: '/databases',
   kubernetes: '/kubernetes',
+  spark: '/spark',
 }
 
 /**
@@ -36,7 +37,8 @@ function servicesMenu(
     objectStorage,
     databases,
     kubernetes,
-  }: { objectStorage: boolean; databases: boolean; kubernetes: boolean },
+    spark,
+  }: { objectStorage: boolean; databases: boolean; kubernetes: boolean; spark: boolean },
   onOpen: (href: string) => void,
 ): Utilities {
   return [
@@ -55,6 +57,9 @@ function servicesMenu(
         kubernetes
           ? { id: 'kubernetes', text: 'Kubernetes', description: 'Kubernetes clusters' }
           : { id: 'kubernetes', text: 'Kubernetes', description: 'Turned off', disabled: true },
+        spark
+          ? { id: 'spark', text: 'Spark', description: 'Spark clusters' }
+          : { id: 'spark', text: 'Spark', description: 'Turned off', disabled: true },
         { id: 'network', text: 'Network', description: 'VPCs and subnets' },
       ],
       onItemClick: ({ detail }) => {
@@ -116,9 +121,10 @@ export function ConsoleLayout() {
   const databases = info === undefined || info.databases.enabled
   // Kubernetes is on by default too, and reads the same way while loading.
   const kubernetes = info === undefined || info.kubernetes.enabled
+  const spark = info === undefined || info.spark.enabled
   const navigation = useMemo(
-    () => navigationFor({ objectStorage, databases, kubernetes }),
-    [objectStorage, databases, kubernetes],
+    () => navigationFor({ objectStorage, databases, kubernetes, spark }),
+    [objectStorage, databases, kubernetes, spark],
   )
 
   const [navigationOpen, setNavigationOpen] = useState(true)
@@ -136,10 +142,10 @@ export function ConsoleLayout() {
   // the list has to be stable across renders.
   const utilities = useMemo(
     () => [
-      ...servicesMenu({ objectStorage, databases, kubernetes }, navigate),
+      ...servicesMenu({ objectStorage, databases, kubernetes, spark }, navigate),
       ...userMenu(username, signOut),
     ],
-    [objectStorage, databases, kubernetes, navigate, username, signOut],
+    [objectStorage, databases, kubernetes, spark, navigate, username, signOut],
   )
 
   return (

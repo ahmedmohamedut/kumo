@@ -18,6 +18,7 @@ type BucketDetail = components['schemas']['BucketDetail']
 type AccessKey = components['schemas']['AccessKey']
 type DBInstance = components['schemas']['DBInstance']
 type Cluster = components['schemas']['Cluster']
+type SparkCluster = components['schemas']['SparkCluster']
 
 /**
  * MSW handlers for the auth and system endpoints (03-frontend.md §8). The auth
@@ -295,6 +296,18 @@ function validateAccessKey(
       409,
       'already_exists',
       `already exists: an access key named "${body.name ?? ''}" already exists`,
+    )
+  }
+  return null
+}
+
+/** sparkRefusal is the 503 every /spark route answers with the module off. */
+function sparkRefusal() {
+  if (!info.spark.enabled) {
+    return apiError(
+      503,
+      'unavailable',
+      'unavailable: the Spark module is off on this node; set KUMO_SPARK=on',
     )
   }
   return null
@@ -928,6 +941,98 @@ const INITIAL_CLUSTERS: Cluster[] = [
   },
 ]
 
+/** A fixture node of a Spark cluster. */
+function sparkNode(
+  name: string,
+  role: 'master' | 'worker',
+  ip: string,
+  alive: boolean | null,
+): SparkCluster['nodes'][number] {
+  return {
+    name,
+    instance_id: `i-0d1e2f3a4b5c6d${ip.slice(-3).padStart(3, '0')}`,
+    role,
+    node_group_id: role === 'worker' ? 'ng-0c1d2e3f4a5b60718' : null,
+    state: alive === null ? 'pending' : 'running',
+    private_ip: ip,
+    alive,
+  }
+}
+
+/**
+ * Spark cluster fixtures: `etl` is active with object storage on two buckets
+ * and event logs, `adhoc` is still being created without object storage.
+ */
+const INITIAL_SPARK_CLUSTERS: SparkCluster[] = [
+  {
+    id: 'spk-0a1b2c3d4e5f60718',
+    name: 'etl',
+    spark_version: '4.3',
+    state: 'active',
+    state_reason: null,
+    endpoint: 'spark://etl.default:7077',
+    master_ui_url: 'http://etl.default:8080',
+    history_url: 'http://etl.default:18080',
+    vpc_id: 'vpc-0a1b2c3d4e5f60718',
+    subnet_id: 'subnet-0a1b2c3d4e5f60718',
+    master_type: 'kumo.medium',
+    object_storage: true,
+    buckets: ['app-logs', 'backups'],
+    event_log_bucket: 'app-logs',
+    node_groups: [
+      {
+        id: 'ng-0c1d2e3f4a5b60718',
+        name: 'default',
+        instance_type: 'kumo.large',
+        root_disk_gb: 8,
+        desired_size: 2,
+      },
+    ],
+    nodes: [
+      sparkNode('etl-master', 'master', '192.168.100.50', true),
+      sparkNode('etl-default-1', 'worker', '192.168.100.51', true),
+      sparkNode('etl-default-2', 'worker', '192.168.100.52', true),
+    ],
+    created_at: '2026-01-05T09:00:00Z',
+    updated_at: '2026-01-05T09:05:00Z',
+  },
+  {
+    id: 'spk-0b1c2d3e4f5a60718',
+    name: 'adhoc',
+    spark_version: '4.3',
+    state: 'creating',
+    state_reason: null,
+    endpoint: null,
+    master_ui_url: null,
+    history_url: null,
+    vpc_id: 'vpc-0a1b2c3d4e5f60718',
+    subnet_id: 'subnet-0a1b2c3d4e5f60718',
+    master_type: 'kumo.medium',
+    object_storage: false,
+    buckets: [],
+    event_log_bucket: null,
+    node_groups: [
+      {
+        id: 'ng-0d1e2f3a4b5c60718',
+        name: 'default',
+        instance_type: 'kumo.large',
+        root_disk_gb: 8,
+        desired_size: 1,
+      },
+    ],
+    nodes: [
+      sparkNode('adhoc-master', 'master', '192.168.100.60', null),
+      sparkNode('adhoc-default-1', 'worker', '192.168.100.61', null),
+    ],
+    created_at: '2026-01-06T09:00:00Z',
+    updated_at: '2026-01-06T09:00:00Z',
+  },
+]
+
+function freshSparkClusters(): SparkCluster[] {
+  return INITIAL_SPARK_CLUSTERS.map((cluster) => structuredClone(cluster))
+}
+
 function freshClusters(): Cluster[] {
   return INITIAL_CLUSTERS.map((cluster) => structuredClone(cluster))
 }
@@ -1053,6 +1158,7 @@ let tasks: Task[] = freshTasks()
 let instances: Instance[] = freshInstances()
 let dbInstances: DBInstance[] = freshDBInstances()
 let clusters: Cluster[] = freshClusters()
+let sparkClusters: SparkCluster[] = freshSparkClusters()
 let vpcs: VPC[] = freshVPCs()
 let subnets: Subnet[] = freshSubnets()
 
@@ -1089,7 +1195,7 @@ export function addMockImageReference(id: string, instanceID: string): void {
  * in the same test cannot collide.
  */
 function nextResourceID(
-  prefix: 'img' | 'task' | 'i' | 'eni' | 'vpc' | 'subnet' | 'db' | 'eks' | 'ng',
+  prefix: 'img' | 'task' | 'i' | 'eni' | 'vpc' | 'subnet' | 'db' | 'eks' | 'ng' | 'spk',
 ): string {
   return `${prefix}-0f1e2d3c4b5a6${String((counter += 1)).padStart(5, '0')}`
 }
@@ -1146,6 +1252,7 @@ export function resetMockState(): void {
   accessKeys = freshAccessKeys()
   dbInstances = freshDBInstances()
   clusters = freshClusters()
+  sparkClusters = freshSparkClusters()
   info = {
     ...info,
     object_storage: { backend: 'fake', ok: true },
@@ -1153,6 +1260,21 @@ export function resetMockState(): void {
     kubernetes: { enabled: true, versions: ['1.37'] },
     spark: { enabled: true, versions: ['4.3'], object_storage: true },
   }
+}
+
+/** mockSparkClusters reads the Spark cluster fixtures. */
+export function mockSparkClusters(): SparkCluster[] {
+  return sparkClusters
+}
+
+/** setMockSparkClusters replaces the Spark cluster fixtures. */
+export function setMockSparkClusters(next: SparkCluster[]): void {
+  sparkClusters = next
+}
+
+/** setMockSpark switches the Spark module: off, on with no image, no storage. */
+export function setMockSpark(spark: SystemInfo['spark']): void {
+  info = { ...info, spark }
 }
 
 /** mockClusters reads the cluster fixtures. */
@@ -2724,6 +2846,216 @@ export const handlers = [
     }
     const deleting: Cluster = { ...found, state: 'deleting', task_id: nextResourceID('task') }
     clusters = clusters.map((candidate) => (candidate.id === found.id ? deleting : candidate))
+    return HttpResponse.json(deleting, {
+      status: 202,
+      headers: { Location: `/api/v1/tasks/${String(deleting.task_id)}` },
+    })
+  }),
+
+  // --------------------------------------------------------- spark clusters ---
+
+  http.get('/api/v1/spark/clusters', ({ request }) => {
+    if (requireUser(request) === undefined) {
+      return unauthenticated()
+    }
+    const refusal = sparkRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const items = [...sparkClusters].sort((a, b) => b.created_at.localeCompare(a.created_at))
+    return HttpResponse.json({ items, next_page_token: null })
+  }),
+
+  http.get('/api/v1/spark/clusters/:id', ({ request, params }) => {
+    if (requireUser(request) === undefined) {
+      return unauthenticated()
+    }
+    const refusal = sparkRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    const found = sparkClusters.find((candidate) => candidate.id === String(params.id))
+    if (found === undefined) {
+      return apiError(404, 'not_found', `not found: no Spark cluster "${String(params.id)}"`)
+    }
+    return HttpResponse.json(found)
+  }),
+
+  http.post('/api/v1/spark/clusters', async ({ request }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const refusal = sparkRefusal()
+    if (refusal !== null) {
+      return refusal
+    }
+    if (info.spark.versions.length === 0) {
+      return apiError(409, 'no_engine_image', 'conflict: no available Spark engine image')
+    }
+    const body = (await request.json()) as Partial<{
+      name: string
+      spark_version: string
+      master_type: string
+      worker_type: string
+      worker_count: number
+      object_storage: boolean
+      buckets: string[]
+      event_log_bucket: string
+    }>
+    const name = body.name ?? ''
+    if (!/^[a-z]([-a-z0-9]*[a-z0-9])?$/.test(name)) {
+      return invalidArgument('name', 'must be a DNS label of 1-40 characters')
+    }
+    if (sparkClusters.some((candidate) => candidate.name === name)) {
+      return apiError(
+        409,
+        'already_exists',
+        `already exists: a Spark cluster named "${name}" already exists`,
+      )
+    }
+    const storage = body.object_storage === true
+    const chosen = storage ? (body.buckets ?? []) : []
+    if (storage && !info.spark.object_storage) {
+      return invalidArgument(
+        'object_storage',
+        'object storage is off on this node (KUMO_OBJECTSTORE)',
+      )
+    }
+    for (const bucket of chosen) {
+      if (findBucket(bucket) === undefined) {
+        return invalidArgument('buckets', `no bucket "${bucket}" exists`)
+      }
+    }
+    const count = body.worker_count ?? 2
+    const created: SparkCluster = {
+      id: nextResourceID('spk'),
+      name,
+      spark_version: body.spark_version ?? '4.3',
+      state: 'creating',
+      state_reason: null,
+      endpoint: null,
+      master_ui_url: null,
+      history_url: null,
+      vpc_id: 'vpc-0a1b2c3d4e5f60718',
+      subnet_id: 'subnet-0a1b2c3d4e5f60718',
+      master_type: body.master_type ?? 'kumo.medium',
+      object_storage: storage,
+      buckets: chosen,
+      event_log_bucket: storage ? (body.event_log_bucket ?? null) : null,
+      node_groups: [
+        {
+          id: nextResourceID('ng'),
+          name: 'default',
+          instance_type: body.worker_type ?? 'kumo.large',
+          root_disk_gb: 8,
+          desired_size: count,
+        },
+      ],
+      nodes: [
+        sparkNode(`${name}-master`, 'master', '192.168.100.70', null),
+        ...Array.from({ length: count }, (_, i) =>
+          sparkNode(`${name}-default-${i + 1}`, 'worker', `192.168.100.${71 + i}`, null),
+        ),
+      ],
+      task_id: nextResourceID('task'),
+      created_at: '2026-01-07T10:00:00Z',
+      updated_at: '2026-01-07T10:00:00Z',
+    }
+    sparkClusters = [created, ...sparkClusters]
+    return HttpResponse.json(created, {
+      status: 202,
+      headers: { Location: `/api/v1/tasks/${String(created.task_id)}` },
+    })
+  }),
+
+  http.patch('/api/v1/spark/clusters/:id/node-groups/:ng', async ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const found = sparkClusters.find((candidate) => candidate.id === String(params.id))
+    const group = found?.node_groups.find((candidate) => candidate.id === String(params.ng))
+    if (found === undefined || group === undefined) {
+      return apiError(404, 'not_found', `not found: no node group "${String(params.ng)}"`)
+    }
+    const body = (await request.json()) as { desired_size?: number }
+    const size = body.desired_size ?? 0
+    if (!Number.isInteger(size) || size < 1 || size > 10) {
+      return invalidArgument('desired_size', 'must be between 1 and 10')
+    }
+    if (found.state !== 'active' && found.state !== 'degraded') {
+      return apiError(409, 'conflict', `conflict: cluster "${found.id}" is ${found.state}`)
+    }
+    if (size === group.desired_size) {
+      return HttpResponse.json(found)
+    }
+    const moved: SparkCluster = {
+      ...found,
+      state: 'updating',
+      node_groups: found.node_groups.map((candidate) =>
+        candidate.id === group.id ? { ...candidate, desired_size: size } : candidate,
+      ),
+      task_id: nextResourceID('task'),
+    }
+    sparkClusters = sparkClusters.map((candidate) =>
+      candidate.id === found.id ? moved : candidate,
+    )
+    return HttpResponse.json(moved, {
+      status: 202,
+      headers: { Location: `/api/v1/tasks/${String(moved.task_id)}` },
+    })
+  }),
+
+  http.post('/api/v1/spark/clusters/:id/client-config', ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const found = sparkClusters.find((candidate) => candidate.id === String(params.id))
+    if (found === undefined) {
+      return apiError(404, 'not_found', `not found: no Spark cluster "${String(params.id)}"`)
+    }
+    if (found.endpoint === null || found.endpoint === undefined) {
+      return apiError(409, 'conflict', `conflict: cluster "${found.id}" is ${found.state}`)
+    }
+    return HttpResponse.json(
+      {
+        client_config: `spark.master ${found.endpoint}\nspark.authenticate true\nspark.authenticate.secret fixture\n`,
+        filename: `kumo-${found.id}.conf`,
+      },
+      { headers: { 'Cache-Control': 'no-store' } },
+    )
+  }),
+
+  http.delete('/api/v1/spark/clusters/:id', ({ request, params }) => {
+    const user = requireUser(request)
+    if (user === undefined) {
+      return unauthenticated()
+    }
+    if (user.role !== 'admin') {
+      return forbidden()
+    }
+    const found = sparkClusters.find((candidate) => candidate.id === String(params.id))
+    if (found === undefined) {
+      return apiError(404, 'not_found', `not found: no Spark cluster "${String(params.id)}"`)
+    }
+    if (found.state === 'deleting') {
+      return apiError(409, 'conflict', `conflict: cluster "${found.id}" is already being deleted`)
+    }
+    const deleting: SparkCluster = { ...found, state: 'deleting', task_id: nextResourceID('task') }
+    sparkClusters = sparkClusters.map((candidate) =>
+      candidate.id === found.id ? deleting : candidate,
+    )
     return HttpResponse.json(deleting, {
       status: 202,
       headers: { Location: `/api/v1/tasks/${String(deleting.task_id)}` },

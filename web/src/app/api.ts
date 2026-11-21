@@ -97,6 +97,7 @@ export const kumoApi = createApi({
     'AccessKey',
     'DBInstance',
     'Cluster',
+    'SparkCluster',
   ],
   endpoints: () => ({}),
 })

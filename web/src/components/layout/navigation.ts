@@ -40,6 +40,14 @@ const kubernetesSection: NavItem = {
   items: [{ type: 'link', text: 'Clusters', href: '/kubernetes' }],
 }
 
+/** The Spark section (09-spark.md), shown unless the module is off. */
+const sparkSection: NavItem = {
+  type: 'section',
+  text: 'Spark',
+  defaultExpanded: true,
+  items: [{ type: 'link', text: 'Clusters', href: '/spark' }],
+}
+
 /**
  * Side navigation from 03-frontend.md §2: every section a node can have.
  * activeHref matches against all of it, so a Storage page is still the active
@@ -70,6 +78,7 @@ export const navigationItems: ReadonlyArray<NavItem> = [
   storageSection,
   databasesSection,
   kubernetesSection,
+  sparkSection,
 ]
 
 /**
@@ -81,16 +90,19 @@ export function navigationFor({
   objectStorage,
   databases,
   kubernetes = true,
+  spark = true,
 }: {
   objectStorage: boolean
   databases: boolean
   kubernetes?: boolean
+  spark?: boolean
 }): NavItem[] {
   return navigationItems.filter(
     (entry) =>
       (objectStorage || entry !== storageSection) &&
       (databases || entry !== databasesSection) &&
-      (kubernetes || entry !== kubernetesSection),
+      (kubernetes || entry !== kubernetesSection) &&
+      (spark || entry !== sparkSection),
   )
 }
 

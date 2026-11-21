@@ -63,29 +63,58 @@ describe('activeHref', () => {
 })
 
 describe('navigationFor', () => {
-  const sections = (objectStorage: boolean, databases = true, kubernetes = true) =>
-    navigationFor({ objectStorage, databases, kubernetes }).flatMap((entry) =>
+  const sections = (objectStorage: boolean, databases = true, kubernetes = true, spark = true) =>
+    navigationFor({ objectStorage, databases, kubernetes, spark }).flatMap((entry) =>
       entry.type === 'section' ? [entry.text] : [],
     )
 
   it('adds Storage when object storage is on', () => {
-    expect(sections(true)).toEqual(['Compute', 'Networking', 'Storage', 'Databases', 'Kubernetes'])
+    expect(sections(true)).toEqual([
+      'Compute',
+      'Networking',
+      'Storage',
+      'Databases',
+      'Kubernetes',
+      'Spark',
+    ])
   })
 
   it('leaves Storage out when it is off', () => {
-    expect(sections(false)).toEqual(['Compute', 'Networking', 'Databases', 'Kubernetes'])
+    expect(sections(false)).toEqual(['Compute', 'Networking', 'Databases', 'Kubernetes', 'Spark'])
   })
 
   it('leaves Databases out when the module is off', () => {
-    expect(sections(true, false)).toEqual(['Compute', 'Networking', 'Storage', 'Kubernetes'])
+    expect(sections(true, false)).toEqual([
+      'Compute',
+      'Networking',
+      'Storage',
+      'Kubernetes',
+      'Spark',
+    ])
   })
 
   it('leaves Kubernetes out when the module is off', () => {
-    expect(sections(true, true, false)).toEqual(['Compute', 'Networking', 'Storage', 'Databases'])
+    expect(sections(true, true, false)).toEqual([
+      'Compute',
+      'Networking',
+      'Storage',
+      'Databases',
+      'Spark',
+    ])
+  })
+
+  it('leaves Spark out when the module is off', () => {
+    expect(sections(true, true, true, false)).toEqual([
+      'Compute',
+      'Networking',
+      'Storage',
+      'Databases',
+      'Kubernetes',
+    ])
   })
 
   // A node with no optional module is the smallest console there is.
   it('keeps Compute and Networking with every module off', () => {
-    expect(sections(false, false, false)).toEqual(['Compute', 'Networking'])
+    expect(sections(false, false, false, false)).toEqual(['Compute', 'Networking'])
   })
 })
