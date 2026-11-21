@@ -175,6 +175,9 @@ func (c *authCommand) close() error { return c.store.Close() }
 // admin commands never start the API or the worker: they must work against a
 // database the server has stopped using.
 func openAuth(ctx context.Context, env Env) (*authCommand, error) {
+	if note := loadEnvFile(); strings.HasPrefix(note, "not read") {
+		fmt.Fprintf(env.Stderr, "kumod: %s\n", note)
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, err

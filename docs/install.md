@@ -94,6 +94,11 @@ fix with `sudo chown -R kumo:kumo /var/lib/kumo`.) The same goes for
 `note  account` line before the results; the `data directory` and
 `jwt signing key` failures that follow are that account's, not the install's.
 
+`doctor` and `kumod admin` read `/etc/kumo/kumod.env` themselves, the file the
+systemd unit loads, so they check the settings the service runs with; the first
+line names it. A `KUMO_*` variable already set in your shell wins over the
+file, and `KUMO_ENV_FILE=/path` (or empty, for none) points them elsewhere.
+
 `doctor` is the five minutes you save later. It checks `/dev/kvm`, that the
 `kumo` user can reach the libvirt socket, that QEMU is installed, that the pools
 and the network exist, and that there is disk space left. Fix what it reports

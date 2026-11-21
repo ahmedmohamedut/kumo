@@ -48,6 +48,11 @@ type check struct {
 // hypervisor; the libvirt, KVM and firewall checks of 04-libvirt-integration.md
 // §8 arrive with the real backend in M3.1.
 func runDoctor(ctx context.Context, out io.Writer) error {
+	// Read before the configuration, so the checks are of the settings the
+	// service runs with and not of the defaults.
+	if note := loadEnvFile(); note != "" {
+		fmt.Fprintf(out, "note  %-18s %s\n", "env file", note)
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("the configuration is not usable: %w", err)
