@@ -89,7 +89,7 @@ autoscaling, more than one node group, upgrades in place, YARN or HDFS.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KUMO_SPARK` | `on` | the module; off makes every `/spark` route answer `503` |
+| `KUMO_SPARK` | `off` | the module, off by default while it is a preview (until the M9.8 real-node run passes); off makes every `/spark` route answer `503` |
 | `KUMO_SPARK_READY_TIMEOUT` | `10m` | how long a create waits for the master and every worker |
 | `KUMO_SPARK_PROBE_INTERVAL` | `30s` | the health pass's interval per cluster |
 | `KUMO_SPARK_DRAIN_TIMEOUT` | `10m` | how long a scale-down lets one worker decommission (§4) |

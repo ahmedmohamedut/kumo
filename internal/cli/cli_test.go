@@ -638,6 +638,7 @@ var errUnauthorized = service.ErrUnauthorized
 
 func TestDoctorReportsTheSparkModule(t *testing.T) {
 	dir := testDir(t)
+	t.Setenv("KUMO_SPARK", "on") // off by default while it is a preview
 
 	_, stdout, _ := runCLI(t, "", "doctor")
 	if !strings.Contains(stdout, "warn  spark") || !strings.Contains(stdout, "no Spark image") {

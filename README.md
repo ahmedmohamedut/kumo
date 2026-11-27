@@ -4,7 +4,7 @@
 
 Kumo is an open-source, AWS-style private cloud for teams that find OpenStack too heavy and Proxmox too low-level. One Go binary, one web console, one SQLite file. No message bus cluster, no dozen microservices.
 
-> **Status:** v0.3.0, early. Compute, networking, object storage and managed Postgres work on a single node; managed Kubernetes clusters are built on `main` and ship in the next release. There is no TLS yet, so keep it on a network you trust. See the [roadmap](docs/design/05-roadmap.md) and the [install guide](docs/install.md).
+> **Status:** v0.4.0, early. Compute, networking, object storage, managed Postgres and managed Kubernetes clusters work on a single node. Spark clusters ship as a preview, off by default (`KUMO_SPARK=on` turns them on) until their end-to-end run on a real node passes. There is no TLS yet, so keep it on a network you trust. See the [roadmap](docs/design/05-roadmap.md) and the [install guide](docs/install.md).
 > "Kumo" (雲, "cloud") is a working name.
 
 ## Why Kumo?
@@ -29,7 +29,8 @@ Kumo is an open-source, AWS-style private cloud for teams that find OpenStack to
 | Cache | ElastiCache | Redis | 📝 planned |
 | Messaging / Streaming | SQS / SNS / Kinesis | ActiveMQ, NATS | 📝 planned |
 | Secrets | Secrets Manager | OpenBao | 📝 planned |
-| Kubernetes clusters | EKS | kubeadm 1.37, CRI-O, Cilium, on a golden image | ✅ on `main`, next release |
+| Kubernetes clusters | EKS | kubeadm 1.37, CRI-O, Cilium, on a golden image | ✅ v0.4 |
+| Spark clusters | EMR | Spark 4.3 standalone, on a golden image, with object storage | 🧪 v0.4 preview, off by default |
 
 Object storage is optional: Kumo manages a RustFS server you run, and stays a single binary with no outside services until you turn it on. The bytes of uploads and downloads go between the browser and RustFS directly; Kumo hands out short-lived signed links. See [object storage in the install guide](docs/install.md#object-storage-optional).
 

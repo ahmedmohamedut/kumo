@@ -680,6 +680,13 @@ func TestDatabasesAreOnByDefault(t *testing.T) {
 
 func TestLoadSpark(t *testing.T) {
 	clearKumoEnv(t)
+	if cfg, err := config.Load(); err != nil || cfg.Spark {
+		t.Fatalf("default: Spark = %v (err %v), want off while it is a preview", cfg != nil && cfg.Spark, err)
+	}
+	t.Setenv("KUMO_SPARK", "on")
+	if cfg, err := config.Load(); err != nil || !cfg.Spark {
+		t.Fatalf("KUMO_SPARK=on: Spark = %v (err %v), want on", cfg != nil && cfg.Spark, err)
+	}
 	t.Setenv("KUMO_SPARK", "off")
 	t.Setenv("KUMO_SPARK_DRAIN_TIMEOUT", "2m")
 	t.Setenv("KUMO_OBJECTSTORE", "rustfs")

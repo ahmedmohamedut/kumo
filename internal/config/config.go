@@ -206,8 +206,9 @@ const (
 	DefaultK8sReadyTimeout = 20 * time.Minute
 	// DefaultK8sProbeInterval is how often the health pass asks a cluster.
 	DefaultK8sProbeInterval = 30 * time.Second
-	// DefaultSpark leaves the Spark module on.
-	DefaultSpark = true
+	// DefaultSpark leaves the Spark module off: it is a preview until its
+	// real-node end-to-end run (M9.8) passes, and an operator turns it on.
+	DefaultSpark = false
 	// DefaultSparkReadyTimeout bounds each wait of a Spark create.
 	DefaultSparkReadyTimeout = 10 * time.Minute
 	// DefaultSparkProbeInterval is how often the health pass reads a master.
