@@ -278,8 +278,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          shopt -s nullglob
-          dirs=(out/image-*/)
+          # Found by their release.env rather than by directory name: when the
+          # pattern matches one artifact, download-artifact extracts it into
+          # out/ itself, not out/image-<recipe>/, and a run of one recipe
+          # would otherwise publish nothing.
+          mapfile -t dirs < <(find out -name release.env -printf '%h\n' | sort)
           [ ${#dirs[@]} -gt 0 ] || { echo "::error::no build handed over an image"; exit 1; }
           for dir in "${dirs[@]}"; do
             (
