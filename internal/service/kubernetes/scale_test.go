@@ -3,6 +3,7 @@ package kubernetes_test
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"strings"
 	"testing"
 
@@ -56,6 +57,9 @@ func TestScaleUpJoinsNewWorkers(t *testing.T) {
 		if n.State != "running" {
 			t.Errorf("%s is %s, want running", n.Name, n.State)
 		}
+	}
+	if got, _ := h.api.nodeLabels("orders-default-4"); !maps.Equal(got, kubernetes.WorkerLabels("default")) {
+		t.Errorf("a worker the scale added has labels %v", got)
 	}
 	// The create's token and one for the scale, each minted by the API.
 	if len(h.api.tokens) != 2 {

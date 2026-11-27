@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -101,7 +102,7 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request, roots *x509.Cert
 		  {"metadata":{"name":"orders-cp-1"},"spec":{},
 		   "status":{"conditions":[{"type":"MemoryPressure","status":"False"},{"type":"Ready","status":"True"}],
 		             "addresses":[{"type":"Hostname","address":"orders-cp-1"},{"type":"InternalIP","address":"192.168.100.10"}]}},
-		  {"metadata":{"name":"orders-default-1"},"spec":{"unschedulable":true},
+		  {"metadata":{"name":"orders-default-1","labels":{"kumo/node-group":"default"}},"spec":{"unschedulable":true},
 		   "status":{"conditions":[{"type":"Ready","status":"False"}],
 		             "addresses":[{"type":"InternalIP","address":"192.168.100.11"}]}}]}`)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/namespaces/kube-system/secrets":
@@ -254,13 +255,14 @@ func TestNodes(t *testing.T) {
 	}
 	want := []k8sapi.Node{
 		{Name: "orders-cp-1", Ready: true, InternalIP: "192.168.100.10"},
-		{Name: "orders-default-1", Ready: false, Unschedulable: true, InternalIP: "192.168.100.11"},
+		{Name: "orders-default-1", Ready: false, Unschedulable: true, InternalIP: "192.168.100.11",
+			Labels: map[string]string{"kumo/node-group": "default"}},
 	}
 	if len(nodes) != len(want) {
 		t.Fatalf("Nodes() = %+v", nodes)
 	}
 	for i := range want {
-		if nodes[i] != want[i] {
+		if !reflect.DeepEqual(nodes[i], want[i]) {
 			t.Errorf("node %d = %+v, want %+v", i, nodes[i], want[i])
 		}
 	}
@@ -310,6 +312,36 @@ func TestCreateBootstrapToken(t *testing.T) {
 	}
 	if s.api.count() != before {
 		t.Error("a malformed token reached the API server")
+	}
+}
+
+func TestLabelNode(t *testing.T) {
+	t.Parallel()
+
+	s := newSetup(t)
+	labels := map[string]string{"node-role.kubernetes.io/worker": "", "kumo/node-group": "default"}
+	if err := s.client.LabelNode(t.Context(), "orders-default-1", labels); err != nil {
+		t.Fatalf("LabelNode(): %v", err)
+	}
+	req := s.api.last(t)
+	want := `{"metadata":{"labels":{"kumo/node-group":"default","node-role.kubernetes.io/worker":""}}}`
+	if req.method != http.MethodPatch || req.path != "/api/v1/nodes/orders-default-1" ||
+		req.contentType != "application/merge-patch+json" || string(req.body) != want {
+		t.Errorf("label = %s %s %s %q", req.method, req.path, req.contentType, req.body)
+	}
+
+	before := s.api.count()
+	if err := s.client.LabelNode(t.Context(), "orders-default-1", nil); err != nil {
+		t.Errorf("LabelNode() with no labels: %v", err)
+	}
+	if err := s.client.LabelNode(t.Context(), "../secrets", labels); !errors.Is(err, k8sapi.ErrInvalidConfig) {
+		t.Errorf("LabelNode() of a bad name = %v, want ErrInvalidConfig", err)
+	}
+	if s.api.count() != before {
+		t.Error("an empty or malformed label call reached the API server")
+	}
+	if err := s.client.LabelNode(t.Context(), "orders-default-9", labels); !errors.Is(err, k8sapi.ErrNotFound) {
+		t.Errorf("LabelNode() of a missing node = %v, want ErrNotFound", err)
 	}
 }
 

@@ -162,7 +162,7 @@ func TestClusterJourney(t *testing.T) {
 		time.Sleep(15 * time.Second)
 
 		if phase := runProbe(t, admin, base, "probe-denied", nil); phase != "Failed" {
-			t.Errorf("an unlabelled probe under the policy ended %s, want Failed", phase)
+			t.Errorf("an unlabeled probe under the policy ended %s, want Failed", phase)
 		}
 		if phase := runProbe(t, admin, base, "probe-granted", map[string]string{"access": "granted"}); phase != "Succeeded" {
 			t.Errorf("a granted probe under the policy ended %s, want Succeeded", phase)
@@ -179,6 +179,15 @@ func TestClusterJourney(t *testing.T) {
 		}
 		if n := readyNodes(t, admin, base); n != 4 {
 			t.Errorf("the API server reports %d Ready nodes, want 4", n)
+		}
+		// Every worker, the one the scale added included, carries Kumo's
+		// labels: the ROLES column and the node group.
+		_, nodes := do(admin, http.MethodGet, base+"/api/v1/nodes", "")
+		if n := strings.Count(nodes, `"node-role.kubernetes.io/worker":""`); n != 3 {
+			t.Errorf("%d nodes carry the worker role label, want 3", n)
+		}
+		if n := strings.Count(nodes, `"kumo/node-group":"default"`); n != 3 {
+			t.Errorf("%d nodes carry the node group label, want 3", n)
 		}
 	})
 
