@@ -111,7 +111,7 @@
 | `KUMO_KUBERNETES` | `on` | Kubernetes clusters module: `on` or `off`; with `off` every `/api/v1/eks/*` route answers `503` and the console hides the Kubernetes pages (`08-kubernetes.md`) |
 | `KUMO_K8S_READY_TIMEOUT` | `20m` | how long each wait of a `k8s.create` lasts -- the API server, then every node Ready -- before the cluster is `failed` or `degraded` |
 | `KUMO_K8S_PROBE_INTERVAL` | `30s` | how often the health pass asks an active or degraded cluster's API server |
-| `KUMO_SPARK` | `on` | Spark clusters module: `on` or `off`; with `off` every `/api/v1/spark/*` route answers `503` and the console hides the Spark pages (`09-spark.md`) |
+| `KUMO_SPARK` | `off` | Spark clusters module, a preview until M9.8 passes: `on` or `off`; with `off` every `/api/v1/spark/*` route answers `503` and the console hides the Spark pages (`09-spark.md`) |
 | `KUMO_SPARK_READY_TIMEOUT` | `10m` | how long each wait of a `spark.create` lasts -- the master, then every worker registered -- before the cluster is `failed` or `degraded` |
 | `KUMO_SPARK_PROBE_INTERVAL` | `30s` | how often the health pass reads an active or degraded cluster's master |
 | `KUMO_SPARK_DRAIN_TIMEOUT` | `10m` | how long a scale-down lets one worker decommission before its VM is forced off (`09-spark.md` S13) |
