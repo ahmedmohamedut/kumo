@@ -264,6 +264,79 @@ are. From a guest in the same VPC:
 psql "host=orders.default port=5432 dbname=orders user=app"
 ```
 
+## Kubernetes clusters
+
+**Kubernetes → Clusters** creates a Kubernetes 1.37 cluster: one control-plane
+VM and a node group of workers, built with kubeadm, CRI-O and Cilium, with
+`local-path` storage. Like a database, every node is a VM Kumo manages and
+never appears on the Instances pages. The module is **on by default**; the
+design is in [`08-kubernetes.md`](design/08-kubernetes.md).
+
+It needs its own engine image, with everything a cluster starts with already
+inside, so no node pulls from a registry while it boots. The project publishes
+one as a GitHub release tagged `kubernetes-1.37-<date>` on the
+[releases page](https://github.com/ahmedmohamedut/kumo/releases); the first is
+[`kubernetes-1.37-20261127`](https://github.com/ahmedmohamedut/kumo/releases/tag/kubernetes-1.37-20261127),
+and its notes carry the exact import body. With the `TOKEN` from the
+[Databases](#databases-managed-postgres) import above:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/v1/images/import \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{
+    "name": "kubernetes-1.37-20261127",
+    "source_url": "https://github.com/ahmedmohamedut/kumo/releases/download/kubernetes-1.37-20261127/kumo-kubernetes-1.37-20261127.qcow2.gz",
+    "checksum": {"algorithm": "sha256", "value": "ba16476b1c9b2f262ae92c347c0488744fdc905a883a0d25dbc3cb181bc99962"},
+    "os_family": "linux", "architecture": "x86_64", "default_user": "ubuntu",
+    "min_disk_gb": 8,
+    "kind": "engine", "engine": "kubernetes", "engine_version": "1.37"
+  }' | jq .
+```
+
+The download is 1.4 GB and the image takes 3.6 GiB in the images pool. Once it
+is `available`, `kumod doctor` reports `ok kubernetes (Kubernetes 1.37)`. To
+build the image yourself instead, see `packaging/images/kubernetes-1.37/README.md`.
+
+Each node is a VM, so size the host for it: a control plane and three workers
+of `kumo.medium` take 16 GiB of memory. A cluster is active, every node
+`Ready`, a minute or two after the create.
+
+**Connecting.** The API endpoint is `https://api.<cluster>.<vpc>:6443`,
+reachable from inside the cluster's VPC, and from the Kumo host itself, which
+is every VPC's gateway. **Connect → Download kubeconfig** mints a kubeconfig for
+you, valid 30 days: `cluster-admin` for a Kumo admin, read-only for a viewer.
+It holds a private key and is shown once; keep it `0600`. Use a `kubectl`
+within one minor release of 1.37 (from `pkgs.k8s.io`'s `v1.37` repository).
+
+The endpoint's name is served by the VPC's own DNS, which instances in the VPC
+use. On the Kumo host, either add it to `/etc/hosts` (the address is the
+control plane's, on the cluster's **Nodes** tab):
+
+```bash
+echo '192.168.100.2 api.k8sdev.default' | sudo tee -a /etc/hosts
+KUBECONFIG=~/.kube/kumo-k8sdev.yaml kubectl get nodes
+```
+
+or send the VPC's names to its DNS with `resolvectl dns <bridge> <gateway>` and
+`resolvectl domain <bridge> '~<vpc>'` (the bridge is `kmb…`, see
+`virsh net-dumpxml`), which lasts until the network restarts.
+
+Workers carry `node-role.kubernetes.io/worker` and `kumo/node-group=<name>`,
+which Kumo sets once they are `Ready`. Services are `NodePort` (any node's
+address, ports 30000-32767); `LoadBalancer` services have no provider yet.
+Volumes are `local-path`: on the node's own disk, gone with the node, so a
+scale-down or a delete takes their data with it.
+
+## Spark clusters (preview)
+
+Spark 4.3 standalone clusters, with an event-log history server and access to
+Kumo's object storage, are in this release as a **preview** and **off by
+default**: they have not yet been through their end-to-end run on a real node.
+To try them, set `KUMO_SPARK=on` in `/etc/kumo/kumod.env`, restart kumod, and
+build and import the image from `packaging/images/spark-4.3/` (engine `spark`,
+version `4.3`; no Spark image is published yet). The design is
+[`09-spark.md`](design/09-spark.md).
+
 ## Object storage (optional)
 
 Kumo can manage an S3-compatible object store: buckets, an object browser and
