@@ -69,7 +69,7 @@ func (s *Service) check(ctx context.Context, row sqlc.K8sCluster) (bool, error) 
 	reason := ""
 	if err := api.Ready(ctx); err != nil {
 		reason = "the API server is not ready: " + err.Error()
-	} else if missing := s.unreadyNodes(ctx, row.ID, api, l.nodeNames()); len(missing) > 0 {
+	} else if missing := s.unreadyNodes(ctx, api, l); len(missing) > 0 {
 		reason = "nodes not Ready: " + strings.Join(missing, ", ")
 	}
 
@@ -110,8 +110,9 @@ func (f *fakeAPI) Nodes(context.Context) ([]k8sapi.Node, error) {
 func (f *fakeAPI) CreateBootstrapToken(context.Context, k8spki.BootstrapToken, time.Time) error {
 	return nil
 }
-func (f *fakeAPI) Cordon(context.Context, string) error                     { return nil }
-func (f *fakeAPI) PodsOnNode(context.Context, string) ([]k8sapi.Pod, error) { return nil, nil }
-func (f *fakeAPI) Evict(context.Context, string, string) error              { return nil }
-func (f *fakeAPI) DeleteNode(context.Context, string) error                 { return nil }
-func (f *fakeAPI) Close()                                                   {}
+func (f *fakeAPI) LabelNode(context.Context, string, map[string]string) error { return nil }
+func (f *fakeAPI) Cordon(context.Context, string) error                       { return nil }
+func (f *fakeAPI) PodsOnNode(context.Context, string) ([]k8sapi.Pod, error)   { return nil, nil }
+func (f *fakeAPI) Evict(context.Context, string, string) error                { return nil }
+func (f *fakeAPI) DeleteNode(context.Context, string) error                   { return nil }
+func (f *fakeAPI) Close()                                                     {}

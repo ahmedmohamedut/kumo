@@ -271,7 +271,7 @@ func (s *Service) scale(ctx context.Context, row sqlc.K8sCluster) (string, error
 
 	var notReady []string
 	err = s.await(ctx, row.ID, "the new nodes to be Ready", func(ctx context.Context) bool {
-		notReady = s.unreadyNodes(ctx, row.ID, api, l.nodeNames())
+		notReady = s.unreadyNodes(ctx, api, l)
 		return len(notReady) == 0
 	})
 	switch {

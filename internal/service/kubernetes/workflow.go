@@ -39,7 +39,9 @@ type layout struct {
 	vpc          sqlc.Vpc
 	controlPlane managedcluster.Node
 	workers      []managedcluster.Node
-	endpoint     string
+	// groups is each worker's node group name, by node name.
+	groups   map[string]string
+	endpoint string
 }
 
 func (s *Service) layout(ctx context.Context, row sqlc.K8sCluster) (layout, error) {
@@ -51,13 +53,22 @@ func (s *Service) layout(ctx context.Context, row sqlc.K8sCluster) (layout, erro
 	if err != nil {
 		return layout{}, fmt.Errorf("list the nodes of cluster %q: %w", row.ID, err)
 	}
-	out := layout{row: row, vpc: vpc, endpoint: endpointName(row.Name, vpc.Name)}
+	groups, err := s.store.ListK8sNodeGroups(ctx, sqlc.ListK8sNodeGroupsParams{ClusterID: row.ID})
+	if err != nil {
+		return layout{}, fmt.Errorf("list the node groups of cluster %q: %w", row.ID, err)
+	}
+	groupNames := make(map[string]string, len(groups))
+	for _, g := range groups {
+		groupNames[g.ID] = g.Name
+	}
+	out := layout{row: row, vpc: vpc, endpoint: endpointName(row.Name, vpc.Name), groups: map[string]string{}}
 	for _, n := range nodes {
 		node := managedcluster.Node{InstanceID: n.InstanceID, Name: n.Name, Role: n.Role, PrivateIP: n.PrivateIp.String}
 		if n.Role == RoleControlPlane {
 			out.controlPlane = node
 		} else {
 			out.workers = append(out.workers, node)
+			out.groups[n.Name] = groupNames[n.NodeGroupID.String]
 		}
 	}
 	return out, nil
@@ -236,7 +247,7 @@ func (s *Service) create(ctx context.Context, row sqlc.K8sCluster) error {
 	//    degraded, because its control plane works (section 4).
 	var notReady []string
 	waitErr := s.await(ctx, row.ID, "every node to be Ready", func(ctx context.Context) bool {
-		notReady = s.unreadyNodes(ctx, row.ID, api, l.nodeNames())
+		notReady = s.unreadyNodes(ctx, api, l)
 		return len(notReady) == 0
 	})
 	if waitErr != nil && !errors.Is(waitErr, managedcluster.ErrTimedOut) {
@@ -279,9 +290,11 @@ func (s *Service) connection(l layout, pki *k8spki.ClusterPKI) Connection {
 	}
 }
 
-// unreadyNodes asks the API which expected nodes are not Ready, and records
-// what it saw for the API's Node.ready.
-func (s *Service) unreadyNodes(ctx context.Context, clusterID string, api ClusterAPI, expected []string) []string {
+// unreadyNodes asks the API which expected nodes are not Ready, records what
+// it saw for the API's Node.ready, and labels the Ready workers that lack
+// Kumo's labels (labelWorkers).
+func (s *Service) unreadyNodes(ctx context.Context, api ClusterAPI, l layout) []string {
+	expected := l.nodeNames()
 	nodes, err := api.Nodes(ctx)
 	if err != nil {
 		return expected
@@ -290,7 +303,8 @@ func (s *Service) unreadyNodes(ctx context.Context, clusterID string, api Cluste
 	for _, n := range nodes {
 		ready[n.Name] = n.Ready
 	}
-	s.health.RecordNodes(clusterID, ready)
+	s.health.RecordNodes(l.row.ID, ready)
+	s.labelWorkers(ctx, api, l, nodes)
 	var missing []string
 	for _, name := range expected {
 		if !ready[name] {
@@ -299,6 +313,50 @@ func (s *Service) unreadyNodes(ctx context.Context, clusterID string, api Cluste
 	}
 	sort.Strings(missing)
 	return missing
+}
+
+// Node labels Kumo keeps on every worker (section 6). A kubelet may not set a
+// node-role.kubernetes.io label on its own node (the NodeRestriction admission
+// plugin refuses it), so kumod sets them once the node has joined.
+const (
+	// LabelWorkerRole is what fills kubectl's ROLES column.
+	LabelWorkerRole = "node-role.kubernetes.io/worker"
+	// LabelNodeGroup names the worker's node group, for a nodeSelector.
+	LabelNodeGroup = "kumo/node-group"
+)
+
+// WorkerLabels are the labels of a worker in the named node group.
+func WorkerLabels(nodeGroup string) map[string]string {
+	return map[string]string{LabelWorkerRole: "", LabelNodeGroup: nodeGroup}
+}
+
+// labelWorkers sets Kumo's labels on each worker the API lists as Ready that
+// lacks one of them or has another value. It patches only what is missing, so
+// a pass over labeled nodes sends nothing. The labels are cosmetic and for
+// scheduling: a failure is logged, never fatal, and the next pass retries.
+func (s *Service) labelWorkers(ctx context.Context, api ClusterAPI, l layout, nodes []k8sapi.Node) {
+	for _, n := range nodes {
+		group, ok := l.groups[n.Name]
+		if !ok || group == "" || !n.Ready {
+			continue
+		}
+		want := WorkerLabels(group)
+		patch := map[string]string{}
+		for k, v := range want {
+			if got, has := n.Labels[k]; !has || got != v {
+				patch[k] = v
+			}
+		}
+		if len(patch) == 0 {
+			continue
+		}
+		if err := api.LabelNode(ctx, n.Name, patch); err != nil {
+			s.logger.WarnContext(ctx, "kubernetes: could not label a node",
+				"cluster_id", l.row.ID, "node", n.Name, "error", err)
+			continue
+		}
+		s.logger.InfoContext(ctx, "kubernetes: labeled a node", "cluster_id", l.row.ID, "node", n.Name)
+	}
 }
 
 // await polls cond until it holds, the cluster is being deleted, or the ready

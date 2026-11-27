@@ -1,6 +1,6 @@
 // Package k8sapi is kumod's client for a cluster's Kubernetes API: the six
 // calls of docs/design/08-kubernetes.md section 6 -- health, nodes, bootstrap
-// tokens, cordon, eviction and node deletion -- in plain HTTPS with kumod's
+// tokens, node labels, cordon, eviction and node deletion -- in plain HTTPS with kumod's
 // client certificate and encoding/json, and nothing else (K11). client-go and
 // its dependency tree stay out of the binary.
 //
@@ -157,6 +157,8 @@ type Node struct {
 	Ready         bool
 	Unschedulable bool
 	InternalIP    string
+	// Labels are the node's labels, nil when it has none.
+	Labels map[string]string
 }
 
 // Nodes lists the cluster's nodes.
@@ -164,7 +166,8 @@ func (c *Client) Nodes(ctx context.Context) ([]Node, error) {
 	var list struct {
 		Items []struct {
 			Metadata struct {
-				Name string `json:"name"`
+				Name   string            `json:"name"`
+				Labels map[string]string `json:"labels"`
 			} `json:"metadata"`
 			Spec struct {
 				Unschedulable bool `json:"unschedulable"`
@@ -186,7 +189,7 @@ func (c *Client) Nodes(ctx context.Context) ([]Node, error) {
 	}
 	nodes := make([]Node, 0, len(list.Items))
 	for _, item := range list.Items {
-		n := Node{Name: item.Metadata.Name, Unschedulable: item.Spec.Unschedulable}
+		n := Node{Name: item.Metadata.Name, Unschedulable: item.Spec.Unschedulable, Labels: item.Metadata.Labels}
 		for _, cond := range item.Status.Conditions {
 			if cond.Type == "Ready" {
 				n.Ready = cond.Status == "True"
@@ -241,6 +244,28 @@ func (c *Client) CreateBootstrapToken(ctx context.Context, token k8spki.Bootstra
 		return err
 	}
 	return expect(status, resp, http.StatusCreated)
+}
+
+// LabelNode sets labels on a node, leaving its others as they are: a merge
+// patch of metadata.labels. An empty value is a label with no value, the shape
+// of node-role.kubernetes.io/worker.
+func (c *Client) LabelNode(ctx context.Context, node string, labels map[string]string) error {
+	path, err := nodePath(node)
+	if err != nil {
+		return err
+	}
+	if len(labels) == 0 {
+		return nil
+	}
+	body, err := json.Marshal(map[string]any{"metadata": map[string]any{"labels": labels}})
+	if err != nil {
+		return fmt.Errorf("k8sapi: encode the labels: %w", err)
+	}
+	status, resp, err := c.do(ctx, http.MethodPatch, path, "application/merge-patch+json", body)
+	if err != nil {
+		return err
+	}
+	return expect(status, resp, http.StatusOK)
 }
 
 // Cordon marks a node unschedulable, the first step of a drain.

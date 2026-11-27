@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,6 +65,10 @@ type cluster struct {
 	pods    map[string][]k8sapi.Pod
 	blocked map[string]bool
 	calls   []string
+	// labels are each node's labels, as LabelNode left them; labelCalls
+	// counts the LabelNode calls.
+	labels     map[string]map[string]string
+	labelCalls int
 }
 
 func (c *cluster) record(call string) {
@@ -113,9 +118,34 @@ func (s *scripted) Nodes(context.Context) ([]k8sapi.Node, error) {
 	}
 	var out []k8sapi.Node
 	for _, n := range s.nodes {
-		out = append(out, k8sapi.Node{Name: n, Ready: !s.c.notReady[n]})
+		var labels map[string]string
+		if l := s.c.labels[n]; l != nil {
+			labels = maps.Clone(l)
+		}
+		out = append(out, k8sapi.Node{Name: n, Ready: !s.c.notReady[n], Labels: labels})
 	}
 	return out, nil
+}
+
+func (s *scripted) LabelNode(_ context.Context, node string, labels map[string]string) error {
+	s.c.mu.Lock()
+	defer s.c.mu.Unlock()
+	s.c.labelCalls++
+	if s.c.labels == nil {
+		s.c.labels = map[string]map[string]string{}
+	}
+	if s.c.labels[node] == nil {
+		s.c.labels[node] = map[string]string{}
+	}
+	maps.Copy(s.c.labels[node], labels)
+	return nil
+}
+
+// nodeLabels returns a copy of a node's labels and the LabelNode call count.
+func (c *cluster) nodeLabels(node string) (map[string]string, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return maps.Clone(c.labels[node]), c.labelCalls
 }
 
 func (s *scripted) CreateBootstrapToken(_ context.Context, tok k8spki.BootstrapToken, _ time.Time) error {
@@ -820,5 +850,62 @@ func TestFakeAPIRunsAWholeCreate(t *testing.T) {
 	c := h.active(t, "orders")
 	if c.State != kubernetes.StateActive {
 		t.Errorf("state = %s, want active on the fake", c.State)
+	}
+}
+
+func TestWorkersGetKumosLabels(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.kubernetesImage(t, "1.37")
+	c := h.create(t, "orders")
+	h.api.set(true, "orders-default-2")
+	if err := h.run(t, c.ID, h.svc.CreateHandler); err != nil {
+		t.Fatalf("CreateHandler(): %v", err)
+	}
+
+	// A Ready worker is labeled during the create; one that is not Ready
+	// yet is not, and the control plane never is: kubeadm labels it.
+	want := kubernetes.WorkerLabels("default")
+	if got, _ := h.api.nodeLabels("orders-default-1"); !maps.Equal(got, want) {
+		t.Errorf("orders-default-1 labels = %v, want %v", got, want)
+	}
+	if got, _ := h.api.nodeLabels("orders-default-2"); got != nil {
+		t.Errorf("a node that is not Ready was labeled: %v", got)
+	}
+	if got, _ := h.api.nodeLabels("orders-cp-1"); got != nil {
+		t.Errorf("the control plane was labeled: %v", got)
+	}
+
+	pass := func() {
+		*h.now = h.now.Add(2 * time.Minute)
+		if _, err := h.svc.Reconcile(t.Context()); err != nil {
+			t.Fatalf("Reconcile(): %v", err)
+		}
+	}
+
+	// The health pass labels a node once it is Ready: a cluster made before
+	// this, or a node that joined late.
+	h.api.set(true)
+	pass()
+	got, calls := h.api.nodeLabels("orders-default-2")
+	if !maps.Equal(got, want) {
+		t.Errorf("orders-default-2 labels after the health pass = %v, want %v", got, want)
+	}
+
+	// Nodes that carry the labels are not patched again.
+	pass()
+	if _, again := h.api.nodeLabels("orders-default-2"); again != calls {
+		t.Errorf("%d label calls on labeled nodes, want none", again-calls)
+	}
+
+	// A label taken off, or changed, is put back; the node's others stay.
+	h.api.mu.Lock()
+	delete(h.api.labels["orders-default-1"], kubernetes.LabelWorkerRole)
+	h.api.labels["orders-default-1"]["team"] = "data"
+	h.api.mu.Unlock()
+	pass()
+	got, _ = h.api.nodeLabels("orders-default-1")
+	if _, ok := got[kubernetes.LabelWorkerRole]; !ok || got["team"] != "data" {
+		t.Errorf("orders-default-1 labels = %v, want the role back and team kept", got)
 	}
 }

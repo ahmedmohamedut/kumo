@@ -309,7 +309,7 @@ calls, all plain HTTPS with kumod's client certificate (K11):
 | `GET /readyz` | Create step 2; the health pass |
 | `GET /api/v1/nodes` | Create step 5, scale, the health pass: `Ready` condition per node |
 | `POST /api/v1/namespaces/kube-system/secrets` | Bootstrap token for scale-up |
-| `PATCH /api/v1/nodes/{name}` | Cordon |
+| `PATCH /api/v1/nodes/{name}` | Cordon; the worker labels below |
 | `POST /api/v1/namespaces/{ns}/pods/{pod}/eviction` | Drain (with `GET /api/v1/pods?fieldSelector=spec.nodeName=...`) |
 | `DELETE /api/v1/nodes/{name}` | Scale-down |
 
@@ -317,6 +317,23 @@ The health pass runs every `KUMO_K8S_PROBE_INTERVAL` for `active` and
 `degraded` clusters: `active` → `degraded` when `/readyz` fails or a node is not
 `Ready` for three passes running; back to `active` when both recover. A stopped
 or missing VM is the instance reconciler's to report, as it is for databases.
+
+**Worker labels.** Every time kumod lists the nodes (create step 5, a scale,
+the health pass) it labels each `Ready` worker that lacks one of these, by a
+merge patch of only the missing keys, so a labeled cluster sends nothing:
+
+| Label | Value | For |
+|---|---|---|
+| `node-role.kubernetes.io/worker` | empty | kubectl's `ROLES` column |
+| `kumo/node-group` | the node group's name | a `nodeSelector` or affinity that targets a node group |
+
+A kubelet cannot set them itself: the NodeRestriction admission plugin refuses
+a `node-role.kubernetes.io/` label from a node, and a self-declared node group
+would be a node choosing what lands on it. The control plane keeps kubeadm's
+own `node-role.kubernetes.io/control-plane`. The labels are Kumo's: one taken
+off or changed is put back on the next pass, and a node's other labels are left
+alone. A failed patch is logged and retried on the next pass, never fatal.
+Clusters made before this get theirs on the first health pass.
 
 ## 7. The golden image
 

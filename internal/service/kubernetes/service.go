@@ -91,6 +91,7 @@ type ClusterAPI interface {
 	Ready(ctx context.Context) error
 	Nodes(ctx context.Context) ([]k8sapi.Node, error)
 	CreateBootstrapToken(ctx context.Context, token k8spki.BootstrapToken, expires time.Time) error
+	LabelNode(ctx context.Context, node string, labels map[string]string) error
 	Cordon(ctx context.Context, node string) error
 	PodsOnNode(ctx context.Context, node string) ([]k8sapi.Pod, error)
 	Evict(ctx context.Context, namespace, pod string) error
